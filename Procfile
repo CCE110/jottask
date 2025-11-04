@@ -1,1 +1,2 @@
-web: gunicorn --bind 0.0.0.0:$PORT app:app
+web: python3 app.py
+worker: python3 cloud_email_processor.py

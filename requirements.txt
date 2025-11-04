@@ -3,3 +3,4 @@ supabase
 anthropic
 python-dotenv
 gunicorn
+schedule==1.2.2
