@@ -9,6 +9,7 @@ import pytz
 from anthropic import Anthropic
 from enhanced_task_manager import EnhancedTaskManager
 import json
+import re
 
 class CloudEmailProcessor:
     def __init__(self):
@@ -147,7 +148,13 @@ Respond ONLY with valid JSON:
             )
             
             # Parse response
-            analysis_text = response.content[0].text
+            analysis_text = response.content[0].text.strip()
+            # Remove markdown code blocks if present
+            if analysis_text.startswith('```'):
+                analysis_text = re.sub(r'^```[a-z]*
+', '', analysis_text)
+                analysis_text = re.sub(r'
+```$', '', analysis_text)
             analysis = json.loads(analysis_text)
             
             # Create tasks automatically
