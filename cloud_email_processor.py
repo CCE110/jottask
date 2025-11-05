@@ -157,8 +157,12 @@ IMPORTANT: If no specific date mentioned, leave due_date as empty string "". Onl
                 'status': 'pending',
                 'due_date': due_date_value
             }
+            # Always set a due_time - default to 8 AM if not specified
             if task_data.get('due_time') and str(task_data.get('due_time')).strip():
                 task_insert['due_time'] = task_data['due_time']
+            else:
+                # Default to 8 AM AEST for all tasks
+                task_insert['due_time'] = '08:00:00' 
             if task_data.get('is_meeting') is not None:
                 task_insert['is_meeting'] = task_data['is_meeting']
             result = self.tm.supabase.table('tasks').insert(task_insert).execute()
