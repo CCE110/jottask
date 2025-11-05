@@ -9,7 +9,6 @@ import pytz
 from anthropic import Anthropic
 from enhanced_task_manager import EnhancedTaskManager
 import json
-import re
 
 class CloudEmailProcessor:
     def __init__(self):
@@ -142,20 +141,13 @@ Respond ONLY with valid JSON:
 
             # Call Claude AI
             response = self.claude.messages.create(
-                model="claude-sonnet-4-20250514",
+                model="claude-3-5-sonnet-20241022",
                 max_tokens=1024,
                 messages=[{"role": "user", "content": prompt}]
             )
             
             # Parse response
-            analysis_text = response.content[0].text.strip()
-            print(f"   🤖 Raw response: {analysis_text[:300]}")
-            # Remove markdown code blocks if present
-            if analysis_text.startswith('```'):
-                analysis_text = re.sub(r'^```[a-z]*
-', '', analysis_text)
-                analysis_text = re.sub(r'
-```$', '', analysis_text)
+            analysis_text = response.content[0].text
             analysis = json.loads(analysis_text)
             
             # Create tasks automatically
@@ -187,6 +179,7 @@ Respond ONLY with valid JSON:
                 'due_time': task_data.get('due_time'),
                 'priority': task_data.get('priority', 'medium'),
                 'status': 'pending',
+                'email_source': email_subject
             }).execute()
             
             if result.data:
