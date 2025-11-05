@@ -1,24 +1,22 @@
+#!/usr/bin/env python3
 import imaplib
 import email
 from email.header import decode_header
+import json
+from task_manager import TaskManager
+from anthropic import Anthropic
 import os
 import time
 import schedule
-from datetime import datetime, timedelta
-import pytz
-from anthropic import Anthropic
-from enhanced_task_manager import EnhancedTaskManager
+from datetime import datetime
 
 class CloudEmailProcessor:
     def __init__(self):
-        self.etm = EnhancedTaskManager()
+        self.tm = TaskManager()
         self.claude = Anthropic(api_key=os.getenv('ANTHROPIC_API_KEY'))
+        self.gmail_user = 'robcrm.ai@gmail.com'
+        self.gmail_pass = 'sgho tbwr optz yxie'
         
-        # Gmail settings
-        self.gmail_user = "robcrm.ai@gmail.com"
-        self.gmail_password = os.getenv('GMAIL_APP_PASSWORD', 'sgho tbwr optz yxie')
-        
-        # Business mapping
         self.businesses = {
             'Cloud Clean Energy': 'feb14276-5c3d-4fcf-af06-9a8f54cf7159',
             'DSW (Direct Solar Warehouse)': '390fbfb9-1166-45a5-ba17-39c9c48d5f9a',
@@ -27,52 +25,38 @@ class CloudEmailProcessor:
             'Veterans Health Centre (VHC)': '0b083ea5-ff45-4606-8cae-6ed387926641'
         }
         
-        # Track processed emails to avoid duplicates
         self.processed_emails = set()
-        
         print("🌐 Cloud Email Processor initialized!")
     
-    def process_emails_job(self):
-        """Check for new emails every 15 minutes - FIXED to get recent emails"""
+    def process_emails(self):
+        """Check and process new emails"""
         try:
             print(f"🔍 Checking emails at {datetime.now()}")
             
             mail = imaplib.IMAP4_SSL('imap.gmail.com')
-            mail.login(self.gmail_user, self.gmail_password)
+            mail.login(self.gmail_user, self.gmail_pass)
             mail.select('inbox')
             
-            # FIXED: Search for emails from last 7 days regardless of read status
-            aest = pytz.timezone('Australia/Brisbane')
-            seven_days_ago = (datetime.now(aest) - timedelta(days=7)).strftime("%d-%b-%Y")
-            
-            # Search for emails since 7 days ago
-            status, messages = mail.search(None, f'(SINCE {seven_days_ago})')
+            # Get unread emails
+            status, messages = mail.search(None, 'UNSEEN')
             
             if not messages[0]:
-                print("📭 No emails in last 7 days")
+                print("📭 No new emails")
                 mail.close()
                 mail.logout()
                 return
             
             email_ids = messages[0].split()
+            new_count = len([eid for eid in email_ids if eid not in self.processed_emails])
             
-            # Filter out already processed emails
-            new_emails = [eid for eid in email_ids if eid not in self.processed_emails]
+            print(f"📬 Found {new_count} new emails to process")
             
-            if not new_emails:
-                print("📭 No new emails (all already processed)")
-                mail.close()
-                mail.logout()
-                return
-            
-            print(f"📬 Found {len(new_emails)} new emails to process")
-            
-            for msg_id in new_emails:
-                try:
-                    self.analyze_and_create_tasks(mail, msg_id)
-                    self.processed_emails.add(msg_id)
-                except Exception as e:
-                    print(f"❌ Error processing email {msg_id}: {e}")
+            for msg_id in email_ids:
+                if msg_id in self.processed_emails:
+                    continue
+                    
+                self.process_single_email(mail, msg_id)
+                self.processed_emails.add(msg_id)
             
             mail.close()
             mail.logout()
@@ -81,8 +65,8 @@ class CloudEmailProcessor:
         except Exception as e:
             print(f"❌ Email processing error: {e}")
     
-    def analyze_and_create_tasks(self, mail, msg_id):
-        """Use Claude AI to analyze and create tasks"""
+    def process_single_email(self, mail, msg_id):
+        """Process a single email and create tasks"""
         try:
             status, msg_data = mail.fetch(msg_id, '(RFC822)')
             email_body = email.message_from_bytes(msg_data[0][1])
@@ -91,38 +75,106 @@ class CloudEmailProcessor:
             if isinstance(subject, bytes):
                 subject = subject.decode()
             
-            # Get email date
-            date_str = email_body.get('Date', '')
+            sender = email_body.get('From', '')
+            
+            # Get content
+            content = ""
+            if email_body.is_multipart():
+                for part in email_body.walk():
+                    if part.get_content_type() == "text/plain":
+                        content += part.get_payload(decode=True).decode('utf-8', errors='ignore')
+            else:
+                content = email_body.get_payload(decode=True).decode('utf-8', errors='ignore')
             
             print(f"📧 Processing: {subject[:50]}...")
-            print(f"   Date: {date_str}")
+            print(f"   From: {sender[:40]}")
             
-            # TODO: Add your Claude AI processing here
-            # For now, just mark as processed
+            # Check if task-related
+            task_keywords = ['task', 'create', 'set', 'reminder', 'follow', 'call', 'meeting', 'urgent']
+            if not any(kw in subject.lower() or kw in content.lower() for kw in task_keywords):
+                print(f"   ⏭️  Not a task-related email")
+                return
             
+            # Use Claude to analyze
+            prompt = f"""Analyze this email and extract task information.
+
+Email Subject: {subject}
+Email Content: {content[:1000]}
+
+Extract tasks in JSON format:
+{{
+    "create_tasks": true,
+    "tasks": [
+        {{
+            "title": "string",
+            "description": "string",
+            "business": "Cloud Clean Energy",
+            "priority": "high/medium/low",
+            "due_date": "YYYY-MM-DD or null",
+            "due_time": "HH:MM or null",
+            "is_meeting": false
+        }}
+    ]
+}}
+
+If not a task email, return: {{"create_tasks": false, "tasks": []}}"""
+
+            response = self.claude.messages.create(
+                model="claude-3-5-sonnet-20241022",
+                max_tokens=1000,
+                messages=[{"role": "user", "content": prompt}]
+            )
+            
+            analysis = json.loads(response.content[0].text)
+            
+            if not analysis.get('create_tasks') or not analysis.get('tasks'):
+                print(f"   ⏭️  No tasks to create")
+                return
+            
+            # Create tasks
+            for task in analysis['tasks']:
+                self.create_task(task)
+                
+        except json.JSONDecodeError as e:
+            print(f"   ❌ JSON parsing error: {e}")
         except Exception as e:
-            print(f"❌ Error in analyze_and_create_tasks: {e}")
+            print(f"   ❌ Error processing email: {e}")
     
-    def send_daily_summary_job(self):
-        """Send daily summary at 8AM AEST"""
+    def create_task(self, task_data):
+        """Create a task in database"""
         try:
-            print(f"📧 Sending daily summary at {datetime.now()}")
-            self.etm.send_enhanced_daily_summary()
-            print("✅ Daily summary sent")
+            business_id = self.businesses.get(task_data.get('business', 'Cloud Clean Energy'))
+            if not business_id:
+                business_id = self.businesses['Cloud Clean Energy']
+            
+            result = self.tm.supabase.table('tasks').insert({
+                'business_id': business_id,
+                'title': task_data['title'],
+                'description': task_data.get('description', ''),
+                'due_date': task_data.get('due_date'),
+                'due_time': task_data.get('due_time'),
+                'priority': task_data.get('priority', 'medium'),
+                'is_meeting': task_data.get('is_meeting', False),
+                'status': 'pending'
+            }).execute()
+            
+            if result.data:
+                print(f"   ✅ Task created: {task_data['title']}")
+            else:
+                print(f"   ❌ Failed to create task")
+                
         except Exception as e:
-            print(f"❌ Daily summary failed: {e}")
+            print(f"   ❌ Error creating task: {e}")
     
-    def start_cloud_scheduler(self):
+    def start(self):
         """Start 24/7 scheduler"""
-        schedule.every(15).minutes.do(self.process_emails_job)
-        schedule.every().day.at("22:00").do(self.send_daily_summary_job)
+        schedule.every(15).minutes.do(self.process_emails)
         
-        # Process emails immediately on startup
-        self.process_emails_job()
+        # Process immediately on startup
+        self.process_emails()
         
         print("🌐 Cloud scheduler started - Running 24/7!")
         print("📧 Email checks: Every 15 minutes")
-        print("📊 Daily summaries: 8AM AEST")
         
         while True:
             schedule.run_pending()
@@ -130,4 +182,4 @@ class CloudEmailProcessor:
 
 if __name__ == "__main__":
     processor = CloudEmailProcessor()
-    processor.start_cloud_scheduler()
+    processor.start()
