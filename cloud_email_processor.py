@@ -130,7 +130,9 @@ If not a task email, return: {{"create_tasks": false, "tasks": []}}"""
                 messages=[{"role": "user", "content": prompt}]
             )
             
-            analysis = json.loads(response.content[0].text)
+            raw_response = response.content[0].text
+            print(f"   🤖 Claude raw response: {raw_response[:200]}")
+            analysis = json.loads(raw_response)
             
             if not analysis.get('create_tasks') or not analysis.get('tasks'):
                 print(f"   ⏭️  No tasks to create")
