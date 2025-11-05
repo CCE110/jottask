@@ -13,6 +13,8 @@ import schedule
 from datetime import datetime, timedelta, date
 import pytz
 
+from enhanced_task_manager import EnhancedTaskManager
+
 class CloudEmailProcessor:
     def __init__(self):
         self.tm = TaskManager()
@@ -27,6 +29,7 @@ class CloudEmailProcessor:
             'Veterans Health Centre (VHC)': '0b083ea5-ff45-4606-8cae-6ed387926641'
         }
         self.processed_emails = set()
+        self.etm = EnhancedTaskManager()
         print("🌐 Cloud Email Processor initialized!")
     
     def process_emails(self):
@@ -170,10 +173,15 @@ IMPORTANT: If no specific date mentioned, leave due_date as empty string "". Onl
     
     def start(self):
         schedule.every(15).minutes.do(self.process_emails)
+        
+        # Daily summary at 8 AM AEST
+        schedule.every().day.at("08:00").do(self.etm.send_enhanced_daily_summary)
         print("🚀 Processing emails on startup...")
         self.process_emails()
         print("🌐 Cloud scheduler started - Running 24/7!")
         print("📧 Email checks: Every 15 minutes")
+        print("📊 Daily summaries: 8:00 AM AEST")
+        print(f"📬 Summaries sent to: rob@cloudcleanenergy.com.au")
         while True:
             schedule.run_pending()
             time.sleep(60)
