@@ -115,3 +115,13 @@ class CloudEmailProcessor:
 if __name__ == "__main__":
     processor = CloudEmailProcessor()
     processor.start_cloud_scheduler()
+
+# Force process existing emails on startup
+if [ "$RAILWAY_ENVIRONMENT" = "production" ]; then
+    python3 -c "
+from cloud_email_processor import CloudEmailProcessor
+processor = CloudEmailProcessor()
+processor.force_process_all_emails()
+"
+fi
+
