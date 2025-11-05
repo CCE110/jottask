@@ -195,16 +195,18 @@ If not a task email: {{"create_tasks": false, "tasks": []}}"""
             if not business_id:
                 business_id = self.businesses['Cloud Clean Energy']
             
+            # Default to today if no due date provided
+            from datetime import date
+            default_due = date.today().isoformat()
+            
             task_insert = {
                 'business_id': business_id,
                 'title': task_data['title'][:200],
                 'description': task_data.get('description', '')[:1000],
                 'priority': task_data.get('priority', 'medium'),
-                'status': 'pending'
+                'status': 'pending',
+                'due_date': task_data.get('due_date', default_due)
             }
-            
-            if task_data.get('due_date'):
-                task_insert['due_date'] = task_data['due_date']
             if task_data.get('due_time'):
                 task_insert['due_time'] = task_data['due_time']
             if task_data.get('is_meeting') is not None:
