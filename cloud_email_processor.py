@@ -171,8 +171,48 @@ IMPORTANT: If no specific date mentioned, leave due_date as empty string "". Onl
             import traceback
             traceback.print_exc()
     
+
+    def send_task_reminders(self):
+        """Send reminder emails for tasks due soon (AEST timezone)"""
+        try:
+            from datetime import datetime, timedelta
+            import pytz
+            
+            aest = pytz.timezone('Australia/Brisbane')
+            now = datetime.now(aest)
+            check_time = now + timedelta(minutes=30)
+            
+            print(f"⏰ Checking reminders at {now.strftime('%H:%M %Z')}")
+            
+            tasks = self.tm.supabase.table('tasks').select('*, businesses(name)').eq('status', 'pending').eq('due_date', now.date().isoformat()).not_.is_('due_time', 'null').execute()
+            
+            if not tasks.data:
+                return
+            
+            for task in tasks.data:
+                due_time = task.get('due_time')
+                if due_time:
+                    try:
+                        from datetime import time
+                        hour, minute = map(int, due_time.split(':')[:2])
+                        task_due = aest.localize(datetime.combine(now.date(), time(hour, minute)))
+                        time_until = (task_due - now).total_seconds() / 60
+                        
+                        if 0 <= time_until <= 30:
+                            self.send_reminder(task, task_due)
+                    except:
+                        pass
+        except Exception as e:
+            print(f"Reminder error: {e}")
+    
+    def send_reminder(self, task, due_time):
+        """Send reminder email"""
+        html = f"""<html><body><h2>⏰ Task Reminder</h2><p><strong>{task['title']}</strong></p><p>Due: {due_time.strftime('%I:%M %p')}</p><a href="{self.action_url}?action=complete&task_id={task['id']}">Complete</a></body></html>"""
+        self.send_email(self.your_email, f"⏰ {task['title'][:40]}", html)
+
     def start(self):
         schedule.every(15).minutes.do(self.process_emails)
+        schedule.every(15).minutes.do(self.send_task_reminders)
         
         # Daily summary at 8 AM AEST
         schedule.every().day.at("22:00").do(self.etm.send_enhanced_daily_summary)  # 8 AM AEST = 22:00 UTC
