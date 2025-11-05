@@ -1,4 +1,9 @@
 #!/usr/bin/env python3
+"""
+Cloud Email Processor - WORKING VERSION
+Processes emails 24/7 using Claude AI to create tasks
+"""
+
 import imaplib
 import email
 from email.header import decode_header
@@ -17,7 +22,7 @@ class CloudEmailProcessor:
         self.tm = TaskManager()
         self.claude = Anthropic(api_key=os.getenv('ANTHROPIC_API_KEY'))
         self.gmail_user = 'robcrm.ai@gmail.com'
-        self.gmail_pass = 'sgho tbwr optz yxie'
+        self.gmail_pass = os.getenv('GMAIL_APP_PASSWORD', 'sgho tbwr optz yxie')
         
         self.businesses = {
             'Cloud Clean Energy': 'feb14276-5c3d-4fcf-af06-9a8f54cf7159',
@@ -53,6 +58,12 @@ class CloudEmailProcessor:
             email_ids = messages[0].split()
             new_count = len([eid for eid in email_ids if eid not in self.processed_emails])
             
+            if new_count == 0:
+                print("📭 No new emails (all already processed)")
+                mail.close()
+                mail.logout()
+                return
+                
             print(f"📬 Found {new_count} new emails to process")
             
             for msg_id in email_ids:
@@ -68,6 +79,22 @@ class CloudEmailProcessor:
             
         except Exception as e:
             print(f"❌ Email processing error: {e}")
+            import traceback
+            traceback.print_exc()
+    
+    def clean_json_response(self, text):
+        """Clean Claude's response to extract pure JSON"""
+        text = text.strip()
+        
+        # Remove markdown code blocks
+        if text.startswith('```'):
+            lines = text.split('\n')
+            lines = lines[1:]
+            if lines and lines[-1].strip() == '```':
+                lines = lines[:-1]
+            text = '\n'.join(lines).strip()
+        
+        return text
     
     def process_single_email(self, mail, msg_id):
         """Process a single email and create tasks"""
@@ -86,15 +113,21 @@ class CloudEmailProcessor:
             if email_body.is_multipart():
                 for part in email_body.walk():
                     if part.get_content_type() == "text/plain":
-                        content += part.get_payload(decode=True).decode('utf-8', errors='ignore')
+                        try:
+                            content += part.get_payload(decode=True).decode('utf-8', errors='ignore')
+                        except:
+                            pass
             else:
-                content = email_body.get_payload(decode=True).decode('utf-8', errors='ignore')
+                try:
+                    content = email_body.get_payload(decode=True).decode('utf-8', errors='ignore')
+                except:
+                    content = ""
             
-            print(f"📧 Processing: {subject[:50]}...")
-            print(f"   From: {sender[:40]}")
+            print(f"📧 Processing: {subject[:60]}...")
+            print(f"   From: {sender[:50]}")
             
             # Check if task-related
-            task_keywords = ['task', 'create', 'set', 'reminder', 'follow', 'call', 'meeting', 'urgent']
+            task_keywords = ['task', 'create', 'set', 'reminder', 'follow', 'call', 'meeting', 'urgent', 'todo']
             if not any(kw in subject.lower() or kw in content.lower() for kw in task_keywords):
                 print(f"   ⏭️  Not a task-related email")
                 return
@@ -105,7 +138,8 @@ class CloudEmailProcessor:
 Email Subject: {subject}
 Email Content: {content[:1000]}
 
-Extract tasks in JSON format:
+Respond with ONLY pure JSON, no markdown formatting:
+
 {{
     "create_tasks": true,
     "tasks": [
@@ -114,14 +148,14 @@ Extract tasks in JSON format:
             "description": "string",
             "business": "Cloud Clean Energy",
             "priority": "high/medium/low",
-            "due_date": "YYYY-MM-DD or null",
-            "due_time": "HH:MM or null",
+            "due_date": "YYYY-MM-DD",
+            "due_time": "HH:MM",
             "is_meeting": false
         }}
     ]
 }}
 
-If not a task email, return: {{"create_tasks": false, "tasks": []}}"""
+If not a task email: {{"create_tasks": false, "tasks": []}}"""
 
             response = self.claude.messages.create(
                 model="claude-sonnet-4-20250514",
@@ -130,28 +164,29 @@ If not a task email, return: {{"create_tasks": false, "tasks": []}}"""
             )
             
             raw_response = response.content[0].text
-            print(f"   🤖 Claude: {raw_response[:100]}...")
+            print(f"   🤖 Raw: {raw_response[:80]}...")
             
-            # Strip markdown code blocks
-            raw_response = raw_response.strip()
-            if raw_response.startswith('```'):
-                lines = raw_response.split('\n')
-                raw_response = '\n'.join(lines[1:-1])
+            clean_response = self.clean_json_response(raw_response)
             
-            analysis = json.loads(raw_response)
+            try:
+                analysis = json.loads(clean_response)
+            except json.JSONDecodeError:
+                json_match = re.search(r'\{.*\}', clean_response, re.DOTALL)
+                if json_match:
+                    analysis = json.loads(json_match.group())
+                else:
+                    raise
             
             if not analysis.get('create_tasks') or not analysis.get('tasks'):
                 print(f"   ⏭️  No tasks to create")
                 return
             
-            # Create tasks
+            print(f"   📝 Creating {len(analysis['tasks'])} task(s)...")
             for task in analysis['tasks']:
                 self.create_task(task)
                 
-        except json.JSONDecodeError as e:
-            print(f"   ❌ JSON parsing error: {e}")
         except Exception as e:
-            print(f"   ❌ Error processing email: {e}")
+            print(f"   ❌ Error: {e}")
     
     def create_task(self, task_data):
         """Create a task in database"""
@@ -160,30 +195,36 @@ If not a task email, return: {{"create_tasks": false, "tasks": []}}"""
             if not business_id:
                 business_id = self.businesses['Cloud Clean Energy']
             
-            result = self.tm.supabase.table('tasks').insert({
+            task_insert = {
                 'business_id': business_id,
-                'title': task_data['title'],
-                'description': task_data.get('description', ''),
-                'due_date': task_data.get('due_date'),
-                'due_time': task_data.get('due_time'),
+                'title': task_data['title'][:200],
+                'description': task_data.get('description', '')[:1000],
                 'priority': task_data.get('priority', 'medium'),
-                'is_meeting': task_data.get('is_meeting', False),
                 'status': 'pending'
-            }).execute()
+            }
+            
+            if task_data.get('due_date'):
+                task_insert['due_date'] = task_data['due_date']
+            if task_data.get('due_time'):
+                task_insert['due_time'] = task_data['due_time']
+            if task_data.get('is_meeting') is not None:
+                task_insert['is_meeting'] = task_data['is_meeting']
+            
+            result = self.tm.supabase.table('tasks').insert(task_insert).execute()
             
             if result.data:
-                print(f"   ✅ Task created: {task_data['title']}")
+                print(f"   ✅ Task: {task_data['title'][:50]}")
             else:
                 print(f"   ❌ Failed to create task")
                 
         except Exception as e:
-            print(f"   ❌ Error creating task: {e}")
+            print(f"   ❌ Create error: {e}")
     
     def start(self):
         """Start 24/7 scheduler"""
         schedule.every(15).minutes.do(self.process_emails)
         
-        # Process immediately on startup
+        print("🚀 Processing emails on startup...")
         self.process_emails()
         
         print("🌐 Cloud scheduler started - Running 24/7!")
