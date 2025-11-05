@@ -79,7 +79,33 @@ def handle_action():
         task = task_result.data[0]
         task_title = task['title']
         
-        if action == 'complete':
+            aest = pytz.timezone('Australia/Brisbane')
+    now = datetime.now(aest)
+    
+    if action == 'delay_1hour':
+        task = tm.supabase.table('tasks').select('*').eq('id', task_id).single().execute()
+        current_time = task.data.get('due_time', '08:00:00')
+        current_date = task.data.get('due_date')
+        hour, minute = map(int, current_time.split(':')[:2])
+        task_dt = datetime.combine(datetime.fromisoformat(current_date).date(), datetime.min.time().replace(hour=hour, minute=minute))
+        new_dt = aest.localize(task_dt) + timedelta(hours=1)
+        tm.supabase.table('tasks').update({'due_date': new_dt.date().isoformat(), 'due_time': new_dt.strftime('%H:%M:%S')}).eq('id', task_id).execute()
+        return '<html><body style="padding: 40px; text-align: center;"><h1>⏰ Delayed 1 Hour</h1></body></html>'
+    elif action == 'delay_1day':
+        task = tm.supabase.table('tasks').select('*').eq('id', task_id).single().execute()
+        current_date = task.data.get('due_date')
+        new_date = (datetime.fromisoformat(current_date) + timedelta(days=1)).date().isoformat()
+        tm.supabase.table('tasks').update({'due_date': new_date}).eq('id', task_id).execute()
+        return '<html><body style="padding: 40px; text-align: center;"><h1>📅 Delayed 1 Day</h1></body></html>'
+    elif action == 'delay_custom':
+        return '<html><body style="padding: 20px;"><h2>Custom Delay</h2><form method="POST" action="/action"><input type="hidden" name="action" value="save_delay"><input type="hidden" name="task_id" value="' + task_id + '"><label>Date:</label><input type="date" name="custom_date" required><label>Time:</label><input type="time" name="custom_time" value="08:00" required><button type="submit">Set</button></form></body></html>'
+    elif action == 'save_delay':
+        custom_date = request.form.get('custom_date')
+        custom_time = request.form.get('custom_time', '08:00')
+        tm.supabase.table('tasks').update({'due_date': custom_date, 'due_time': custom_time + ':00'}).eq('id', task_id).execute()
+        return '<html><body style="padding: 40px; text-align: center;"><h1>✅ Reminder Set!</h1></body></html>'
+    
+    if action == 'complete':
             tm.supabase.table('tasks').update({
                 'status': 'completed',
                 'completed_at': datetime.now().isoformat()
