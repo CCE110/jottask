@@ -177,6 +177,7 @@ IMPORTANT: If no specific date mentioned, leave due_date as empty string "". Onl
     
 
     def send_task_reminders(self):
+        print("🔔 Checking for task reminders...")
         """Send reminder emails for tasks due soon (AEST timezone)"""
         try:
             from datetime import datetime, timedelta
