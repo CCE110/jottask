@@ -1,8 +1,8 @@
-flask
-supabase
-anthropic
-python-dotenv
-gunicorn
+anthropic==0.34.2
+supabase==2.7.4
+python-dotenv==1.0.1
+flask==3.0.3
+gunicorn==21.2.0
+pytz==2025.2
 schedule==1.2.2
-schedule==1.2.2
-pytz
+sendgrid==6.11.0

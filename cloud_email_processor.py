@@ -177,39 +177,105 @@ IMPORTANT: If no specific date mentioned, leave due_date as empty string "". Onl
     
 
     def send_task_reminders(self):
+        """
+        Check for tasks due soon and send reminders with proper timezone handling
+        """
         print("🔔 Checking for task reminders...")
-        """Send reminder emails for tasks due soon (AEST timezone)"""
+        
         try:
-            from datetime import datetime, timedelta
-            import pytz
-            
+            # Get current time in AEST
             aest = pytz.timezone('Australia/Brisbane')
             now = datetime.now(aest)
-            check_time = now + timedelta(minutes=30)
+            print(f"⏰ Current time: {now.strftime('%I:%M %p AEST')} ({now.strftime('%Y-%m-%d %H:%M:%S')})")
             
-            print(f"⏰ Checking reminders at {now.strftime('%H:%M %Z')}")
+            # Get today's date for query
+            today_str = now.date().isoformat()
+            print(f"📅 Checking tasks due on: {today_str}")
             
-            tasks = self.tm.supabase.table('tasks').select('*, businesses(name)').eq('status', 'pending').eq('due_date', now.date().isoformat()).not_.is_('due_time', 'null').execute()
+            # Query all pending tasks due today
+            tasks = self.tm.supabase.table('tasks').select('*') \
+                .eq('status', 'pending') \
+                .eq('due_date', today_str) \
+                .execute()
             
             if not tasks.data:
+                print("   📊 No tasks due today")
                 return
             
-            for task in tasks.data:
-                due_time = task.get('due_time')
-                if due_time:
-                    try:
-                        from datetime import time
-                        hour, minute = map(int, due_time.split(':')[:2])
-                        task_due = aest.localize(datetime.combine(now.date(), time(hour, minute)))
-                        time_until = (task_due - now).total_seconds() / 60
-                        
-                        if 0 <= time_until <= 30:
-                            self.send_reminder(task, task_due)
-                    except:
-                        pass
+            print(f"📊 Found {len(tasks.data)} total tasks due today")
+            
+            # Filter to tasks with due_time
+            tasks_with_time = [t for t in tasks.data if t.get('due_time')]
+            print(f"⏱️  Tasks with due_time: {len(tasks_with_time)}")
+            
+            if not tasks_with_time:
+                print("   ⏭️  No tasks have due_time set - skipping reminder check")
+                return
+            
+            # Check each task
+            sent_count = 0
+            for task in tasks_with_time:
+                task_title = task['title'][:50]
+                due_time_str = task['due_time']
+                
+                print(f"
+🔍 Checking: {task_title}")
+                print(f"   Due time: {due_time_str}")
+                
+                try:
+                    # Parse due_time string (format: HH:MM:SS)
+                    hour, minute, second = map(int, due_time_str.split(':'))
+                    
+                    # Create timezone-aware datetime for task due time
+                    task_due = now.replace(
+                        hour=hour, 
+                        minute=minute, 
+                        second=second, 
+                        microsecond=0
+                    )
+                    
+                    print(f"   Task due at: {task_due.strftime('%I:%M %p AEST')}")
+                    
+                    # Calculate minutes until due
+                    time_diff = (task_due - now).total_seconds() / 60
+                    print(f"   Minutes until due: {time_diff:.1f}")
+                    
+                    # Send reminder if 25-35 minutes before (30 min window with buffer)
+                    if 25 <= time_diff <= 35:
+                        print(f"   ✅ WITHIN REMINDER WINDOW - Sending reminder!")
+                        self.send_reminder(task, task_due)
+                        print(f"   📧 Reminder sent successfully")
+                        sent_count += 1
+                    else:
+                        if time_diff < 0:
+                            print(f"   ⏭️  Task is overdue (past due by {abs(time_diff):.1f} min)")
+                        elif time_diff < 25:
+                            print(f"   ⏭️  Too close to due time (only {time_diff:.1f} min)")
+                        else:
+                            print(f"   ⏭️  Too far from reminder window ({time_diff:.1f} min)")
+                
+                except ValueError as e:
+                    print(f"   ❌ Invalid time format: {due_time_str} - {e}")
+                except Exception as e:
+                    print(f"   ❌ Error processing task: {e}")
+            
+            # Summary
+            print(f"
+{'='*60}")
+            if sent_count > 0:
+                print(f"✅ Sent {sent_count} reminder(s)")
+            else:
+                print(f"✅ No tasks in 30-min reminder window")
+            print(f"{'='*60}
+")
+            
         except Exception as e:
-            print(f"Reminder error: {e}")
-    
+            print(f"❌ CRITICAL ERROR in send_task_reminders:")
+            print(f"   {e}")
+            import traceback
+            traceback.print_exc()
+
+
     def send_reminder(self, task, due_time):
         """Send reminder email with delay options"""
         html = f"""
@@ -252,7 +318,7 @@ IMPORTANT: If no specific date mentioned, leave due_date as empty string "". Onl
         schedule.every(15).minutes.do(self.send_task_reminders)
         
         # Daily summary at 8 AM AEST
-        schedule.every().day.at("08:00").do(self.etm.send_enhanced_daily_summary)  # 8 AM AEST = 22:00 UTC
+        schedule.every().day.at("22:00").do(self.etm.send_enhanced_daily_summary)  # 22:00 UTC = 8 AM AEST  # 8 AM AEST = 22:00 UTC
         print("🚀 Processing emails on startup...")
         self.process_emails()
         print("🌐 Cloud scheduler started - Running 24/7!")

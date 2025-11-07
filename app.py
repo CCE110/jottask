@@ -97,6 +97,13 @@ def handle_action():
         new_date = (datetime.fromisoformat(current_date) + timedelta(days=1)).date().isoformat()
         tm.supabase.table('tasks').update({'due_date': new_date}).eq('id', task_id).execute()
         return '<html><body style="padding: 40px; text-align: center;"><h1>📅 Delayed 1 Day</h1></body></html>'
+    elif action == 'delay_1week':
+        task = tm.supabase.table('tasks').select('*').eq('id', task_id).single().execute()
+        current_date = task.data.get('due_date')
+        new_date = (datetime.fromisoformat(current_date) + timedelta(days=7)).date().isoformat()
+        tm.supabase.table('tasks').update({'due_date': new_date}).eq('id', task_id).execute()
+        return '<html><body style="font-family: Arial; padding: 40px; text-align: center;"><h1>📅 Delayed 1 Week</h1><p>Task rescheduled for 7 days from now</p></body></html>'
+
     elif action == 'delay_custom':
         return '<html><body style="padding: 20px;"><h2>Custom Delay</h2><form method="POST" action="/action"><input type="hidden" name="action" value="save_delay"><input type="hidden" name="task_id" value="' + task_id + '"><label>Date:</label><input type="date" name="custom_date" required><label>Time:</label><input type="time" name="custom_time" value="08:00" required><button type="submit">Set</button></form></body></html>'
     elif action == 'save_delay':
