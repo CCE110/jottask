@@ -275,7 +275,6 @@ IMPORTANT: If no specific date mentioned, leave due_date as empty string "". Onl
             import traceback
             traceback.print_exc()
 
-
     def send_reminder(self, task, due_time):
         """Send reminder email with delay options"""
         html = f"""
