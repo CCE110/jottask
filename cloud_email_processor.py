@@ -237,7 +237,14 @@ IMPORTANT: If no specific date mentioned, leave due_date as empty string "". Onl
             </div>
         </body>
         </html>"""
-        self.send_email(self.your_email, f"⏰ {task['title'][:40]}", html)
+        # Send reminder via EnhancedTaskManager
+        plain_body = f"Reminder: {task['title']} is due at {due_time.strftime('%I:%M %p')}"
+        self.etm.send_html_email(
+            self.your_email,
+            f"⏰ {task['title'][:40]}",
+            html,
+            plain_body
+        )
 
     def start(self):
         schedule.every(15).minutes.do(self.process_emails)
