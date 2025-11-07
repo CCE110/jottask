@@ -168,7 +168,7 @@ IMPORTANT: If no specific date mentioned, leave due_date as empty string "". Onl
             result = self.tm.supabase.table('tasks').insert(task_insert).execute()
             if result.data:
                 task = result.data[0]
-                business_name = [k for k, v in self.businesses.items() if v == business_id][0]
+                business_name = [k for k, v in self.businesses.items() if v.get('id') == business_id][0]
                 self.send_task_creation_confirmation(task, business_name)
                 print(f"   ✅ Task: {task_data['title'][:50]}")
                 return task
