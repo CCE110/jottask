@@ -223,37 +223,41 @@ class EnhancedTaskManager:
         return self.send_html_email(self.from_email, subject, html_body, "5-Business daily summary")
     
     def send_html_email(self, to_email: str, subject: str, html_body: str, plain_body: str) -> bool:
-        """Send HTML email"""
-        if not self.smtp_password:
-            print("📧 Email preview mode (no password configured)")
-            return False
+        """Send HTML email using Resend API"""
+        import requests
+        import os
+        
+        resend_api_key = os.getenv('RESEND_API_KEY')
+        from_email = 'rob@cloudcleanenergy.com.au'
+        
+        print(f"📧 Sending via Resend API: '{subject[:50]}...' to {to_email}")
         
         try:
-            msg = MIMEMultipart('alternative')
-            msg['From'] = self.from_email
-            msg['To'] = to_email
-            msg['Subject'] = subject
+            response = requests.post(
+                'https://api.resend.com/emails',
+                headers={
+                    'Authorization': f'Bearer {resend_api_key}',
+                    'Content-Type': 'application/json'
+                },
+                json={
+                    'from': from_email,
+                    'to': [to_email],
+                    'subject': subject,
+                    'html': html_body
+                },
+                timeout=10
+            )
             
-            msg.attach(MIMEText(plain_body, 'plain'))
-            msg.attach(MIMEText(html_body, 'html'))
-            
-            server = smtplib.SMTP_SSL(self.smtp_server, self.smtp_port)
-            server.login(self.from_email, self.smtp_password)
-            server.send_message(msg)
-            server.quit()
-            
-            print(f"✅ 5-Business daily summary sent to {to_email}")
-            return True
-            
+            if response.status_code == 200:
+                result = response.json()
+                print(f"✅ Email sent! ID: {result.get('id')}")
+                return True
+            else:
+                print(f"❌ Error {response.status_code}: {response.text}")
+                return False
         except Exception as e:
-            print(f"❌ Failed to send email: {e}")
+            print(f"❌ Error: {e}")
+            import traceback
+            traceback.print_exc()
             return False
 
-if __name__ == "__main__":
-    etm = EnhancedTaskManager()
-    print("🚀 Enhanced 5-Business Task Manager Ready!")
-    
-    businesses = etm.get_businesses()
-    print(f"\n🏢 {len(businesses)} businesses configured:")
-    for i, biz in enumerate(businesses, 1):
-        print(f"  {i}. {biz['name']}")
