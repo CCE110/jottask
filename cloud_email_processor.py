@@ -28,7 +28,14 @@ class CloudEmailProcessor:
             'AI Project Pro': 'ec5d7aab-8d74-4ef2-9d92-01b143c68c82',
             'Veterans Health Centre (VHC)': '0b083ea5-ff45-4606-8cae-6ed387926641'
         }
-        self.processed_emails = set()
+        self.processed_emails = self.load_processed_emails()
+    
+    def load_processed_emails(self):
+        try:
+            result = self.tm.supabase.table("processed_emails").select("email_id").execute()
+            return set(email["email_id"] for email in result.data)
+        except:
+            return set()
         self.action_url = os.getenv('TASK_ACTION_URL', 'https://rob-crm-tasks-production.up.railway.app/action')
         self.etm = EnhancedTaskManager()
         print("🌐 Cloud Email Processor initialized!")
@@ -60,6 +67,10 @@ class CloudEmailProcessor:
                     continue
                 self.process_single_email(mail, msg_id)
                 self.processed_emails.add(msg_id)
+                try:
+                    self.tm.supabase.table("processed_emails").insert({"email_id": str(msg_id)}).execute()
+                except:
+                    pass
             mail.close()
             mail.logout()
             print("✅ Email processing completed")
