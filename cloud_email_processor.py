@@ -75,8 +75,8 @@ class CloudEmailProcessor:
                     self.processed_emails.add(message_id)
                     try:
                         self.tm.supabase.table("processed_emails").insert({"email_id": message_id}).execute()
-                except:
-                    pass
+                    except:
+                        pass
             mail.close()
             mail.logout()
             print("✅ Email processing completed")
