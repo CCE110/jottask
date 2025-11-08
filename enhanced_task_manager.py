@@ -101,7 +101,7 @@ class EnhancedTaskManager:
         
         for business in businesses:
             # Get pending tasks for this business
-            tasks_result = self.supabase.table('tasks').select('*').eq('business_id', business['id']).neq('status', 'completed').order('due_date').execute()
+            tasks_result = self.supabase.table('tasks').select('*').eq('business_id', business['id']).eq('status', 'pending').order('due_date').execute()
             tasks = tasks_result.data or []
             
             # Get sub-tasks for each task
