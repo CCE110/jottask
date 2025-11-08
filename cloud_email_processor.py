@@ -244,8 +244,8 @@ IMPORTANT: If no specific date mentioned, leave due_date as empty string "". Onl
                     time_diff = (task_due - now).total_seconds() / 60
                     print(f"   Minutes until due: {time_diff:.1f}")
                     
-                    # Send reminder if 25-35 minutes before (30 min window with buffer)
-                    if 25 <= time_diff <= 35:
+                    # Send reminder if 5-15 minutes before (30 min window with buffer)
+                    if 5 <= time_diff <= 15:
                         print(f"   ✅ WITHIN REMINDER WINDOW - Sending reminder!")
                         self.send_reminder(task, task_due)
                         print(f"   📧 Reminder sent successfully")
@@ -268,7 +268,7 @@ IMPORTANT: If no specific date mentioned, leave due_date as empty string "". Onl
             if sent_count > 0:
                 print(f"✅ Sent {sent_count} reminder(s)")
             else:
-                print(f"✅ No tasks in 30-min reminder window")
+                print(f"✅ No tasks in 10-min reminder window")
             print(f"{"="*60}\n")
             
         except Exception as e:
