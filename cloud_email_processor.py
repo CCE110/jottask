@@ -96,7 +96,7 @@ class CloudEmailProcessor:
     
     def process_single_email(self, mail, msg_id):
         try:
-            status, msg_data = mail.fetch(msg_id, '(RFC822)')
+            status, msg_data = mail.uid("fetch", msg_id, '(RFC822)')
             email_body = email.message_from_bytes(msg_data[0][1])
             subject = decode_header(email_body['Subject'])[0][0]
             if isinstance(subject, bytes):
