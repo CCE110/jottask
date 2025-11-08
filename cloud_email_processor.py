@@ -32,6 +32,10 @@ class CloudEmailProcessor:
             'Veterans Health Centre (VHC)': '0b083ea5-ff45-4606-8cae-6ed387926641'
         }
         self.processed_emails = self.load_processed_emails()
+        print(f"📊 Loaded {len(self.processed_emails)} processed emails from database")
+        if self.processed_emails:
+            sample = list(self.processed_emails)[:2]
+            print(f"   Sample: {sample}")
     
     def load_processed_emails(self):
         try:
