@@ -18,6 +18,7 @@ from enhanced_task_manager import EnhancedTaskManager
 class CloudEmailProcessor:
     def __init__(self):
         self.tm = TaskManager()
+        self.etm = EnhancedTaskManager()
         self.claude = Anthropic(api_key=os.getenv('ANTHROPIC_API_KEY'))
         self.gmail_user = 'robcrm.ai@gmail.com'
         self.gmail_pass = os.getenv('GMAIL_APP_PASSWORD', 'sgho tbwr optz yxie')
