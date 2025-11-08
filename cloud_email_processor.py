@@ -70,10 +70,11 @@ class CloudEmailProcessor:
             for msg_id in email_ids:
                 if msg_id in self.processed_emails:
                     continue
-                self.process_single_email(mail, msg_id)
-                self.processed_emails.add(msg_id)
-                try:
-                    self.tm.supabase.table("processed_emails").insert({"email_id": str(msg_id)}).execute()
+                message_id = self.process_single_email(mail, msg_id)
+                if message_id:
+                    self.processed_emails.add(message_id)
+                    try:
+                        self.tm.supabase.table("processed_emails").insert({"email_id": message_id}).execute()
                 except:
                     pass
             mail.close()
@@ -98,6 +99,9 @@ class CloudEmailProcessor:
         try:
             status, msg_data = mail.uid("fetch", msg_id, '(RFC822)')
             email_body = email.message_from_bytes(msg_data[0][1])
+            
+            # Get permanent Message-ID
+            message_id = email_body.get('Message-ID', str(msg_id))
             subject = decode_header(email_body['Subject'])[0][0]
             if isinstance(subject, bytes):
                 subject = subject.decode()
