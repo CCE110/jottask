@@ -423,21 +423,20 @@ body {{ font-family: Arial; background: #f5f5f5; padding: 20px; }}
             now = datetime.now()
             
             # Email check every 15 minutes
-            if (now - last_email_check).total_seconds() >= 900:  # 900 sec = 15 min
-                print(f"
-⏰ 15 minutes elapsed - running email check")
+            if (now - last_email_check).total_seconds() >= 900:
+                print("⏰ 15 min elapsed - email check")
                 self.process_emails()
                 last_email_check = now
             
-            # Reminder check every 15 minutes
+            # Reminder check every 15 minutes  
             if (now - last_reminder_check).total_seconds() >= 900:
-                print(f"⏰ 15 minutes elapsed - running reminder check")
+                print("⏰ 15 min elapsed - reminder check")
                 self.send_task_reminders()
                 last_reminder_check = now
             
             # Daily summary at 8 AM AEST (22:00 UTC)
             if now.hour == 22 and now.minute == 0 and (now - last_summary_check).total_seconds() >= 3600:
-                print(f"⏰ 8 AM AEST - sending daily summary")
+                print("⏰ 8 AM AEST - daily summary")
                 self.etm.send_enhanced_daily_summary()
                 last_summary_check = now
             
