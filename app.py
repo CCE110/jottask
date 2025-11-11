@@ -33,16 +33,8 @@ def handle_action():
             return '<html><body style="font-family: Arial; padding: 40px; text-align: center;"><h1>✅ Task Completed!</h1><p>Task has been marked as complete.</p></body></html>'
         
         elif action == 'delay_1hour':
-            # Get current task
-            task = tm.supabase.table('tasks').select('*').eq('id', task_id).single().execute()
-            current_date = task.data.get('due_date')
-            current_time = task.data.get('due_time', '08:00:00')
-            
-            # Parse current due datetime
-            due_datetime = datetime.fromisoformat(f"{current_date} {current_time}")
-            
-            # Add 1 hour
-            new_datetime = due_datetime + timedelta(hours=1)
+            # Calculate 1 hour from NOW (not from original due date)
+            new_datetime = now + timedelta(hours=1)
             
             # Update task
             tm.supabase.table('tasks').update({
@@ -54,36 +46,34 @@ def handle_action():
             return f'<html><body style="font-family: Arial; padding: 40px; text-align: center;"><h1>⏰ Delayed 1 Hour</h1><p>Task rescheduled to {new_datetime.strftime("%I:%M %p AEST")}</p></body></html>'
         
         elif action == 'delay_1day':
-            # Get current task
-            task = tm.supabase.table('tasks').select('*').eq('id', task_id).single().execute()
-            current_date = task.data.get('due_date')
-            
-            # Add 1 day
-            new_date = (datetime.fromisoformat(current_date) + timedelta(days=1)).date().isoformat()
+            # Calculate 1 day from NOW (not from original due date)
+            new_datetime = now + timedelta(days=1)
+            new_date = new_datetime.date().isoformat()
+            new_time = new_datetime.time().isoformat()
             
             # Update task
             tm.supabase.table('tasks').update({
                 'due_date': new_date,
+                'due_time': new_time,
                 'updated_at': now.isoformat()
             }).eq('id', task_id).execute()
             
-            return '<html><body style="font-family: Arial; padding: 40px; text-align: center;"><h1>📅 Delayed 1 Day</h1><p>Task rescheduled for tomorrow at the same time.</p></body></html>'
+            return f'<html><body style="font-family: Arial; padding: 40px; text-align: center;"><h1>📅 Delayed 1 Day</h1><p>Task rescheduled for {new_datetime.strftime("%I:%M %p AEST")} tomorrow.</p></body></html>'
         
         elif action == 'delay_1week':
-            # Get current task
-            task = tm.supabase.table('tasks').select('*').eq('id', task_id).single().execute()
-            current_date = task.data.get('due_date')
-            
-            # Add 7 days
-            new_date = (datetime.fromisoformat(current_date) + timedelta(days=7)).date().isoformat()
+            # Calculate 7 days from NOW (not from original due date)
+            new_datetime = now + timedelta(days=7)
+            new_date = new_datetime.date().isoformat()
+            new_time = new_datetime.time().isoformat()
             
             # Update task
             tm.supabase.table('tasks').update({
                 'due_date': new_date,
+                'due_time': new_time,
                 'updated_at': now.isoformat()
             }).eq('id', task_id).execute()
             
-            return '<html><body style="font-family: Arial; padding: 40px; text-align: center;"><h1>📅 Delayed 1 Week</h1><p>Task rescheduled for 7 days from now.</p></body></html>'
+            return f'<html><body style="font-family: Arial; padding: 40px; text-align: center;"><h1>📅 Delayed 1 Week</h1><p>Task rescheduled for {new_datetime.strftime("%I:%M %p AEST")} in 7 days.</p></body></html>'
         
         elif action == 'delay_custom':
             # Show form for custom date/time
