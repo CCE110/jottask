@@ -225,6 +225,7 @@ class EnhancedTaskManager:
     def send_html_email(self, to_email: str, subject: str, html_body: str, plain_body: str) -> bool:
         """Send HTML email using Resend API"""
         import requests
+        import time
         import os
         
         resend_api_key = os.getenv('RESEND_API_KEY')
@@ -251,6 +252,7 @@ class EnhancedTaskManager:
             if response.status_code == 200:
                 result = response.json()
                 print(f"✅ Email sent! ID: {result.get('id')}")
+                time.sleep(0.6)  # Rate limit: 2 req/sec
                 return True
             else:
                 print(f"❌ Error {response.status_code}: {response.text}")
