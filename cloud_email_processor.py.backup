@@ -32,6 +32,10 @@ class CloudEmailProcessor:
             'Veterans Health Centre (VHC)': '0b083ea5-ff45-4606-8cae-6ed387926641'
         }
         self.processed_emails = self.load_processed_emails()
+        print(f"📊 Loaded {len(self.processed_emails)} processed emails from database")
+        if self.processed_emails:
+            sample = list(self.processed_emails)[:2]
+            print(f"   Sample: {sample}")
     
     def load_processed_emails(self):
         try:
@@ -207,98 +211,76 @@ IMPORTANT: If no specific date mentioned, leave due_date as empty string "". Onl
     
 
     def send_task_reminders(self):
-        """
-        Check for tasks due soon and send reminders with proper timezone handling
-        """
-        print("🔔 Checking for task reminders...")
-        
+        """Check for tasks due soon and send reminders"""
         try:
-            # Get current time in AEST
-            aest = pytz.timezone('Australia/Brisbane')
-            now = datetime.now(aest)
-            print(f"⏰ Current time: {now.strftime('%I:%M %p AEST')} ({now.strftime('%Y-%m-%d %H:%M:%S')})")
+            print("🔔 Checking for task reminders... (Step 1: Function called)")
             
-            # Get today's date for query
-            today_str = now.date().isoformat()
-            print(f"📅 Checking tasks due on: {today_str}")
-            
-            # Query all pending tasks due today
-            tasks = self.tm.supabase.table('tasks').select('*') \
-                .eq('status', 'pending') \
-                .eq('due_date', today_str) \
-                .execute()
-            
-            if not tasks.data:
-                print("   📊 No tasks due today")
+            # Timezone
+            try:
+                aest = pytz.timezone('Australia/Brisbane')
+                now = datetime.now(aest)
+            except Exception as e:
+                print(f"❌ ERROR at Step 2 (Timezone): {e}")
                 return
             
-            print(f"📊 Found {len(tasks.data)} total tasks due today")
+            print(f"⏰ Current time: {now.strftime('%I:%M %p AEST')} (Step 2: OK)")
             
-            # Filter to tasks with due_time
-            tasks_with_time = [t for t in tasks.data if t.get('due_time')]
-            print(f"⏱️  Tasks with due_time: {len(tasks_with_time)}")
+            # Database query
+            try:
+                today_str = now.date().isoformat()
+                result = self.tm.supabase.table('tasks')\
+                    .select('*')\
+                    .eq('status', 'pending')\
+                    .eq('due_date', today_str)\
+                    .execute()
+                print(f"📅 Found {len(result.data)} tasks due today (Step 3: OK)")
+            except Exception as e:
+                print(f"❌ ERROR at Step 3 (Database): {e}")
+                return
+            
+            if not result.data:
+                print("   ℹ️  No pending tasks due today")
+                return
+            
+            tasks_with_time = [t for t in result.data if t.get('due_time')]
             
             if not tasks_with_time:
-                print("   ⏭️  No tasks have due_time set - skipping reminder check")
+                print("   ⏭️  No tasks have due_time set")
                 return
+                
+            print(f"📋 Found {len(tasks_with_time)} task(s) with due times")
             
-            # Check each task
             sent_count = 0
             for task in tasks_with_time:
-                task_title = task['title'][:50]
-                due_time_str = task['due_time']
-                
-                print(f"\n🔍 Checking: {task_title}")
-                print(f"   Due time: {due_time_str}")
-                
                 try:
-                    # Parse due_time string (format: HH:MM:SS)
-                    hour, minute, second = map(int, due_time_str.split(':'))
+                    due_time_str = task['due_time']
+                    task_due = datetime.strptime(f"{today_str} {due_time_str}", '%Y-%m-%d %H:%M:%S')
+                    task_due = aest.localize(task_due)
                     
-                    # Create timezone-aware datetime for task due time
-                    task_due = now.replace(
-                        hour=hour, 
-                        minute=minute, 
-                        second=second, 
-                        microsecond=0
-                    )
-                    
-                    print(f"   Task due at: {task_due.strftime('%I:%M %p AEST')}")
-                    
-                    # Calculate minutes until due
                     time_diff = (task_due - now).total_seconds() / 60
-                    print(f"   Minutes until due: {time_diff:.1f}")
                     
-                    # Send reminder if 5-15 minutes before (30 min window with buffer)
+                    print(f"🔍 {task['title'][:40]} (Due in {time_diff:.1f} min)")
+                    
+                    # Send reminder if 5-15 minutes before
                     if 5 <= time_diff <= 15:
-                        print(f"   ✅ WITHIN REMINDER WINDOW - Sending reminder!")
+                        print(f"   ✅ WITHIN WINDOW - Sending reminder!")
                         self.send_reminder(task, task_due)
-                        print(f"   📧 Reminder sent successfully")
+                        print(f"   📧 Reminder sent")
                         sent_count += 1
                     else:
-                        if time_diff < 0:
-                            print(f"   ⏭️  Task is overdue (past due by {abs(time_diff):.1f} min)")
-                        elif time_diff < 25:
-                            print(f"   ⏭️  Too close to due time (only {time_diff:.1f} min)")
-                        else:
-                            print(f"   ⏭️  Too far from reminder window ({time_diff:.1f} min)")
-                
-                except ValueError as e:
-                    print(f"   ❌ Invalid time format: {due_time_str} - {e}")
+                        print(f"   ⏭️  Not in window")
+                            
                 except Exception as e:
                     print(f"   ❌ Error processing task: {e}")
+                    continue
             
-            # Summary
-            print(f"\n{"="*60}")
             if sent_count > 0:
                 print(f"✅ Sent {sent_count} reminder(s)")
             else:
-                print(f"✅ No tasks in 10-min reminder window")
-            print(f"{"="*60}\n")
-            
+                print(f"✅ No tasks in 5-15 min window")
+                
         except Exception as e:
-            print(f"❌ CRITICAL ERROR in send_task_reminders:")
-            print(f"   {e}")
+            print(f"❌ CRITICAL ERROR: {e}")
             import traceback
             traceback.print_exc()
 
@@ -321,6 +303,7 @@ IMPORTANT: If no specific date mentioned, leave due_date as empty string "". Onl
             <div class="task-box">
                 <p><strong>{task['title']}</strong></p>
                 <p>Due: {due_time.strftime('%I:%M %p AEST')}</p>
+                {f'<div style="margin-top: 12px; padding-top: 12px; border-top: 1px solid #e5e7eb;"><strong>Notes:</strong><br>{task["description"]}</div>' if task.get('description') else ''}
             </div>
             <div class="buttons">
                 <a href="{self.action_url}?action=complete&task_id={task['id']}" class="btn btn-complete">✅ Complete</a>

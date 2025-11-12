@@ -71,7 +71,7 @@ class CloudEmailProcessor:
                 mail.logout()
                 return
             print(f"📬 Found {new_count} new emails to process")
-            for msg_id in email_ids[:10]:
+            for msg_id in email_ids:
                 # Extract Message-ID first to check if processed
                 status, msg_data = mail.uid("fetch", msg_id, '(RFC822)')
                 email_body = email.message_from_bytes(msg_data[0][1])
@@ -131,7 +131,7 @@ class CloudEmailProcessor:
             task_keywords = ['task', 'create', 'set', 'reminder', 'follow', 'call', 'meeting', 'urgent', 'todo']
             if not any(kw in subject.lower() or kw in content.lower() for kw in task_keywords):
                 print(f"   ⏭️  Not a task-related email")
-                return message_id
+                return
             prompt = f"""Analyze this email and extract task information.
 
 Email Subject: {subject}
@@ -162,7 +162,7 @@ IMPORTANT: If no specific date mentioned, leave due_date as empty string "". Onl
                 created_task = self.create_task(task)
         except Exception as e:
             print(f"   ❌ Error: {e}")
-            return message_id
+            return None
         return message_id
     
     def create_task(self, task_data):
