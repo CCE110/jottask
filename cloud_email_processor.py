@@ -156,7 +156,7 @@ IMPORTANT: If no specific date mentioned, leave due_date as empty string "". Onl
                     raise
             if not analysis.get('create_tasks') or not analysis.get('tasks'):
                 print(f"   ⏭️  No tasks to create")
-                return
+                return message_id
             print(f"   📝 Creating {len(analysis['tasks'])} task(s)...")
             for task in analysis['tasks']:
                 created_task = self.create_task(task)
