@@ -262,7 +262,7 @@ IMPORTANT: If no specific date mentioned, leave due_date as empty string "". Onl
                     print(f"🔍 {task['title'][:40]} (Due in {time_diff:.1f} min)")
                     
                     # Send reminder if 5-15 minutes before
-                    if 5 <= time_diff <= 15:
+                    if 5 <= time_diff <= 20:
                         print(f"   ✅ WITHIN WINDOW - Sending reminder!")
                         self.send_reminder(task, task_due)
                         print(f"   📧 Reminder sent")
