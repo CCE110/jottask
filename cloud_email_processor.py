@@ -71,7 +71,7 @@ class CloudEmailProcessor:
                 mail.logout()
                 return
             print(f"📬 Found {new_count} new emails to process")
-            for msg_id in email_ids[:10]:
+            for msg_id in reversed(email_ids[-10:]):
                 # Extract Message-ID first to check if processed
                 status, msg_data = mail.uid("fetch", msg_id, '(RFC822)')
                 email_body = email.message_from_bytes(msg_data[0][1])
