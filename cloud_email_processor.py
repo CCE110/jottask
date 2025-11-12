@@ -427,8 +427,10 @@ body {{ font-family: Arial; background: #f5f5f5; padding: 20px; }}
                 self.process_emails()
                 last_email_check = now
             
-            # Reminder check every 15 minutes  
-            if (now - last_reminder_check).total_seconds() >= 900:
+            # Reminder check every 15 minutes
+            reminder_elapsed = (now - last_reminder_check).total_seconds()
+            print(f"🔍 DEBUG: Reminder check - {reminder_elapsed:.1f} seconds elapsed (need 900)")
+            if reminder_elapsed >= 900:
                 print("⏰ 15 min elapsed - reminder check")
                 self.send_task_reminders()
                 last_reminder_check = now
