@@ -434,7 +434,7 @@ body {{ font-family: Arial; background: #f5f5f5; padding: 20px; }}
                 last_reminder_check = now
             
             # Daily summary at 8 AM AEST (22:00 UTC)
-            if now.hour == 22 and now.minute == 0 and (now - last_summary_check).total_seconds() >= 3600:
+            if now.hour == 22 and now.minute < 15 and (now - last_summary_check).total_seconds() >= 3600:
                 print("⏰ 8 AM AEST - daily summary")
                 self.etm.send_enhanced_daily_summary()
                 last_summary_check = now
