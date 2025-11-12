@@ -277,7 +277,7 @@ IMPORTANT: If no specific date mentioned, leave due_date as empty string "". Onl
             if sent_count > 0:
                 print(f"✅ Sent {sent_count} reminder(s)")
             else:
-                print(f"✅ No tasks in 5-15 min window")
+                print(f"✅ No tasks in 5-20 min window")
                 
         except Exception as e:
             print(f"❌ CRITICAL ERROR: {e}")
