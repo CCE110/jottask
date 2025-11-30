@@ -550,14 +550,44 @@ ACTIONS:
             for task in tasks[:5]:  # Show max 5 per status
                 client = task.get('client_name', 'Unknown')
                 due = task.get('due_date', 'No date')
+                task_id = task.get('id', '')
                 tasks_html += f"""
-<div style="padding: 10px; 
+<div style="padding: 12px; 
             background: #f9fafb; 
-            border-radius: 4px; 
-            margin-bottom: 8px;
+            border-radius: 6px; 
+            margin-bottom: 10px;
             font-size: 14px;">
-    <div style="font-weight: 600; color: #111827;">{task['title'][:50]}</div>
-    <div style="color: #6b7280; font-size: 12px;">👤 {client} • 📅 {due}</div>
+    <div style="font-weight: 600; color: #111827; margin-bottom: 6px;">{task['title'][:50]}</div>
+    <div style="color: #6b7280; font-size: 12px; margin-bottom: 10px;">👤 {client} • 📅 {due}</div>
+    <div style="display: flex; gap: 6px; flex-wrap: wrap;">
+        <a href="{self.action_url}?action=complete&task_id={task_id}" 
+           style="display: inline-block; 
+                  padding: 6px 12px; 
+                  background: #10b981; 
+                  color: white; 
+                  text-decoration: none; 
+                  border-radius: 4px; 
+                  font-size: 11px;
+                  font-weight: 600;">✅ Done</a>
+        <a href="{self.action_url}?action=delay_1day&task_id={task_id}" 
+           style="display: inline-block; 
+                  padding: 6px 12px; 
+                  background: #6b7280; 
+                  color: white; 
+                  text-decoration: none; 
+                  border-radius: 4px; 
+                  font-size: 11px;
+                  font-weight: 600;">📅 +1 Day</a>
+        <a href="{self.action_url}?action=next_status&task_id={task_id}" 
+           style="display: inline-block; 
+                  padding: 6px 12px; 
+                  background: #3b82f6; 
+                  color: white; 
+                  text-decoration: none; 
+                  border-radius: 4px; 
+                  font-size: 11px;
+                  font-weight: 600;">⏭️ Next Status</a>
+    </div>
 </div>"""
             
             if len(tasks) > 5:
