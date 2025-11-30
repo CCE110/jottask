@@ -526,7 +526,7 @@ Return ONLY valid JSON, no explanation."""
                     time_diff = (task_due - now).total_seconds() / 60
                     
                     # 5-20 minute window
-                    if 5 <= time_diff <= 20:
+                    if -5 <= time_diff <= 20:  # Include recently overdue (up to 5 min late)
                         print(f"   ✅ Sending reminder: {task['title'][:40]}")
                         
                         self.etm.send_task_reminder(
