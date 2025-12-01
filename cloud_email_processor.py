@@ -457,20 +457,35 @@ Return ONLY valid JSON, no explanation."""
         return content[:3000]  # Limit for AI processing
     
     def is_system_email(self, sender_email, subject):
-        """Check if email is from system/notification"""
-        system_patterns = [
+        """Check if email is from system/notification or CRM-generated"""
+        # Check sender patterns (automated senders)
+        system_sender_patterns = [
             'noreply', 'no-reply', 'donotreply', 'mailer-daemon',
-            'postmaster', 'notification', 'alert', 'system'
+            'postmaster', 'notification@', 'alerts@', 'system@'
         ]
         
         sender_lower = sender_email.lower()
-        for pattern in system_patterns:
+        for pattern in system_sender_patterns:
             if pattern in sender_lower:
                 return True
         
-        # Skip own emails
-        if sender_lower == self.your_email.lower():
-            return True
+        # Check if this is a CRM-generated email (reminders/summaries we sent)
+        # These have specific subject patterns
+        subject_lower = subject.lower()
+        crm_subject_patterns = [
+            '⏰',                    # Reminder emoji
+            'task reminder',
+            'daily summary',
+            '📊 daily summary',
+            'rob's ai task manager'
+        ]
+        
+        for pattern in crm_subject_patterns:
+            if pattern in subject_lower:
+                return True
+        
+        # Skip emails FROM the CRM inbox itself (robcrm.ai@gmail.com)
+        # But NOT from rob@cloudcleanenergy.com.au - that's where task requests come from!
         if sender_lower == self.gmail_user.lower():
             return True
         
