@@ -1,6 +1,6 @@
 """
 Cloud Email Processor - AI-Powered Client Matching & Email Threading
-Updated: December 2, 2025
+Updated: December 3, 2025
 
 Features:
 - Smart client matching (email, name, project)
@@ -8,7 +8,7 @@ Features:
 - AI extracts client info from emails
 - Batch processing (newest 10 first)
 - Message-ID deduplication
-- AEST timezone support for date parsing
+- AEST timezone support for date parsing and scheduling
 """
 
 import os
@@ -98,8 +98,7 @@ class CloudEmailProcessor:
         4. Parse task details
         """
         # Get current AEST time for AI context
-        aest = pytz.timezone('Australia/Brisbane')
-        now_aest = datetime.now(aest)
+        now_aest = datetime.now(self.aest)
         current_datetime = now_aest.strftime('%A, %d %B %Y at %I:%M %p AEST')
         
         prompt = f"""Analyze this email and extract information.
@@ -372,7 +371,7 @@ Return ONLY valid JSON, no explanation."""
                 if extracted.get('due_time'):
                     due_time = extracted.get('due_time')
                 else:
-                    now_aest = datetime.now(pytz.timezone('Australia/Brisbane'))
+                    now_aest = datetime.now(self.aest)
                     if now_aest.hour < 9:
                         # Before 9 AM - use today 9 AM
                         due_time = '09:00:00'
@@ -686,10 +685,10 @@ Actions:
     def start(self):
         """Start the 24/7 scheduler daemon"""
         
-        # Initialize timestamps
-        last_email_check = datetime.now()
-        last_reminder_check = datetime.now()
-        last_summary_check = datetime.now()
+        # Initialize timestamps with AEST timezone
+        last_email_check = datetime.now(self.aest)
+        last_reminder_check = datetime.now(self.aest)
+        last_summary_check = datetime.now(self.aest)
         
         print("\n" + "="*50)
         print("🌐 Cloud Email Processor Started")
@@ -702,7 +701,7 @@ Actions:
         print("="*50 + "\n")
         
         while True:
-            now = datetime.now()
+            now = datetime.now(self.aest)  # AEST timezone!
             
             # Email check every 15 minutes
             if (now - last_email_check).total_seconds() >= 900:
@@ -716,8 +715,8 @@ Actions:
                 self.send_task_reminders()
                 last_reminder_check = now
             
-            # Daily summary at 8 AM AEST (22:00 UTC)
-            if now.hour == 22 and now.minute < 15:
+            # Daily summary at 8 AM AEST (checking AEST hour directly)
+            if now.hour == 8 and now.minute < 15:
                 if (now - last_summary_check).total_seconds() >= 3600:
                     print(f"\n⏰ 8 AM AEST - sending daily summary")
                     self.etm.send_enhanced_daily_summary()
