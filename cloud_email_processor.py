@@ -189,6 +189,17 @@ Return ONLY valid JSON, no explanation."""
         Smart matching to find existing task for this client/project.
         Uses multiple strategies.
         """
+        # Skip matching for owner emails (always create new tasks)
+        owner_emails = [
+            "rob@cloudcleanenergy.com.au",
+            "rob.l@directsolarwholesaler.com.au", 
+            "robcrm.ai@gmail.com"
+        ]
+        client_email_check = extracted_info.get('client_email', '').lower()
+        if client_email_check in owner_emails:
+            print("   👤 Owner email - skipping client match, creating new task")
+            return None
+        
         client_email = extracted_info.get('client_email')
         client_name = extracted_info.get('client_name')
         project_name = extracted_info.get('project_name')
