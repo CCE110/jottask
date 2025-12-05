@@ -41,6 +41,7 @@ class CloudEmailProcessor:
         
         # Action URL for email buttons
         self.action_url = os.getenv('TASK_ACTION_URL', 
+        self.etm.action_url = self.action_url
             'https://rob-crm-tasks-production.up.railway.app/action')
         
         # Timezone
@@ -195,7 +196,7 @@ Return ONLY valid JSON, no explanation."""
             "rob.l@directsolarwholesaler.com.au", 
             "robcrm.ai@gmail.com"
         ]
-        client_email_check = extracted_info.get('client_email', '').lower()
+        client_email_check = (extracted_info.get('client_email') or '').lower()
         if client_email_check in owner_emails:
             print("   👤 Owner email - skipping client match, creating new task")
             return None
