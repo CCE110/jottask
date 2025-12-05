@@ -41,8 +41,8 @@ class CloudEmailProcessor:
         
         # Action URL for email buttons
         self.action_url = os.getenv('TASK_ACTION_URL', 
-        self.etm.action_url = self.action_url
             'https://rob-crm-tasks-production.up.railway.app/action')
+        self.etm.action_url = self.action_url
         
         # Timezone
         self.aest = pytz.timezone('Australia/Brisbane')
