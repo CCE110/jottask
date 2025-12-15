@@ -209,7 +209,7 @@ ACTION ITEMS (JSON array only):"""
         ai_summary = self.summarize_notes(all_notes)
         
         # Get status info
-        status_info = task.get('project_statuses', {})
+        status_info = task.get('project_statuses') or {}
         status_name = status_info.get('name', 'Unknown')
         status_color = status_info.get('color', '#6b7280')
         status_emoji = status_info.get('emoji', '📋')
