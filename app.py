@@ -349,7 +349,7 @@ CHECKLIST_TEMPLATE = """<!DOCTYPE html>
 @app.route('/')
 def home():
     """Health check endpoint"""
-    return {'status': 'ok', 'service': 'Rob CRM Task Actions', 'version': '2.0'}
+    return {'status': 'ok', 'service': 'Rob CRM Task Actions', 'version': '2.1-checklist'}
 
 
 @app.route('/action')
