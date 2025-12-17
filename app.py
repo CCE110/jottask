@@ -743,7 +743,7 @@ def handle_delay(task_id, task_title, hours=0, days=0):
             current_dt = now
         
         # Calculate new time
-        new_dt = current_dt + timedelta(hours=hours, days=days)
+        new_dt = now + timedelta(hours=hours, days=days)
         
         # Update task
         tm.supabase.table('tasks').update({
