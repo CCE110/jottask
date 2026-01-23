@@ -692,7 +692,41 @@ def handle_action():
     """Main action handler - processes button clicks from emails"""
     action = request.args.get('action')
     task_id = request.args.get('task_id')
-    
+    project_id = request.args.get('project_id')
+    item_id = request.args.get('item_id')
+
+    # ==========================================
+    # PROJECT ACTIONS (don't require task_id)
+    # ==========================================
+    if action == 'view_project':
+        if not project_id:
+            return ERROR_TEMPLATE.format(error="Missing project_id parameter")
+        return handle_view_project(project_id)
+
+    elif action == 'complete_project_item':
+        if not item_id:
+            return ERROR_TEMPLATE.format(error="Missing item_id parameter")
+        return handle_complete_project_item(item_id, project_id)
+
+    elif action == 'uncomplete_project_item':
+        if not item_id:
+            return ERROR_TEMPLATE.format(error="Missing item_id parameter")
+        tm.uncomplete_project_item(item_id)
+        return f'<script>window.location.href="{ACTION_URL}?action=view_project&project_id={project_id}";</script>'
+
+    elif action == 'add_project_item':
+        if not project_id:
+            return ERROR_TEMPLATE.format(error="Missing project_id parameter")
+        return handle_add_project_item_form(project_id)
+
+    elif action == 'complete_all_project':
+        if not project_id:
+            return ERROR_TEMPLATE.format(error="Missing project_id parameter")
+        return handle_complete_all_project_items(project_id)
+
+    # ==========================================
+    # TASK ACTIONS (require task_id)
+    # ==========================================
     if not task_id:
         return ERROR_TEMPLATE.format(error="Missing task_id parameter")
     
@@ -1224,6 +1258,195 @@ def handle_checklist_form(task_id, task_title, task):
         import traceback
         traceback.print_exc()
         return ERROR_TEMPLATE.format(error=f"Failed to load checklist: {str(e)}")
+
+
+# ============================================
+# PROJECT HANDLERS
+# ============================================
+
+PROJECT_VIEW_TEMPLATE = """<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{project_name}</title>
+    <style>
+        body {{ font-family: -apple-system, BlinkMacSystemFont, sans-serif; padding: 20px; max-width: 600px; margin: 0 auto; background: #f9fafb; }}
+        .header {{ background: linear-gradient(135deg, #8b5cf6 0%, #6366f1 100%); color: white; padding: 20px; border-radius: 12px 12px 0 0; }}
+        .content {{ background: white; padding: 20px; border-radius: 0 0 12px 12px; border: 1px solid #e5e7eb; }}
+        .item {{ display: flex; align-items: center; padding: 12px; margin: 8px 0; background: #f9fafb; border-radius: 8px; }}
+        .item.completed {{ opacity: 0.6; text-decoration: line-through; }}
+        .checkbox {{ width: 24px; height: 24px; margin-right: 12px; cursor: pointer; }}
+        .progress {{ background: #e5e7eb; border-radius: 4px; height: 8px; margin: 15px 0; }}
+        .progress-bar {{ background: #10b981; border-radius: 4px; height: 8px; }}
+        .btn {{ display: inline-block; padding: 10px 16px; margin: 5px; border-radius: 6px; text-decoration: none; font-weight: bold; }}
+        .btn-primary {{ background: #8b5cf6; color: white; }}
+        .btn-success {{ background: #10b981; color: white; }}
+        .btn-secondary {{ background: #6b7280; color: white; }}
+        input[type="text"] {{ width: 100%; padding: 12px; border: 1px solid #e5e7eb; border-radius: 8px; font-size: 16px; margin-top: 10px; }}
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1 style="margin: 0;">📁 {project_name}</h1>
+        <p style="margin: 5px 0 0 0; opacity: 0.9;">{progress_text}</p>
+    </div>
+    <div class="content">
+        <div class="progress">
+            <div class="progress-bar" style="width: {progress_percent}%;"></div>
+        </div>
+
+        {items_html}
+
+        <form action="{action_url}/project_add_item" method="POST" style="margin-top: 20px; border-top: 1px solid #e5e7eb; padding-top: 15px;">
+            <input type="hidden" name="project_id" value="{project_id}">
+            <label style="font-weight: bold; color: #374151;">Add new item:</label>
+            <input type="text" name="new_item" placeholder="Enter new to-do item..." required>
+            <button type="submit" class="btn btn-primary" style="margin-top: 10px; width: 100%; border: none; cursor: pointer;">➕ Add Item</button>
+        </form>
+    </div>
+</body>
+</html>"""
+
+
+def handle_view_project(project_id):
+    """Display project with all items"""
+    try:
+        project = tm.get_project_with_items(project_id, include_completed=True)
+        if not project:
+            return ERROR_TEMPLATE.format(error="Project not found")
+
+        project_name = project.get('name', 'Project')
+        items = project.get('items', [])
+
+        # Calculate progress
+        total = len(items)
+        completed = len([i for i in items if i['is_completed']])
+        progress_percent = int((completed / total * 100) if total > 0 else 0)
+        progress_text = f"{completed}/{total} completed ({progress_percent}%)"
+
+        # Build items HTML
+        items_html = ""
+        for item in items:
+            item_id = item['id']
+            item_text = item['item_text']
+            is_completed = item['is_completed']
+
+            if is_completed:
+                items_html += f'''
+                <div class="item completed">
+                    <a href="{ACTION_URL}?action=uncomplete_project_item&item_id={item_id}&project_id={project_id}" class="checkbox">✅</a>
+                    <span>{item_text}</span>
+                </div>'''
+            else:
+                items_html += f'''
+                <div class="item">
+                    <a href="{ACTION_URL}?action=complete_project_item&item_id={item_id}&project_id={project_id}" class="checkbox">☐</a>
+                    <span>{item_text}</span>
+                </div>'''
+
+        if not items:
+            items_html = '<p style="color: #6b7280; text-align: center;">No items yet. Add one below!</p>'
+
+        return PROJECT_VIEW_TEMPLATE.format(
+            project_name=project_name,
+            project_id=project_id,
+            progress_text=progress_text,
+            progress_percent=progress_percent,
+            items_html=items_html,
+            action_url=ACTION_URL
+        )
+
+    except Exception as e:
+        return ERROR_TEMPLATE.format(error=f"Error loading project: {str(e)}")
+
+
+def handle_complete_project_item(item_id, project_id):
+    """Mark a project item as complete and redirect back"""
+    try:
+        tm.complete_project_item(item_id)
+        # Redirect back to project view
+        return f'<script>window.location.href="{ACTION_URL}?action=view_project&project_id={project_id}";</script>'
+    except Exception as e:
+        return ERROR_TEMPLATE.format(error=f"Error completing item: {str(e)}")
+
+
+
+def handle_add_project_item_form(project_id):
+    """Show form to add new project item"""
+    try:
+        project = tm.get_project_with_items(project_id)
+        if not project:
+            return ERROR_TEMPLATE.format(error="Project not found")
+
+        return f'''<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Add Item - {project.get('name', 'Project')}</title>
+    <style>
+        body {{ font-family: -apple-system, BlinkMacSystemFont, sans-serif; padding: 20px; max-width: 500px; margin: 0 auto; }}
+        .card {{ background: white; padding: 25px; border-radius: 12px; box-shadow: 0 2px 8px rgba(0,0,0,0.1); }}
+        input[type="text"] {{ width: 100%; padding: 15px; border: 2px solid #e5e7eb; border-radius: 8px; font-size: 16px; margin: 10px 0; }}
+        .btn {{ display: block; width: 100%; padding: 15px; margin: 10px 0; border: none; border-radius: 8px; font-size: 16px; font-weight: bold; cursor: pointer; }}
+        .btn-primary {{ background: #8b5cf6; color: white; }}
+        .btn-secondary {{ background: #e5e7eb; color: #374151; }}
+    </style>
+</head>
+<body>
+    <div class="card">
+        <h2 style="margin-top: 0;">➕ Add to {project.get('name', 'Project')}</h2>
+        <form action="{ACTION_URL}/project_add_item" method="POST">
+            <input type="hidden" name="project_id" value="{project_id}">
+            <input type="text" name="new_item" placeholder="Enter new to-do item..." required autofocus>
+            <button type="submit" class="btn btn-primary">Add Item</button>
+            <a href="{ACTION_URL}?action=view_project&project_id={project_id}" class="btn btn-secondary" style="text-align: center; text-decoration: none;">Cancel</a>
+        </form>
+    </div>
+</body>
+</html>'''
+    except Exception as e:
+        return ERROR_TEMPLATE.format(error=f"Error: {str(e)}")
+
+
+def handle_complete_all_project_items(project_id):
+    """Mark all items in a project as complete"""
+    try:
+        items = tm.get_project_items(project_id, include_completed=False)
+        for item in items:
+            tm.complete_project_item(item['id'])
+
+        project = tm.supabase.table('projects').select('name').eq('id', project_id).execute()
+        project_name = project.data[0]['name'] if project.data else 'Project'
+
+        return SUCCESS_TEMPLATE.format(
+            icon="✅",
+            title="All Items Completed!",
+            task_title=project_name,
+            message=f"Marked {len(items)} items as complete"
+        )
+    except Exception as e:
+        return ERROR_TEMPLATE.format(error=f"Error: {str(e)}")
+
+
+@app.route('/action/project_add_item', methods=['POST'])
+def handle_project_add_item_submit():
+    """Process adding a new item to a project"""
+    project_id = request.form.get('project_id')
+    new_item = request.form.get('new_item', '').strip()
+
+    if not project_id or not new_item:
+        return ERROR_TEMPLATE.format(error="Missing project_id or item text")
+
+    try:
+        tm.add_project_item(project_id, new_item, source='manual')
+
+        # Redirect back to project view
+        return f'<script>window.location.href="{ACTION_URL}?action=view_project&project_id={project_id}";</script>'
+
+    except Exception as e:
+        return ERROR_TEMPLATE.format(error=f"Error adding item: {str(e)}")
 
 
 # ============================================

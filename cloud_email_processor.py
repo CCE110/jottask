@@ -340,6 +340,11 @@ Return ONLY valid JSON, no explanation."""
                 self.process_cc_followup(email_body, message_id, client_info, sender_email, sender_name)
                 return
 
+            # Check for Project email (subject contains "project")
+            if self.is_project_email(subject):
+                self.process_project_email(email_body, message_id, sender_email)
+                return
+
             # AI extraction
             print(f"   🤖 Analyzing with AI...")
             extracted = self.extract_client_and_task_info(
@@ -532,7 +537,215 @@ Return ONLY valid JSON, no explanation."""
             return True, client
 
         return False, None
-    
+
+    def is_project_email(self, subject):
+        """Check if this email is for a project (contains 'project' in subject)"""
+        return 'project' in subject.lower()
+
+    def extract_project_items(self, subject, content):
+        """
+        Use Claude AI to extract project name and to-do items from email.
+        Returns: {project_name, items: [list of to-do strings]}
+        """
+        prompt = f"""Extract project information from this email.
+
+SUBJECT: {subject}
+
+CONTENT:
+{content[:2000]}
+
+---
+
+Return a JSON object with:
+{{
+    "project_name": "Name of the project (from subject, cleaned up)",
+    "items": ["item 1", "item 2", "item 3"]  // Each to-do item as a separate string
+}}
+
+Rules for extracting items:
+1. Split comma-separated items into individual to-dos
+2. Split line-separated items into individual to-dos
+3. Each item should be a clear, actionable task
+4. Clean up each item (remove leading numbers, dashes, bullets)
+5. Keep items concise but complete
+
+Example input: "Add project lists, add to do list, add build the system"
+Example output items: ["Add project lists", "Add to do list", "Add build the system"]
+
+Return ONLY valid JSON, no explanation."""
+
+        try:
+            response = self.anthropic.messages.create(
+                model="claude-sonnet-4-20250514",
+                max_tokens=1000,
+                messages=[{"role": "user", "content": prompt}]
+            )
+
+            text = response.content[0].text.strip()
+
+            # Clean up JSON if wrapped in code blocks
+            if text.startswith('```'):
+                text = text.split('```')[1]
+                if text.startswith('json'):
+                    text = text[4:]
+            text = text.strip()
+
+            return json.loads(text)
+
+        except Exception as e:
+            print(f"⚠️ AI project extraction error: {e}")
+            # Fallback: basic parsing
+            items = []
+            # Try comma split first
+            if ',' in content:
+                items = [item.strip() for item in content.split(',') if item.strip()]
+            # Try line split
+            elif '\n' in content:
+                items = [line.strip() for line in content.split('\n') if line.strip() and len(line.strip()) > 2]
+
+            return {
+                "project_name": subject.replace('project', '').replace('Project', '').strip(),
+                "items": items[:20]  # Limit to 20 items
+            }
+
+    def process_project_email(self, email_body, message_id, sender_email):
+        """
+        Process an email as a project update.
+        Creates/finds project and adds items.
+        """
+        try:
+            subject = self.decode_email_header(email_body.get('Subject', 'No Subject'))
+            content = self.get_email_content(email_body)
+
+            print(f"   📁 Project email detected!")
+
+            # Extract project info with AI
+            extracted = self.extract_project_items(subject, content)
+            project_name = extracted.get('project_name', subject)
+            items = extracted.get('items', [])
+
+            print(f"   📋 Project: {project_name}")
+            print(f"   📝 Found {len(items)} to-do items")
+
+            if not items:
+                print(f"   ⚠️ No items found in email")
+                return False
+
+            # Get or create project
+            project = self.tm.get_or_create_project(
+                name=project_name,
+                business_id=self.default_business_id
+            )
+
+            if not project:
+                print(f"   ❌ Failed to create/find project")
+                return False
+
+            # Add each item
+            added_count = 0
+            for item in items:
+                if item and len(item) > 2:  # Skip very short items
+                    result = self.tm.add_project_item(
+                        project_id=project['id'],
+                        item_text=item,
+                        source='email',
+                        source_email_subject=subject
+                    )
+                    if result:
+                        added_count += 1
+
+            print(f"   ✅ Added {added_count} items to project: {project_name}")
+
+            # Send confirmation email
+            self.send_project_confirmation(sender_email, project, items, added_count)
+
+            return True
+
+        except Exception as e:
+            print(f"   ❌ Error processing project email: {e}")
+            import traceback
+            traceback.print_exc()
+            return False
+
+    def send_project_confirmation(self, sender_email, project, items, added_count):
+        """Send confirmation when items are added to a project"""
+        try:
+            project_name = project.get('name', 'Project')
+            project_id = project.get('id', '')
+
+            # Build items list HTML
+            items_html = ""
+            for item in items[:10]:  # Show first 10
+                items_html += f'<li style="margin: 5px 0;">☐ {item}</li>'
+            if len(items) > 10:
+                items_html += f'<li style="margin: 5px 0; color: #6b7280;">...and {len(items) - 10} more</li>'
+
+            html = f"""<!DOCTYPE html>
+<html>
+<head><meta charset="UTF-8"></head>
+<body style="font-family: Arial, sans-serif; padding: 20px; max-width: 600px; margin: 0 auto;">
+
+<div style="background: #ede9fe; border-left: 4px solid #8b5cf6; padding: 20px; border-radius: 8px;">
+
+    <h2 style="color: #5b21b6; margin: 0 0 15px 0;">
+        📁 Project Updated
+    </h2>
+
+    <div style="font-size: 18px; font-weight: bold; margin: 10px 0; color: #111827;">
+        {project_name}
+    </div>
+
+    <div style="margin: 15px 0; padding: 15px; background: white; border-radius: 5px;">
+        <div style="margin: 5px 0; font-weight: bold;">✅ Added {added_count} new items:</div>
+        <ul style="margin: 10px 0; padding-left: 20px;">
+            {items_html}
+        </ul>
+    </div>
+
+    <p style="color: #6b7280; font-size: 14px;">
+        You'll receive a daily Projects Summary at 7:00 AM AEST.
+    </p>
+
+    <div style="margin-top: 20px;">
+        <a href="{self.action_url}?action=view_project&project_id={project_id}"
+           style="display: inline-block; padding: 10px 16px; margin: 5px; background: #8b5cf6; color: white; text-decoration: none; border-radius: 6px; font-weight: bold;">
+            📋 View Project
+        </a>
+        <a href="{self.action_url}?action=complete_all_project&project_id={project_id}"
+           style="display: inline-block; padding: 10px 16px; margin: 5px; background: #10b981; color: white; text-decoration: none; border-radius: 6px; font-weight: bold;">
+            ✅ Mark All Complete
+        </a>
+    </div>
+</div>
+
+<p style="color: #9ca3af; font-size: 12px; margin-top: 20px;">
+    Sent by Rob's AI Task Manager • Projects Feature
+</p>
+
+</body>
+</html>"""
+
+            plain = f"""📁 Project Updated
+
+{project_name}
+
+✅ Added {added_count} new items:
+{chr(10).join(['☐ ' + item for item in items[:10]])}
+
+You'll receive a daily Projects Summary at 7:00 AM AEST.
+"""
+
+            self.etm.send_html_email(
+                sender_email,
+                f"📁 Project Updated: {project_name}",
+                html,
+                plain
+            )
+            print(f"   📨 Project confirmation sent to {sender_email}")
+
+        except Exception as e:
+            print(f"   ⚠️ Project confirmation email failed: {e}")
+
     def get_email_content(self, email_body):
         """Extract text content from email"""
         content = ''
@@ -943,9 +1156,158 @@ Actions:
             print(f"   ⚠️ Confirmation email failed: {e}")
 
     # ========================================
+    # PROJECTS DAILY SUMMARY (7 AM AEST)
+    # ========================================
+
+    def send_projects_summary(self):
+        """Send daily projects summary email at 7 AM AEST"""
+        try:
+            print(f"\n📁 Generating Projects Summary...")
+
+            # Get all active projects
+            projects = self.tm.get_active_projects(business_id=self.default_business_id)
+
+            if not projects:
+                print(f"   ℹ️ No active projects")
+                return
+
+            print(f"   📋 Found {len(projects)} active projects")
+
+            # Build HTML email
+            now = datetime.now(self.aest)
+            date_str = now.strftime('%A, %d %B %Y')
+
+            projects_html = ""
+            for project in projects:
+                project_id = project['id']
+                project_name = project['name']
+                items = project.get('items', [])
+                progress = project.get('progress', {'total': 0, 'completed': 0, 'percent': 0})
+
+                # Build items list
+                items_html = ""
+                incomplete_items = [i for i in items if not i['is_completed']]
+                complete_items = [i for i in items if i['is_completed']]
+
+                # Show incomplete items first
+                for item in incomplete_items[:10]:
+                    item_id = item['id']
+                    items_html += f'''
+                    <div style="margin: 8px 0; display: flex; align-items: center;">
+                        <a href="{self.action_url}?action=complete_project_item&item_id={item_id}&project_id={project_id}"
+                           style="text-decoration: none; color: #6b7280; margin-right: 8px;">☐</a>
+                        <span>{item['item_text']}</span>
+                    </div>'''
+
+                # Show completed count if any
+                if complete_items:
+                    items_html += f'''
+                    <div style="margin: 8px 0; color: #10b981; font-size: 13px;">
+                        ✅ {len(complete_items)} completed items
+                    </div>'''
+
+                # Progress bar
+                progress_color = '#10b981' if progress['percent'] >= 70 else '#f59e0b' if progress['percent'] >= 30 else '#6b7280'
+
+                projects_html += f'''
+                <div style="background: white; border-radius: 8px; padding: 20px; margin-bottom: 15px; border: 1px solid #e5e7eb;">
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
+                        <h3 style="margin: 0; color: #111827; font-size: 16px;">📁 {project_name}</h3>
+                        <span style="font-size: 13px; color: #6b7280;">{progress['completed']}/{progress['total']} done</span>
+                    </div>
+
+                    <div style="background: #e5e7eb; border-radius: 4px; height: 6px; margin-bottom: 15px;">
+                        <div style="background: {progress_color}; border-radius: 4px; height: 6px; width: {progress['percent']}%;"></div>
+                    </div>
+
+                    <div style="margin-bottom: 15px;">
+                        {items_html}
+                    </div>
+
+                    <div>
+                        <a href="{self.action_url}?action=view_project&project_id={project_id}"
+                           style="display: inline-block; padding: 6px 12px; margin-right: 5px; background: #8b5cf6; color: white; text-decoration: none; border-radius: 4px; font-size: 13px;">
+                            📋 View All
+                        </a>
+                        <a href="{self.action_url}?action=add_project_item&project_id={project_id}"
+                           style="display: inline-block; padding: 6px 12px; margin-right: 5px; background: #3b82f6; color: white; text-decoration: none; border-radius: 4px; font-size: 13px;">
+                            ➕ Add Item
+                        </a>
+                    </div>
+                </div>'''
+
+            # Calculate total stats
+            total_items = sum(p['progress']['total'] for p in projects)
+            total_completed = sum(p['progress']['completed'] for p in projects)
+            overall_percent = int((total_completed / total_items * 100) if total_items > 0 else 0)
+
+            html = f"""<!DOCTYPE html>
+<html>
+<head><meta charset="UTF-8"></head>
+<body style="font-family: Arial, sans-serif; padding: 20px; max-width: 700px; margin: 0 auto; background: #f9fafb;">
+
+<div style="background: linear-gradient(135deg, #8b5cf6 0%, #6366f1 100%); color: white; padding: 25px; border-radius: 12px 12px 0 0;">
+    <h1 style="margin: 0 0 5px 0; font-size: 24px;">📁 Projects Summary</h1>
+    <p style="margin: 0; opacity: 0.9;">{date_str}</p>
+</div>
+
+<div style="background: white; padding: 20px; border-radius: 0 0 12px 12px; border: 1px solid #e5e7eb; border-top: none;">
+
+    <div style="display: flex; justify-content: space-around; text-align: center; padding: 15px; background: #f3f4f6; border-radius: 8px; margin-bottom: 20px;">
+        <div>
+            <div style="font-size: 28px; font-weight: bold; color: #8b5cf6;">{len(projects)}</div>
+            <div style="font-size: 13px; color: #6b7280;">Active Projects</div>
+        </div>
+        <div>
+            <div style="font-size: 28px; font-weight: bold; color: #10b981;">{total_completed}</div>
+            <div style="font-size: 13px; color: #6b7280;">Completed</div>
+        </div>
+        <div>
+            <div style="font-size: 28px; font-weight: bold; color: #f59e0b;">{total_items - total_completed}</div>
+            <div style="font-size: 13px; color: #6b7280;">Remaining</div>
+        </div>
+    </div>
+
+    {projects_html}
+
+</div>
+
+<p style="color: #9ca3af; font-size: 12px; text-align: center; margin-top: 20px;">
+    Sent by Rob's AI Task Manager • Projects Summary at 7:00 AM AEST
+</p>
+
+</body>
+</html>"""
+
+            # Plain text version
+            plain_lines = [f"📁 Projects Summary - {date_str}", ""]
+            for project in projects:
+                plain_lines.append(f"📁 {project['name']} ({project['progress']['completed']}/{project['progress']['total']} done)")
+                for item in project.get('items', []):
+                    if not item['is_completed']:
+                        plain_lines.append(f"   ☐ {item['item_text']}")
+                plain_lines.append("")
+
+            plain = "\n".join(plain_lines)
+
+            # Send email
+            self.etm.send_html_email(
+                self.your_email,
+                f"📁 Projects Summary | {len(projects)} Projects | {date_str}",
+                html,
+                plain
+            )
+            print(f"   ✅ Projects summary sent ({len(projects)} projects)")
+
+        except Exception as e:
+            print(f"❌ Projects summary error: {e}")
+            import traceback
+            traceback.print_exc()
+
+    # ========================================
     # MAIN SCHEDULER
     # ========================================
-    
+
     def start(self):
         """Start the 24/7 scheduler daemon"""
         
@@ -953,13 +1315,15 @@ Actions:
         last_email_check = datetime.now(self.aest)
         last_reminder_check = datetime.now(self.aest)
         last_summary_check = datetime.now(self.aest)
-        
+        last_projects_check = datetime.now(self.aest)
+
         print("\n" + "="*50)
         print("🌐 Cloud Email Processor Started")
         print("="*50)
         print(f"📧 Email checks: Every 15 minutes")
         print(f"⏰ Reminder checks: Every 15 minutes")
-        print(f"📊 Daily summary: 8:00 AM AEST")
+        print(f"📁 Projects summary: 7:00 AM AEST")
+        print(f"📊 Daily task summary: 8:00 AM AEST")
         print(f"🎯 Smart client matching: ENABLED")
         print(f"🤖 AI summarization: ENABLED")
         print("="*50 + "\n")
@@ -978,14 +1342,21 @@ Actions:
                 print(f"\n⏰ 15 min elapsed - checking reminders")
                 self.send_task_reminders()
                 last_reminder_check = now
-            
-            # Daily summary at 8 AM AEST (checking AEST hour directly)
+
+            # Projects summary at 7 AM AEST
+            if now.hour == 7 and now.minute < 15:
+                if (now - last_projects_check).total_seconds() >= 3600:
+                    print(f"\n⏰ 7 AM AEST - sending projects summary")
+                    self.send_projects_summary()
+                    last_projects_check = now
+
+            # Daily task summary at 8 AM AEST
             if now.hour == 8 and now.minute < 15:
                 if (now - last_summary_check).total_seconds() >= 3600:
                     print(f"\n⏰ 8 AM AEST - sending daily summary")
                     self.etm.send_enhanced_daily_summary()
                     last_summary_check = now
-            
+
             # Sleep 60 seconds
             time.sleep(60)
 

@@ -571,6 +571,210 @@ class TaskManager:
             print(f"Error bulk updating checklist: {e}")
             return False
 
+    # ========================================
+    # PROJECT METHODS
+    # ========================================
+
+    def find_project_by_name(self, name, business_id=None):
+        """Find a project by name (case-insensitive partial match)"""
+        try:
+            query = self.supabase.table('projects')\
+                .select('*')\
+                .ilike('name', f'%{name}%')\
+                .neq('status', 'archived')
+
+            if business_id:
+                query = query.eq('business_id', business_id)
+
+            result = query.order('created_at', desc=True).limit(1).execute()
+            return result.data[0] if result.data else None
+        except Exception as e:
+            print(f"Error finding project: {e}")
+            return None
+
+    def create_project(self, name, description=None, business_id=None):
+        """Create a new project"""
+        try:
+            project_data = {
+                'name': name,
+                'description': description,
+                'status': 'active'
+            }
+
+            if business_id:
+                project_data['business_id'] = business_id
+
+            result = self.supabase.table('projects').insert(project_data).execute()
+
+            if result.data:
+                print(f"📁 Project created: {name}")
+                return result.data[0]
+            return None
+        except Exception as e:
+            print(f"Error creating project: {e}")
+            return None
+
+    def get_or_create_project(self, name, business_id=None):
+        """Find existing project or create new one"""
+        # Try to find existing
+        project = self.find_project_by_name(name, business_id)
+        if project:
+            print(f"📁 Found existing project: {project['name']}")
+            return project
+
+        # Create new
+        return self.create_project(name, business_id=business_id)
+
+    def add_project_item(self, project_id, item_text, source='email', source_email_subject=None):
+        """Add a to-do item to a project"""
+        try:
+            # Check if item already exists (avoid duplicates)
+            existing = self.supabase.table('project_items')\
+                .select('id')\
+                .eq('project_id', project_id)\
+                .ilike('item_text', item_text.strip())\
+                .execute()
+
+            if existing.data:
+                print(f"   ⏭️ Item already exists: {item_text[:40]}")
+                return existing.data[0]
+
+            # Get next display order
+            order_result = self.supabase.table('project_items')\
+                .select('display_order')\
+                .eq('project_id', project_id)\
+                .order('display_order', desc=True)\
+                .limit(1)\
+                .execute()
+
+            next_order = (order_result.data[0]['display_order'] + 1) if order_result.data else 0
+
+            item_data = {
+                'project_id': project_id,
+                'item_text': item_text.strip(),
+                'display_order': next_order,
+                'source': source
+            }
+
+            if source_email_subject:
+                item_data['source_email_subject'] = source_email_subject
+
+            result = self.supabase.table('project_items').insert(item_data).execute()
+
+            if result.data:
+                print(f"   ✅ Added item: {item_text[:50]}")
+                return result.data[0]
+            return None
+        except Exception as e:
+            print(f"Error adding project item: {e}")
+            return None
+
+    def get_project_items(self, project_id, include_completed=False):
+        """Get all items for a project"""
+        try:
+            query = self.supabase.table('project_items')\
+                .select('*')\
+                .eq('project_id', project_id)\
+                .order('display_order')
+
+            if not include_completed:
+                query = query.eq('is_completed', False)
+
+            result = query.execute()
+            return result.data
+        except Exception as e:
+            print(f"Error getting project items: {e}")
+            return []
+
+    def get_project_with_items(self, project_id, include_completed=True):
+        """Get project with all its items"""
+        try:
+            project = self.supabase.table('projects')\
+                .select('*')\
+                .eq('id', project_id)\
+                .single()\
+                .execute()
+
+            if project.data:
+                project.data['items'] = self.get_project_items(project_id, include_completed)
+                return project.data
+            return None
+        except Exception as e:
+            print(f"Error getting project: {e}")
+            return None
+
+    def get_active_projects(self, business_id=None):
+        """Get all active projects with their items"""
+        try:
+            query = self.supabase.table('projects')\
+                .select('*')\
+                .eq('status', 'active')\
+                .order('created_at', desc=True)
+
+            if business_id:
+                query = query.eq('business_id', business_id)
+
+            result = query.execute()
+
+            projects = result.data
+            for project in projects:
+                project['items'] = self.get_project_items(project['id'], include_completed=True)
+                # Calculate progress
+                total = len(project['items'])
+                completed = len([i for i in project['items'] if i['is_completed']])
+                project['progress'] = {
+                    'total': total,
+                    'completed': completed,
+                    'percent': int((completed / total * 100) if total > 0 else 0)
+                }
+
+            return projects
+        except Exception as e:
+            print(f"Error getting active projects: {e}")
+            return []
+
+    def complete_project_item(self, item_id):
+        """Mark a project item as completed"""
+        try:
+            result = self.supabase.table('project_items').update({
+                'is_completed': True,
+                'completed_at': datetime.now(self.aest).isoformat()
+            }).eq('id', item_id).execute()
+            return bool(result.data)
+        except Exception as e:
+            print(f"Error completing project item: {e}")
+            return False
+
+    def uncomplete_project_item(self, item_id):
+        """Mark a project item as not completed"""
+        try:
+            result = self.supabase.table('project_items').update({
+                'is_completed': False,
+                'completed_at': None
+            }).eq('id', item_id).execute()
+            return bool(result.data)
+        except Exception as e:
+            print(f"Error uncompleting project item: {e}")
+            return False
+
+    def bulk_update_project_items(self, project_id, completed_item_ids):
+        """Update completion status for multiple items"""
+        try:
+            all_items = self.get_project_items(project_id, include_completed=True)
+
+            for item in all_items:
+                if item['id'] in completed_item_ids:
+                    if not item['is_completed']:
+                        self.complete_project_item(item['id'])
+                else:
+                    if item['is_completed']:
+                        self.uncomplete_project_item(item['id'])
+
+            return True
+        except Exception as e:
+            print(f"Error bulk updating project items: {e}")
+            return False
+
 
 if __name__ == "__main__":
     from dotenv import load_dotenv
