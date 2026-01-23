@@ -321,18 +321,25 @@ Return ONLY valid JSON, no explanation."""
             from_header = email_body.get('From', '')
             sender_email, sender_name = self.parse_from_header(from_header)
             email_date = email_body.get('Date', '')
-            
+
             print(f"\n📧 Processing: {subject[:50]}")
             print(f"   From: {sender_name} <{sender_email}>")
-            
+
             # Get email content
             content = self.get_email_content(email_body)
-            
+
             # Skip system emails
             if self.is_system_email(sender_email, subject):
                 print(f"   ⭕ Skipping system email")
                 return
-            
+
+            # Check for CC follow-up pattern (CRM in CC, client in To)
+            is_cc, client_info = self.is_cc_followup_email(email_body)
+            if is_cc and client_info:
+                # This is a CC'd email - create follow-up task
+                self.process_cc_followup(email_body, message_id, client_info, sender_email, sender_name)
+                return
+
             # AI extraction
             print(f"   🤖 Analyzing with AI...")
             extracted = self.extract_client_and_task_info(
@@ -443,19 +450,88 @@ Return ONLY valid JSON, no explanation."""
     def parse_from_header(self, from_header):
         """Extract email and name from From header"""
         import re
-        
+
         # Pattern: "Name <email@domain.com>" or just "email@domain.com"
         match = re.search(r'<?([^<>\s]+@[^<>\s]+)>?', from_header)
         email_addr = match.group(1) if match else from_header
-        
+
         # Extract name
         name_match = re.search(r'^([^<]+)<', from_header)
         name = name_match.group(1).strip().strip('"') if name_match else ''
-        
+
         if not name:
             name = email_addr.split('@')[0].replace('.', ' ').title()
-        
+
         return email_addr.lower(), name
+
+    def parse_email_addresses(self, header_value):
+        """Parse multiple email addresses from To/CC header"""
+        import re
+
+        if not header_value:
+            return []
+
+        results = []
+        # Split by comma for multiple recipients
+        parts = header_value.split(',')
+
+        for part in parts:
+            part = part.strip()
+            if not part:
+                continue
+
+            # Extract email address
+            match = re.search(r'<?([^<>\s]+@[^<>\s]+)>?', part)
+            if match:
+                email_addr = match.group(1).lower()
+
+                # Extract name
+                name_match = re.search(r'^([^<]+)<', part)
+                name = name_match.group(1).strip().strip('"') if name_match else ''
+
+                if not name:
+                    name = email_addr.split('@')[0].replace('.', ' ').title()
+
+                results.append({'email': email_addr, 'name': name})
+
+        return results
+
+    def is_cc_followup_email(self, email_body):
+        """
+        Check if this email is a CC'd follow-up request.
+        Returns (is_cc, recipient_info) where recipient_info is the client from To field.
+        """
+        to_header = email_body.get('To', '')
+        cc_header = email_body.get('Cc', '')
+
+        # Parse all addresses
+        to_addresses = self.parse_email_addresses(to_header)
+        cc_addresses = self.parse_email_addresses(cc_header)
+
+        # Check if CRM email is in CC (not in To)
+        crm_email = self.gmail_user.lower()
+
+        crm_in_to = any(addr['email'] == crm_email for addr in to_addresses)
+        crm_in_cc = any(addr['email'] == crm_email for addr in cc_addresses)
+
+        if crm_in_cc and not crm_in_to:
+            # This is a CC'd email - extract the client from the To field
+            # Filter out the CRM email and owner emails from recipients
+            owner_emails = [
+                "rob@cloudcleanenergy.com.au",
+                "rob.l@directsolarwholesaler.com.au",
+                "robcrm.ai@gmail.com"
+            ]
+
+            client = None
+            for addr in to_addresses:
+                if addr['email'] not in owner_emails and addr['email'] != crm_email:
+                    client = addr
+                    break
+
+            return True, client
+
+        return False, None
     
     def get_email_content(self, email_body):
         """Extract text content from email"""
@@ -480,6 +556,177 @@ Return ONLY valid JSON, no explanation."""
         
         return content[:3000]  # Limit for AI processing
     
+    def process_cc_followup(self, email_body, message_id, client_info, sender_email, sender_name):
+        """
+        Process a CC'd email as a follow-up reminder.
+        Creates a task to follow up with the client in 1 day.
+        """
+        try:
+            subject = self.decode_email_header(email_body.get('Subject', 'No Subject'))
+            content = self.get_email_content(email_body)
+
+            client_name = client_info.get('name', 'Unknown')
+            client_email = client_info.get('email', '')
+
+            print(f"   📬 CC Follow-up detected!")
+            print(f"   👤 Client: {client_name} <{client_email}>")
+
+            # Calculate due date: next business day at 9 AM
+            now_aest = datetime.now(self.aest)
+            next_day = now_aest + timedelta(days=1)
+
+            # Skip weekends
+            while next_day.weekday() >= 5:  # 5=Sat, 6=Sun
+                next_day += timedelta(days=1)
+
+            due_date = next_day.date().isoformat()
+            due_time = '09:00:00'
+
+            # Get "Remember to Callback" status
+            status = self.tm.get_status_by_name('Remember to Callback')
+
+            # Create task title
+            task_title = f"Follow up with {client_name}"
+
+            # Create description from email context
+            task_description = f"""CC Follow-up from email sent to {client_name}
+
+Original Subject: {subject}
+
+Email Preview:
+{content[:500]}"""
+
+            # Create the task
+            task = self.tm.create_task(
+                business_id=self.default_business_id,
+                title=task_title[:200],
+                description=task_description,
+                due_date=due_date,
+                due_time=due_time,
+                priority='medium',
+                client_name=client_name,
+                client_email=client_email,
+                client_phone=None,
+                project_name=None,
+                initial_note=f"Auto-created from CC'd email: {subject}\n\nSent by: {sender_name} <{sender_email}>",
+                note_source='email'
+            )
+
+            if task:
+                # Update status
+                if status and self.tm.statuses_available():
+                    self.tm.update_task_status(task['id'], status['id'])
+
+                print(f"   ✅ Follow-up task created: {task_title}")
+                print(f"   📅 Due: {due_date} at 9:00 AM")
+
+                # Send confirmation to the sender (who CC'd the CRM)
+                self.send_cc_followup_confirmation(sender_email, task, client_name, due_date)
+
+                return True
+
+            return False
+
+        except Exception as e:
+            print(f"   ❌ Error creating CC follow-up: {e}")
+            import traceback
+            traceback.print_exc()
+            return False
+
+    def send_cc_followup_confirmation(self, sender_email, task, client_name, due_date):
+        """Send confirmation when a CC follow-up task is created"""
+        try:
+            # Format due date
+            try:
+                due_dt = datetime.strptime(str(due_date), '%Y-%m-%d')
+                date_formatted = due_dt.strftime('%A, %d %b %Y')
+            except:
+                date_formatted = str(due_date)
+
+            task_id = task.get('id', '')
+            title = task.get('title', 'Task')
+
+            html = f"""<!DOCTYPE html>
+<html>
+<head><meta charset="UTF-8"></head>
+<body style="font-family: Arial, sans-serif; padding: 20px; max-width: 600px; margin: 0 auto;">
+
+<div style="background: #fef3c7; border-left: 4px solid #f59e0b; padding: 20px; border-radius: 8px;">
+
+    <h2 style="color: #92400e; margin: 0 0 15px 0;">
+        📞 Follow-up Reminder Created
+    </h2>
+
+    <div style="font-size: 18px; font-weight: bold; margin: 10px 0; color: #111827;">
+        {title}
+    </div>
+
+    <div style="margin: 15px 0; padding: 15px; background: white; border-radius: 5px;">
+        <div style="margin: 5px 0;">👤 <strong>Client:</strong> {client_name}</div>
+        <div style="margin: 5px 0;">📅 <strong>Follow up:</strong> {date_formatted}</div>
+        <div style="margin: 5px 0;">⏰ <strong>Time:</strong> 9:00 AM</div>
+    </div>
+
+    <p style="color: #6b7280; font-size: 14px;">
+        You will receive a reminder when it's time to follow up.
+    </p>
+
+    <div style="margin-top: 20px;">
+        <a href="{self.action_url}?action=complete&task_id={task_id}"
+           style="display: inline-block; padding: 10px 16px; margin: 5px; background: #10b981; color: white; text-decoration: none; border-radius: 6px; font-weight: bold;">
+            ✅ Complete
+        </a>
+        <a href="{self.action_url}?action=delay_1hour&task_id={task_id}"
+           style="display: inline-block; padding: 10px 16px; margin: 5px; background: #6b7280; color: white; text-decoration: none; border-radius: 6px; font-weight: bold;">
+            ⏰ +1 Hour
+        </a>
+        <a href="{self.action_url}?action=delay_1day&task_id={task_id}"
+           style="display: inline-block; padding: 10px 16px; margin: 5px; background: #6b7280; color: white; text-decoration: none; border-radius: 6px; font-weight: bold;">
+            📅 +1 Day
+        </a>
+        <a href="{self.action_url}?action=delay_custom&task_id={task_id}"
+           style="display: inline-block; padding: 10px 16px; margin: 5px; background: #6b7280; color: white; text-decoration: none; border-radius: 6px; font-weight: bold;">
+            🗓️ Change Time
+        </a>
+    </div>
+</div>
+
+<p style="color: #9ca3af; font-size: 12px; margin-top: 20px;">
+    Sent by Rob's AI Task Manager • CC Follow-up Feature
+</p>
+
+</body>
+</html>"""
+
+            plain = f"""📞 Follow-up Reminder Created
+
+{title}
+
+👤 Client: {client_name}
+📅 Follow up: {date_formatted}
+⏰ Time: 9:00 AM
+
+You will receive a reminder when it's time to follow up.
+
+Actions:
+- Complete: {self.action_url}?action=complete&task_id={task_id}
+- +1 Hour: {self.action_url}?action=delay_1hour&task_id={task_id}
+- +1 Day: {self.action_url}?action=delay_1day&task_id={task_id}
+- Change Time: {self.action_url}?action=delay_custom&task_id={task_id}
+"""
+
+            # Send to the person who CC'd the CRM
+            self.etm.send_html_email(
+                sender_email,
+                f"📞 Follow-up Set: {client_name}",
+                html,
+                plain
+            )
+            print(f"   📨 CC confirmation sent to {sender_email}")
+
+        except Exception as e:
+            print(f"   ⚠️ CC confirmation email failed: {e}")
+
     def is_system_email(self, sender_email, subject):
         """Check if email is from system/notification or CRM-generated"""
         # Check sender patterns (automated senders)
