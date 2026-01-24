@@ -789,6 +789,7 @@ DASHBOARD_TEMPLATE = """
 
     <div class="nav-links">
         <a href="{{ url_for('dashboard') }}" class="nav-link active">Tasks</a>
+        <a href="{{ url_for('projects') }}" class="nav-link">Projects</a>
         <a href="{{ url_for('settings') }}" class="nav-link">Settings</a>
     </div>
 
@@ -1013,6 +1014,7 @@ SETTINGS_TEMPLATE = """
 
     <div class="nav-links">
         <a href="{{ url_for('dashboard') }}" class="nav-link">Tasks</a>
+        <a href="{{ url_for('projects') }}" class="nav-link">Projects</a>
         <a href="{{ url_for('settings') }}" class="nav-link active">Settings</a>
     </div>
 
@@ -1082,6 +1084,39 @@ SETTINGS_TEMPLATE = """
                 </div>
             </div>
 
+            <!-- Daily Summary Section -->
+            <div class="card" style="margin-bottom: 24px;">
+                <div class="card-header">
+                    <h2 class="card-title">Daily Summary</h2>
+                </div>
+                <div class="card-body">
+                    <form method="POST" action="{{ url_for('update_summary_settings') }}">
+                        <div class="form-group">
+                            <label style="display: flex; align-items: center; gap: 12px; cursor: pointer;">
+                                <input type="checkbox" name="daily_summary_enabled" {% if user.daily_summary_enabled %}checked{% endif %} style="width: 20px; height: 20px;">
+                                <span class="form-label" style="margin: 0;">Enable daily summary email</span>
+                            </label>
+                            <small style="color: var(--gray-500); display: block; margin-top: 8px;">
+                                Receive a daily email with your tasks and projects overview
+                            </small>
+                        </div>
+
+                        <div class="form-group">
+                            <label class="form-label">Summary Time</label>
+                            <select name="daily_summary_time" class="form-input" style="max-width: 200px;">
+                                <option value="06:00:00" {% if user.daily_summary_time == '06:00:00' %}selected{% endif %}>6:00 AM</option>
+                                <option value="07:00:00" {% if user.daily_summary_time == '07:00:00' %}selected{% endif %}>7:00 AM</option>
+                                <option value="08:00:00" {% if user.daily_summary_time == '08:00:00' or not user.daily_summary_time %}selected{% endif %}>8:00 AM</option>
+                                <option value="09:00:00" {% if user.daily_summary_time == '09:00:00' %}selected{% endif %}>9:00 AM</option>
+                            </select>
+                            <small style="color: var(--gray-500);">Time in your local timezone ({{ user.timezone }})</small>
+                        </div>
+
+                        <button type="submit" class="btn btn-primary">Save Settings</button>
+                    </form>
+                </div>
+            </div>
+
             <!-- Subscription Section -->
             <div class="card">
                 <div class="card-header">
@@ -1107,6 +1142,512 @@ SETTINGS_TEMPLATE = """
         </div>
     </div>
 </main>
+{% endblock %}
+"""
+
+# ============================================
+# PROJECTS TEMPLATES
+# ============================================
+
+PROJECTS_TEMPLATE = """
+{% extends "base" %}
+{% block content %}
+<nav class="nav">
+    <a href="{{ url_for('dashboard') }}" class="nav-brand">
+        <svg viewBox="0 0 512 512" width="32" height="32">
+            <defs>
+                <linearGradient id="grad3" x1="0%" y1="0%" x2="0%" y2="100%">
+                    <stop offset="0%" style="stop-color:#8B5CF6" />
+                    <stop offset="100%" style="stop-color:#6366F1" />
+                </linearGradient>
+            </defs>
+            <rect width="512" height="512" rx="96" fill="white"/>
+            <rect x="120" y="80" width="220" height="300" rx="24" fill="url(#grad3)"/>
+            <circle cx="310" cy="350" r="70" fill="#10B981"/>
+            <path d="M275 350 L300 375 L355 315" fill="none" stroke="white" stroke-width="18" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+        Jottask
+    </a>
+
+    <div class="nav-links">
+        <a href="{{ url_for('dashboard') }}" class="nav-link">Tasks</a>
+        <a href="{{ url_for('projects') }}" class="nav-link active">Projects</a>
+        <a href="{{ url_for('settings') }}" class="nav-link">Settings</a>
+    </div>
+
+    <div class="nav-user">
+        <span style="color: var(--gray-500);">{{ session.user_name }}</span>
+        <div class="avatar">{{ session.user_name[0].upper() }}</div>
+        <a href="{{ url_for('logout') }}" class="btn btn-secondary btn-sm">Logout</a>
+    </div>
+</nav>
+
+<main class="main">
+    <!-- Stats -->
+    <div class="stats-grid">
+        <div class="stat-card">
+            <div class="stat-value">{{ stats.active }}</div>
+            <div class="stat-label">Active Projects</div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-value">{{ stats.total_items }}</div>
+            <div class="stat-label">Total Items</div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-value">{{ stats.completed_items }}</div>
+            <div class="stat-label">Items Completed</div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-value">{{ stats.completed_projects }}</div>
+            <div class="stat-label">Projects Completed</div>
+        </div>
+    </div>
+
+    <!-- Projects Card -->
+    <div class="card">
+        <div class="card-header">
+            <h2 class="card-title">Projects</h2>
+            <a href="{{ url_for('project_create') }}" class="btn btn-primary">
+                + New Project
+            </a>
+        </div>
+
+        <div class="tabs" style="padding: 0 20px;">
+            <div class="tab {% if filter == 'active' %}active{% endif %}" onclick="location.href='?filter=active'">Active</div>
+            <div class="tab {% if filter == 'completed' %}active{% endif %}" onclick="location.href='?filter=completed'">Completed</div>
+            <div class="tab {% if filter == 'archived' %}active{% endif %}" onclick="location.href='?filter=archived'">Archived</div>
+            <div class="tab {% if filter == 'all' %}active{% endif %}" onclick="location.href='?filter=all'">All</div>
+        </div>
+
+        <div class="project-list">
+            {% if projects %}
+                {% for project in projects %}
+                <a href="{{ url_for('project_detail', project_id=project.id) }}" class="project-item" style="text-decoration: none; color: inherit;">
+                    <div class="project-color" style="background: {{ project.color or '#6366F1' }};"></div>
+
+                    <div class="project-content">
+                        <div class="project-title">{{ project.name }}</div>
+                        <div class="project-meta">
+                            <span>{{ project.item_count or 0 }} items</span>
+                            {% if project.description %}
+                            <span>{{ project.description[:50] }}{% if project.description|length > 50 %}...{% endif %}</span>
+                            {% endif %}
+                        </div>
+                    </div>
+
+                    <div class="project-progress">
+                        <div class="progress-bar">
+                            <div class="progress-fill" style="width: {{ project.progress or 0 }}%;"></div>
+                        </div>
+                        <span class="progress-text">{{ project.progress or 0 }}%</span>
+                    </div>
+
+                    <div class="project-status">
+                        <span class="status-badge" style="background: {% if project.status == 'active' %}var(--primary){% elif project.status == 'completed' %}var(--success){% else %}var(--gray-300){% endif %}; color: white;">
+                            {{ project.status|capitalize }}
+                        </span>
+                    </div>
+                </a>
+                {% endfor %}
+            {% else %}
+                <div class="empty-state">
+                    <div class="empty-state-icon">📁</div>
+                    <h3>No projects yet</h3>
+                    <p>Create your first project or email "Project: Name - items" to jottask@flowquote.ai</p>
+                </div>
+            {% endif %}
+        </div>
+    </div>
+</main>
+
+<style>
+.project-list {
+    display: flex;
+    flex-direction: column;
+}
+
+.project-item {
+    display: flex;
+    align-items: center;
+    padding: 16px 20px;
+    border-bottom: 1px solid var(--gray-100);
+    gap: 16px;
+    transition: background 0.2s;
+}
+
+.project-item:hover {
+    background: var(--gray-50);
+}
+
+.project-item:last-child {
+    border-bottom: none;
+}
+
+.project-color {
+    width: 8px;
+    height: 48px;
+    border-radius: 4px;
+    flex-shrink: 0;
+}
+
+.project-content {
+    flex: 1;
+    min-width: 0;
+}
+
+.project-title {
+    font-weight: 600;
+    color: var(--gray-900);
+    margin-bottom: 4px;
+}
+
+.project-meta {
+    display: flex;
+    gap: 16px;
+    font-size: 13px;
+    color: var(--gray-500);
+}
+
+.project-progress {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    width: 150px;
+}
+
+.progress-bar {
+    flex: 1;
+    height: 8px;
+    background: var(--gray-200);
+    border-radius: 4px;
+    overflow: hidden;
+}
+
+.progress-fill {
+    height: 100%;
+    background: var(--success);
+    transition: width 0.3s;
+}
+
+.progress-text {
+    font-size: 13px;
+    color: var(--gray-500);
+    min-width: 35px;
+}
+
+.project-status {
+    flex-shrink: 0;
+}
+
+@media (max-width: 768px) {
+    .project-progress {
+        display: none;
+    }
+}
+</style>
+{% endblock %}
+"""
+
+PROJECT_DETAIL_TEMPLATE = """
+{% extends "base" %}
+{% block content %}
+<nav class="nav">
+    <a href="{{ url_for('dashboard') }}" class="nav-brand">
+        <svg viewBox="0 0 512 512" width="32" height="32">
+            <defs>
+                <linearGradient id="grad3" x1="0%" y1="0%" x2="0%" y2="100%">
+                    <stop offset="0%" style="stop-color:#8B5CF6" />
+                    <stop offset="100%" style="stop-color:#6366F1" />
+                </linearGradient>
+            </defs>
+            <rect width="512" height="512" rx="96" fill="white"/>
+            <rect x="120" y="80" width="220" height="300" rx="24" fill="url(#grad3)"/>
+            <circle cx="310" cy="350" r="70" fill="#10B981"/>
+            <path d="M275 350 L300 375 L355 315" fill="none" stroke="white" stroke-width="18" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+        Jottask
+    </a>
+    <div class="nav-user">
+        <a href="{{ url_for('projects') }}" class="btn btn-secondary btn-sm">← Back to Projects</a>
+    </div>
+</nav>
+
+<main class="main" style="max-width: 800px;">
+    <!-- Project Header -->
+    <div class="card" style="margin-bottom: 24px;">
+        <div class="card-body">
+            <div style="display: flex; align-items: start; justify-content: space-between; margin-bottom: 16px;">
+                <div style="display: flex; align-items: center; gap: 16px;">
+                    <div style="width: 12px; height: 48px; border-radius: 6px; background: {{ project.color or '#6366F1' }};"></div>
+                    <div>
+                        <h1 style="font-size: 24px; margin-bottom: 4px;">{{ project.name }}</h1>
+                        <span class="status-badge" style="background: {% if project.status == 'active' %}var(--primary){% elif project.status == 'completed' %}var(--success){% else %}var(--gray-300){% endif %}; color: white;">
+                            {{ project.status|capitalize }}
+                        </span>
+                    </div>
+                </div>
+                <div style="display: flex; gap: 8px;">
+                    {% if project.status == 'active' %}
+                    <form method="POST" action="{{ url_for('project_complete', project_id=project.id) }}" style="display: inline;">
+                        <button type="submit" class="btn btn-success btn-sm">Mark Complete</button>
+                    </form>
+                    {% elif project.status == 'completed' %}
+                    <form method="POST" action="{{ url_for('project_reopen', project_id=project.id) }}" style="display: inline;">
+                        <button type="submit" class="btn btn-secondary btn-sm">Reopen</button>
+                    </form>
+                    {% endif %}
+                    <form method="POST" action="{{ url_for('project_delete', project_id=project.id) }}" onsubmit="return confirm('Delete this project and all its items?');" style="display: inline;">
+                        <button type="submit" class="btn btn-danger btn-sm">Delete</button>
+                    </form>
+                </div>
+            </div>
+
+            {% if project.description %}
+            <p style="color: var(--gray-600); margin-bottom: 16px;">{{ project.description }}</p>
+            {% endif %}
+
+            <!-- Progress Bar -->
+            <div style="display: flex; align-items: center; gap: 12px;">
+                <div style="flex: 1; height: 12px; background: var(--gray-200); border-radius: 6px; overflow: hidden;">
+                    <div style="height: 100%; background: var(--success); width: {{ progress }}%; transition: width 0.3s;"></div>
+                </div>
+                <span style="font-weight: 600; color: var(--gray-700);">{{ completed_count }}/{{ total_count }} ({{ progress }}%)</span>
+            </div>
+        </div>
+    </div>
+
+    <!-- Checklist Items -->
+    <div class="card">
+        <div class="card-header">
+            <h3 class="card-title">Checklist</h3>
+        </div>
+        <div class="card-body">
+            {% if items %}
+            <div class="checklist">
+                {% for item in items %}
+                <div class="checklist-item {% if item.is_completed %}completed{% endif %}">
+                    <form method="POST" action="{{ url_for('project_item_toggle', project_id=project.id, item_id=item.id) }}" style="display: contents;">
+                        <button type="submit" class="item-checkbox {% if item.is_completed %}checked{% endif %}">
+                            {% if item.is_completed %}✓{% endif %}
+                        </button>
+                    </form>
+                    <span class="item-text">{{ item.item_text }}</span>
+                    <span class="item-source" style="font-size: 11px; color: var(--gray-400); margin-left: auto;">{{ item.source }}</span>
+                </div>
+                {% endfor %}
+            </div>
+            {% else %}
+            <p style="color: var(--gray-500); text-align: center; padding: 20px;">No items yet</p>
+            {% endif %}
+
+            <!-- Add Item Form -->
+            <form method="POST" action="{{ url_for('project_item_add', project_id=project.id) }}" style="margin-top: 20px; display: flex; gap: 8px;">
+                <input type="text" name="item_text" class="form-input" placeholder="Add a checklist item..." required style="flex: 1;">
+                <button type="submit" class="btn btn-primary">Add</button>
+            </form>
+        </div>
+    </div>
+
+    <!-- Project Info -->
+    <div class="card" style="margin-top: 24px;">
+        <div class="card-header">
+            <h3 class="card-title">Project Details</h3>
+        </div>
+        <div class="card-body" style="font-size: 14px;">
+            <div style="display: flex; justify-content: space-between; padding: 8px 0; border-bottom: 1px solid var(--gray-100);">
+                <span style="color: var(--gray-500);">Created</span>
+                <span>{{ project.created_at[:10] if project.created_at else 'N/A' }}</span>
+            </div>
+            {% if project.completed_at %}
+            <div style="display: flex; justify-content: space-between; padding: 8px 0; border-bottom: 1px solid var(--gray-100);">
+                <span style="color: var(--gray-500);">Completed</span>
+                <span>{{ project.completed_at[:10] }}</span>
+            </div>
+            {% endif %}
+            <div style="display: flex; justify-content: space-between; padding: 8px 0;">
+                <span style="color: var(--gray-500);">Color</span>
+                <div style="width: 20px; height: 20px; border-radius: 4px; background: {{ project.color or '#6366F1' }};"></div>
+            </div>
+        </div>
+    </div>
+</main>
+
+<style>
+.checklist {
+    display: flex;
+    flex-direction: column;
+}
+
+.checklist-item {
+    display: flex;
+    align-items: center;
+    padding: 12px 0;
+    border-bottom: 1px solid var(--gray-100);
+    gap: 12px;
+}
+
+.checklist-item:last-child {
+    border-bottom: none;
+}
+
+.item-checkbox {
+    width: 24px;
+    height: 24px;
+    border-radius: 50%;
+    border: 2px solid var(--gray-300);
+    background: white;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 14px;
+    color: white;
+    transition: all 0.2s;
+    flex-shrink: 0;
+}
+
+.item-checkbox:hover {
+    border-color: var(--success);
+    background: rgba(16, 185, 129, 0.1);
+}
+
+.item-checkbox.checked {
+    background: var(--success);
+    border-color: var(--success);
+}
+
+.checklist-item.completed .item-text {
+    text-decoration: line-through;
+    color: var(--gray-400);
+}
+
+.item-text {
+    flex: 1;
+    color: var(--gray-700);
+}
+</style>
+{% endblock %}
+"""
+
+PROJECT_CREATE_TEMPLATE = """
+{% extends "base" %}
+{% block content %}
+<nav class="nav">
+    <a href="{{ url_for('dashboard') }}" class="nav-brand">
+        <svg viewBox="0 0 512 512" width="32" height="32">
+            <defs>
+                <linearGradient id="grad3" x1="0%" y1="0%" x2="0%" y2="100%">
+                    <stop offset="0%" style="stop-color:#8B5CF6" />
+                    <stop offset="100%" style="stop-color:#6366F1" />
+                </linearGradient>
+            </defs>
+            <rect width="512" height="512" rx="96" fill="white"/>
+            <rect x="120" y="80" width="220" height="300" rx="24" fill="url(#grad3)"/>
+            <circle cx="310" cy="350" r="70" fill="#10B981"/>
+            <path d="M275 350 L300 375 L355 315" fill="none" stroke="white" stroke-width="18" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+        Jottask
+    </a>
+    <div class="nav-user">
+        <a href="{{ url_for('projects') }}" class="btn btn-secondary btn-sm">← Back to Projects</a>
+    </div>
+</nav>
+
+<main class="main" style="max-width: 600px;">
+    <div class="card">
+        <div class="card-header">
+            <h2 class="card-title">Create New Project</h2>
+        </div>
+        <form method="POST" class="card-body">
+            <div class="form-group">
+                <label class="form-label">Project Name *</label>
+                <input type="text" name="name" class="form-input" placeholder="Website Redesign" required>
+            </div>
+
+            <div class="form-group">
+                <label class="form-label">Description</label>
+                <textarea name="description" class="form-input" rows="3" placeholder="Project goals and details..."></textarea>
+            </div>
+
+            <div class="form-group">
+                <label class="form-label">Color</label>
+                <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+                    <label class="color-option">
+                        <input type="radio" name="color" value="#6366F1" checked>
+                        <span style="background: #6366F1;"></span>
+                    </label>
+                    <label class="color-option">
+                        <input type="radio" name="color" value="#8B5CF6">
+                        <span style="background: #8B5CF6;"></span>
+                    </label>
+                    <label class="color-option">
+                        <input type="radio" name="color" value="#EC4899">
+                        <span style="background: #EC4899;"></span>
+                    </label>
+                    <label class="color-option">
+                        <input type="radio" name="color" value="#EF4444">
+                        <span style="background: #EF4444;"></span>
+                    </label>
+                    <label class="color-option">
+                        <input type="radio" name="color" value="#F59E0B">
+                        <span style="background: #F59E0B;"></span>
+                    </label>
+                    <label class="color-option">
+                        <input type="radio" name="color" value="#10B981">
+                        <span style="background: #10B981;"></span>
+                    </label>
+                    <label class="color-option">
+                        <input type="radio" name="color" value="#3B82F6">
+                        <span style="background: #3B82F6;"></span>
+                    </label>
+                    <label class="color-option">
+                        <input type="radio" name="color" value="#6B7280">
+                        <span style="background: #6B7280;"></span>
+                    </label>
+                </div>
+            </div>
+
+            <div class="form-group">
+                <label class="form-label">Initial Checklist Items (optional)</label>
+                <textarea name="initial_items" class="form-input" rows="4" placeholder="One item per line:&#10;Design mockups&#10;Build frontend&#10;Test and deploy"></textarea>
+                <small style="color: var(--gray-500);">Enter one item per line</small>
+            </div>
+
+            <div style="display: flex; gap: 12px; margin-top: 24px;">
+                <button type="submit" class="btn btn-primary" style="flex: 1;">Create Project</button>
+                <a href="{{ url_for('projects') }}" class="btn btn-secondary">Cancel</a>
+            </div>
+        </form>
+    </div>
+</main>
+
+<style>
+.color-option {
+    cursor: pointer;
+}
+
+.color-option input {
+    display: none;
+}
+
+.color-option span {
+    display: block;
+    width: 36px;
+    height: 36px;
+    border-radius: 8px;
+    border: 3px solid transparent;
+    transition: all 0.2s;
+}
+
+.color-option input:checked + span {
+    border-color: var(--gray-900);
+    transform: scale(1.1);
+}
+
+.color-option:hover span {
+    transform: scale(1.05);
+}
+</style>
 {% endblock %}
 """
 
@@ -1544,11 +2085,328 @@ def update_profile():
     return redirect(url_for('settings', message='Profile updated successfully'))
 
 
+@app.route('/settings/summary', methods=['POST'])
+@login_required
+def update_summary_settings():
+    user_id = session['user_id']
+
+    update_data = {
+        'daily_summary_enabled': 'daily_summary_enabled' in request.form,
+        'daily_summary_time': request.form.get('daily_summary_time', '08:00:00')
+    }
+
+    supabase.table('users').update(update_data).eq('id', user_id).execute()
+
+    return redirect(url_for('settings', message='Summary settings updated successfully'))
+
+
 @app.route('/billing')
 @login_required
 def billing():
     # Placeholder for Stripe billing portal
     return redirect(url_for('settings'))
+
+
+# ============================================
+# PROJECT ROUTES
+# ============================================
+
+@app.route('/projects')
+@login_required
+def projects():
+    user_id = session['user_id']
+    filter_status = request.args.get('filter', 'active')
+
+    # Build query
+    query = supabase.table('saas_projects').select('*').eq('user_id', user_id)
+
+    if filter_status != 'all':
+        query = query.eq('status', filter_status)
+
+    result = query.order('created_at', desc=True).execute()
+    projects_list = result.data or []
+
+    # Get item counts and progress for each project
+    for project in projects_list:
+        items_result = supabase.table('saas_project_items')\
+            .select('id, is_completed')\
+            .eq('project_id', project['id'])\
+            .execute()
+        items = items_result.data or []
+        project['item_count'] = len(items)
+        completed = len([i for i in items if i['is_completed']])
+        project['progress'] = int((completed / len(items) * 100)) if items else 0
+
+    # Calculate stats
+    all_projects = supabase.table('saas_projects').select('id, status').eq('user_id', user_id).execute().data or []
+    all_items = []
+    for p in all_projects:
+        items_result = supabase.table('saas_project_items').select('is_completed').eq('project_id', p['id']).execute()
+        all_items.extend(items_result.data or [])
+
+    stats = {
+        'active': len([p for p in all_projects if p['status'] == 'active']),
+        'completed_projects': len([p for p in all_projects if p['status'] == 'completed']),
+        'total_items': len(all_items),
+        'completed_items': len([i for i in all_items if i['is_completed']])
+    }
+
+    return render_template_string(
+        PROJECTS_TEMPLATE,
+        title='Projects',
+        projects=projects_list,
+        stats=stats,
+        filter=filter_status,
+        **{'base': BASE_TEMPLATE}
+    )
+
+
+@app.route('/projects/create', methods=['GET', 'POST'])
+@login_required
+def project_create():
+    user_id = session['user_id']
+
+    if request.method == 'POST':
+        name = request.form.get('name', '').strip()
+        description = request.form.get('description', '').strip()
+        color = request.form.get('color', '#6366F1')
+        initial_items = request.form.get('initial_items', '').strip()
+
+        if not name:
+            return redirect(url_for('project_create'))
+
+        # Create project
+        project_result = supabase.table('saas_projects').insert({
+            'user_id': user_id,
+            'name': name,
+            'description': description or None,
+            'color': color,
+            'status': 'active'
+        }).execute()
+
+        if project_result.data:
+            project_id = project_result.data[0]['id']
+
+            # Add initial items if provided
+            if initial_items:
+                lines = [line.strip() for line in initial_items.split('\n') if line.strip()]
+                for idx, item_text in enumerate(lines):
+                    supabase.table('saas_project_items').insert({
+                        'project_id': project_id,
+                        'item_text': item_text,
+                        'display_order': idx,
+                        'source': 'manual'
+                    }).execute()
+
+            return redirect(url_for('project_detail', project_id=project_id))
+
+        return redirect(url_for('projects'))
+
+    return render_template_string(
+        PROJECT_CREATE_TEMPLATE,
+        title='Create Project',
+        **{'base': BASE_TEMPLATE}
+    )
+
+
+@app.route('/projects/<project_id>')
+@login_required
+def project_detail(project_id):
+    user_id = session['user_id']
+
+    # Get project
+    project = supabase.table('saas_projects')\
+        .select('*')\
+        .eq('id', project_id)\
+        .eq('user_id', user_id)\
+        .single()\
+        .execute()
+
+    if not project.data:
+        return redirect(url_for('projects'))
+
+    # Get items
+    items = supabase.table('saas_project_items')\
+        .select('*')\
+        .eq('project_id', project_id)\
+        .order('display_order')\
+        .execute()
+
+    items_list = items.data or []
+    total_count = len(items_list)
+    completed_count = len([i for i in items_list if i['is_completed']])
+    progress = int((completed_count / total_count * 100)) if total_count else 0
+
+    return render_template_string(
+        PROJECT_DETAIL_TEMPLATE,
+        title=project.data['name'],
+        project=project.data,
+        items=items_list,
+        total_count=total_count,
+        completed_count=completed_count,
+        progress=progress,
+        **{'base': BASE_TEMPLATE}
+    )
+
+
+@app.route('/projects/<project_id>/items/add', methods=['POST'])
+@login_required
+def project_item_add(project_id):
+    user_id = session['user_id']
+    item_text = request.form.get('item_text', '').strip()
+
+    if not item_text:
+        return redirect(url_for('project_detail', project_id=project_id))
+
+    # Verify ownership
+    project = supabase.table('saas_projects')\
+        .select('id')\
+        .eq('id', project_id)\
+        .eq('user_id', user_id)\
+        .execute()
+
+    if not project.data:
+        return redirect(url_for('projects'))
+
+    # Get max display order
+    existing = supabase.table('saas_project_items')\
+        .select('display_order')\
+        .eq('project_id', project_id)\
+        .order('display_order', desc=True)\
+        .limit(1)\
+        .execute()
+
+    max_order = existing.data[0]['display_order'] if existing.data else 0
+
+    supabase.table('saas_project_items').insert({
+        'project_id': project_id,
+        'item_text': item_text,
+        'display_order': max_order + 1,
+        'source': 'manual'
+    }).execute()
+
+    return redirect(url_for('project_detail', project_id=project_id))
+
+
+@app.route('/projects/<project_id>/items/<item_id>/toggle', methods=['POST'])
+@login_required
+def project_item_toggle(project_id, item_id):
+    user_id = session['user_id']
+
+    # Verify ownership
+    project = supabase.table('saas_projects')\
+        .select('id')\
+        .eq('id', project_id)\
+        .eq('user_id', user_id)\
+        .execute()
+
+    if not project.data:
+        return redirect(url_for('projects'))
+
+    # Get current state
+    item = supabase.table('saas_project_items')\
+        .select('is_completed')\
+        .eq('id', item_id)\
+        .eq('project_id', project_id)\
+        .single()\
+        .execute()
+
+    if item.data:
+        new_state = not item.data['is_completed']
+        update_data = {'is_completed': new_state}
+        if new_state:
+            update_data['completed_at'] = datetime.now(pytz.UTC).isoformat()
+        else:
+            update_data['completed_at'] = None
+
+        supabase.table('saas_project_items')\
+            .update(update_data)\
+            .eq('id', item_id)\
+            .execute()
+
+    return redirect(url_for('project_detail', project_id=project_id))
+
+
+@app.route('/projects/<project_id>/complete', methods=['POST'])
+@login_required
+def project_complete(project_id):
+    user_id = session['user_id']
+
+    supabase.table('saas_projects').update({
+        'status': 'completed',
+        'completed_at': datetime.now(pytz.UTC).isoformat()
+    }).eq('id', project_id).eq('user_id', user_id).execute()
+
+    return redirect(url_for('project_detail', project_id=project_id))
+
+
+@app.route('/projects/<project_id>/reopen', methods=['POST'])
+@login_required
+def project_reopen(project_id):
+    user_id = session['user_id']
+
+    supabase.table('saas_projects').update({
+        'status': 'active',
+        'completed_at': None
+    }).eq('id', project_id).eq('user_id', user_id).execute()
+
+    return redirect(url_for('project_detail', project_id=project_id))
+
+
+@app.route('/projects/<project_id>/delete', methods=['POST'])
+@login_required
+def project_delete(project_id):
+    user_id = session['user_id']
+
+    # Delete will cascade to items due to FK constraint
+    supabase.table('saas_projects')\
+        .delete()\
+        .eq('id', project_id)\
+        .eq('user_id', user_id)\
+        .execute()
+
+    return redirect(url_for('projects'))
+
+
+@app.route('/api/projects/<project_id>/items/<item_id>/toggle', methods=['POST'])
+@login_required
+def api_project_item_toggle(project_id, item_id):
+    user_id = session['user_id']
+
+    # Verify ownership
+    project = supabase.table('saas_projects')\
+        .select('id')\
+        .eq('id', project_id)\
+        .eq('user_id', user_id)\
+        .execute()
+
+    if not project.data:
+        return jsonify({'error': 'Not found'}), 404
+
+    # Get current state
+    item = supabase.table('saas_project_items')\
+        .select('is_completed')\
+        .eq('id', item_id)\
+        .eq('project_id', project_id)\
+        .single()\
+        .execute()
+
+    if not item.data:
+        return jsonify({'error': 'Item not found'}), 404
+
+    new_state = not item.data['is_completed']
+    update_data = {'is_completed': new_state}
+    if new_state:
+        update_data['completed_at'] = datetime.now(pytz.UTC).isoformat()
+    else:
+        update_data['completed_at'] = None
+
+    supabase.table('saas_project_items')\
+        .update(update_data)\
+        .eq('id', item_id)\
+        .execute()
+
+    return jsonify({'success': True, 'is_completed': new_state})
 
 
 # ============================================

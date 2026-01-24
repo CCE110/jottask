@@ -786,7 +786,7 @@ LANDING_TEMPLATE = """
     <section class="hero">
         <div class="container">
             <h1>Turn Emails Into<br>Actionable Tasks</h1>
-            <p>Jottask uses AI to automatically create tasks from your emails, extract due dates, and keep you on top of your work.</p>
+            <p>Just CC <strong>jottask@flowquote.ai</strong> on any email. Our AI instantly creates tasks with due dates, priorities, and client info.</p>
             <div class="hero-buttons">
                 <a href="/signup" class="btn btn-primary">Start Free 14-Day Trial</a>
                 <a href="#features" class="btn btn-secondary">See How It Works</a>
@@ -800,8 +800,8 @@ LANDING_TEMPLATE = """
             <div class="features-grid">
                 <div class="feature-card">
                     <div class="feature-icon">📧</div>
-                    <h3>Email to Task</h3>
-                    <p>Forward emails and we'll automatically extract tasks, due dates, and client information.</p>
+                    <h3>CC to Create Tasks</h3>
+                    <p>Just CC our email address on any conversation. We'll automatically extract tasks, due dates, and client info.</p>
                 </div>
                 <div class="feature-card">
                     <div class="feature-icon">🤖</div>
@@ -838,19 +838,24 @@ LANDING_TEMPLATE = """
             <div class="steps">
                 <div class="step">
                     <div class="step-number">1</div>
-                    <h3>Connect Your Email</h3>
-                    <p>Link your Gmail or forward emails to your unique Jottask address.</p>
+                    <h3>Sign Up</h3>
+                    <p>Create your free account with your email address.</p>
                 </div>
                 <div class="step">
                     <div class="step-number">2</div>
-                    <h3>AI Creates Tasks</h3>
-                    <p>Our AI extracts tasks, due dates, client info, and priority automatically.</p>
+                    <h3>CC or Forward Emails</h3>
+                    <p>CC <strong>jottask@flowquote.ai</strong> on any email you want turned into a task.</p>
                 </div>
                 <div class="step">
                     <div class="step-number">3</div>
-                    <h3>Get Reminded</h3>
-                    <p>Receive smart reminders with context and one-click actions.</p>
+                    <h3>AI Creates Tasks</h3>
+                    <p>Our AI extracts tasks, due dates, and client info automatically.</p>
                 </div>
+            </div>
+            <div style="text-align: center; margin-top: 40px; padding: 24px; background: white; border-radius: 12px; border: 2px dashed var(--primary);">
+                <p style="color: var(--gray-500); margin-bottom: 8px;">Your Jottask email address:</p>
+                <p style="font-size: 24px; font-weight: 700; color: var(--primary);">jottask@flowquote.ai</p>
+                <p style="color: var(--gray-500); margin-top: 8px; font-size: 14px;">CC this address on any email to create a task</p>
             </div>
         </div>
     </section>
@@ -946,6 +951,7 @@ PRICING_TEMPLATE = """
     </a>
     <div class="nav-links">
         <a href="{{ url_for('dashboard') }}" class="nav-link">Dashboard</a>
+        <a href="{{ url_for('projects') }}" class="nav-link">Projects</a>
         <a href="{{ url_for('settings') }}" class="nav-link">Settings</a>
     </div>
 </nav>

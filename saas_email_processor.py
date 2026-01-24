@@ -1,6 +1,6 @@
 """
 Jottask SaaS Email Processor
-Multi-tenant email processing for all users
+Central inbox email processing - matches senders to user accounts
 """
 
 import os
@@ -21,29 +21,33 @@ supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 anthropic = Anthropic(api_key=os.getenv('ANTHROPIC_API_KEY'))
 
+# Central Jottask inbox credentials
+JOTTASK_EMAIL = os.getenv('JOTTASK_EMAIL', 'jottask@flowquote.ai')
+JOTTASK_PASSWORD = os.getenv('JOTTASK_EMAIL_PASSWORD')
+IMAP_SERVER = os.getenv('IMAP_SERVER', 'mail.privateemail.com')
 
-def get_active_email_connections():
-    """Get all active email connections from all users"""
-    result = supabase.table('email_connections')\
-        .select('*, users(id, email, timezone, subscription_tier)')\
-        .eq('is_active', True)\
+
+def get_user_by_email(sender_email):
+    """Find a user by their email address"""
+    result = supabase.table('users')\
+        .select('id, email, timezone, subscription_tier, subscription_status')\
+        .eq('email', sender_email.lower())\
         .execute()
-    return result.data or []
+
+    if result.data and len(result.data) > 0:
+        return result.data[0]
+    return None
 
 
-def connect_to_imap(email_address, password, provider='gmail'):
-    """Connect to IMAP server"""
-    if provider == 'gmail':
-        server = 'imap.gmail.com'
-    else:
-        server = 'imap.gmail.com'  # Default to Gmail
-
+def connect_to_jottask_inbox():
+    """Connect to the central Jottask IMAP inbox"""
     try:
-        imap = imaplib.IMAP4_SSL(server)
-        imap.login(email_address, password)
+        imap = imaplib.IMAP4_SSL(IMAP_SERVER, 993)
+        imap.login(JOTTASK_EMAIL, JOTTASK_PASSWORD)
+        print(f"✅ Connected to {JOTTASK_EMAIL}")
         return imap
     except Exception as e:
-        print(f"❌ Failed to connect to {email_address}: {e}")
+        print(f"❌ Failed to connect to Jottask inbox: {e}")
         return None
 
 
@@ -197,23 +201,255 @@ def create_task_for_user(user_id, task_data):
     return None
 
 
-def process_emails_for_connection(connection):
-    """Process emails for a single connection"""
-    user_id = connection['user_id']
-    email_address = connection['email_address']
-    password = connection.get('imap_password')
-    provider = connection.get('provider', 'gmail')
-    user_data = connection.get('users', {})
-    user_timezone = user_data.get('timezone', 'Australia/Brisbane')
+# ============================================
+# PROJECT EMAIL PROCESSING
+# ============================================
 
-    print(f"\n📧 Processing emails for: {email_address}")
+def is_project_email(subject):
+    """Check if subject starts with 'Project:'"""
+    return subject.lower().strip().startswith('project:')
 
-    if not password:
-        print(f"⚠️ No password configured for {email_address}")
+
+def analyze_project_email_with_ai(subject, body, from_email):
+    """Use Claude to analyze project email and extract project name and items"""
+    prompt = f"""Analyze this email about a project and extract the project name and checklist items.
+
+From: {from_email}
+Subject: {subject}
+Body:
+{body[:3000]}
+
+The subject format is typically: "Project: Project Name - item1, item2, item3"
+Or the body may contain a list of items.
+
+Respond with JSON:
+{{
+    "project_name": "extracted project name",
+    "items": ["item 1", "item 2", "item 3"],
+    "description": "optional project description if mentioned"
+}}
+
+If you can't extract meaningful data, respond with:
+{{
+    "project_name": null,
+    "items": [],
+    "error": "reason"
+}}
+
+Respond with only valid JSON, no other text."""
+
+    try:
+        response = anthropic.messages.create(
+            model="claude-sonnet-4-20250514",
+            max_tokens=1000,
+            messages=[{"role": "user", "content": prompt}]
+        )
+
+        response_text = response.content[0].text.strip()
+
+        # Clean up response if needed
+        if response_text.startswith('```'):
+            response_text = response_text.split('```')[1]
+            if response_text.startswith('json'):
+                response_text = response_text[4:]
+
+        return json.loads(response_text)
+
+    except Exception as e:
+        print(f"❌ AI project analysis failed: {e}")
+        return {"project_name": None, "items": [], "error": str(e)}
+
+
+def find_or_create_project(user_id, project_name, description=None):
+    """Find existing project by name or create a new one"""
+    # Look for existing active project with same name
+    existing = supabase.table('saas_projects')\
+        .select('id, name')\
+        .eq('user_id', user_id)\
+        .eq('status', 'active')\
+        .ilike('name', project_name)\
+        .execute()
+
+    if existing.data and len(existing.data) > 0:
+        print(f"  📁 Found existing project: {existing.data[0]['name']}")
+        return existing.data[0]
+
+    # Create new project
+    result = supabase.table('saas_projects').insert({
+        'user_id': user_id,
+        'name': project_name,
+        'description': description,
+        'color': '#6366F1',
+        'status': 'active'
+    }).execute()
+
+    if result.data:
+        print(f"  📁 Created new project: {project_name}")
+        return result.data[0]
+
+    return None
+
+
+def add_items_to_project(project_id, items, source_subject=None):
+    """Add items to a project, skipping duplicates"""
+    # Get existing items
+    existing = supabase.table('saas_project_items')\
+        .select('item_text')\
+        .eq('project_id', project_id)\
+        .execute()
+
+    existing_texts = set(item['item_text'].lower().strip() for item in (existing.data or []))
+
+    # Get max display order
+    max_order_result = supabase.table('saas_project_items')\
+        .select('display_order')\
+        .eq('project_id', project_id)\
+        .order('display_order', desc=True)\
+        .limit(1)\
+        .execute()
+
+    current_order = max_order_result.data[0]['display_order'] if max_order_result.data else 0
+
+    added_count = 0
+    for item_text in items:
+        item_text = item_text.strip()
+        if not item_text:
+            continue
+
+        # Skip duplicates
+        if item_text.lower().strip() in existing_texts:
+            print(f"    ⏭️ Skipping duplicate: {item_text[:30]}...")
+            continue
+
+        current_order += 1
+        supabase.table('saas_project_items').insert({
+            'project_id': project_id,
+            'item_text': item_text,
+            'display_order': current_order,
+            'source': 'email',
+            'source_email_subject': source_subject
+        }).execute()
+
+        added_count += 1
+        print(f"    ✅ Added item: {item_text[:40]}...")
+
+    return added_count
+
+
+def send_project_confirmation_email(user_email, project_name, items_added, user_name=None):
+    """Send confirmation email for project updates"""
+    import smtplib
+    from email.mime.text import MIMEText
+    from email.mime.multipart import MIMEMultipart
+
+    SMTP_SERVER = os.getenv('SMTP_SERVER', 'mail.privateemail.com')
+    SMTP_PORT = int(os.getenv('SMTP_PORT', 587))
+    SMTP_USER = os.getenv('JOTTASK_EMAIL', 'jottask@flowquote.ai')
+    SMTP_PASSWORD = os.getenv('JOTTASK_EMAIL_PASSWORD')
+
+    if not SMTP_PASSWORD:
+        print("  ⚠️ SMTP password not configured, skipping confirmation email")
+        return
+
+    greeting = f"Hi {user_name}," if user_name else "Hi,"
+
+    html_content = f"""
+    <html>
+    <body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
+        <div style="background: linear-gradient(135deg, #6366F1 0%, #8B5CF6 100%); padding: 24px; border-radius: 12px 12px 0 0;">
+            <h1 style="color: white; margin: 0; font-size: 24px;">Project Updated</h1>
+        </div>
+        <div style="background: #f9fafb; padding: 24px; border: 1px solid #e5e7eb; border-top: none; border-radius: 0 0 12px 12px;">
+            <p style="color: #374151;">{greeting}</p>
+            <p style="color: #374151;">Your project <strong>{project_name}</strong> has been updated with {items_added} new item(s).</p>
+            <p style="color: #6b7280; font-size: 14px;">View your project in the Jottask dashboard to see all items and track progress.</p>
+            <a href="https://jottask.flowquote.ai/projects" style="display: inline-block; background: #6366F1; color: white; padding: 12px 24px; border-radius: 8px; text-decoration: none; margin-top: 16px;">View Projects</a>
+        </div>
+        <p style="color: #9ca3af; font-size: 12px; text-align: center; margin-top: 24px;">
+            Jottask - AI-Powered Task Management
+        </p>
+    </body>
+    </html>
+    """
+
+    try:
+        msg = MIMEMultipart('alternative')
+        msg['Subject'] = f"Project Updated: {project_name}"
+        msg['From'] = f"Jottask <{SMTP_USER}>"
+        msg['To'] = user_email
+
+        msg.attach(MIMEText(html_content, 'html'))
+
+        with smtplib.SMTP(SMTP_SERVER, SMTP_PORT) as server:
+            server.starttls()
+            server.login(SMTP_USER, SMTP_PASSWORD)
+            server.send_message(msg)
+
+        print(f"  📧 Confirmation email sent to {user_email}")
+
+    except Exception as e:
+        print(f"  ⚠️ Failed to send confirmation email: {e}")
+
+
+def process_project_email(user_id, user_email, subject, body, user_name=None):
+    """Process a project email - extract project and items, add to database"""
+    print(f"  📁 Processing project email...")
+
+    # Use AI to extract project info
+    analysis = analyze_project_email_with_ai(subject, body, user_email)
+
+    project_name = analysis.get('project_name')
+    items = analysis.get('items', [])
+    description = analysis.get('description')
+
+    if not project_name:
+        # Try to extract from subject directly
+        # Format: "Project: Name - item1, item2"
+        subject_clean = subject.strip()
+        if subject_clean.lower().startswith('project:'):
+            rest = subject_clean[8:].strip()
+            if ' - ' in rest:
+                parts = rest.split(' - ', 1)
+                project_name = parts[0].strip()
+                if len(parts) > 1:
+                    items = [item.strip() for item in parts[1].split(',') if item.strip()]
+            else:
+                project_name = rest
+
+    if not project_name:
+        print(f"    ⚠️ Could not extract project name from email")
+        return None
+
+    # Find or create project
+    project = find_or_create_project(user_id, project_name, description)
+    if not project:
+        print(f"    ❌ Failed to find or create project")
+        return None
+
+    # Add items
+    items_added = 0
+    if items:
+        items_added = add_items_to_project(project['id'], items, subject)
+
+    print(f"    ✅ Project '{project_name}' updated with {items_added} items")
+
+    # Send confirmation email
+    if items_added > 0:
+        send_project_confirmation_email(user_email, project_name, items_added, user_name)
+
+    return project
+
+
+def process_central_inbox():
+    """Process emails from the central Jottask inbox"""
+    print(f"\n📧 Processing central inbox: {JOTTASK_EMAIL}")
+
+    if not JOTTASK_PASSWORD:
+        print("⚠️ No password configured for Jottask inbox")
         return
 
     # Connect to IMAP
-    imap = connect_to_imap(email_address, password, provider)
+    imap = connect_to_jottask_inbox()
     if not imap:
         return
 
@@ -228,63 +464,93 @@ def process_emails_for_connection(connection):
         email_ids = messages[0].split()
         print(f"📬 Found {len(email_ids)} unread emails")
 
-        # Process newest first, limit to 10
-        for email_id in reversed(email_ids[:10]):
+        # Process newest first, limit to 20
+        for email_id in reversed(email_ids[:20]):
             email_id_str = email_id.decode()
-
-            # Check if already processed
-            if check_if_email_processed(email_id_str, user_id):
-                continue
 
             # Fetch email
             _, msg_data = imap.fetch(email_id, '(RFC822)')
             email_body = msg_data[0][1]
             msg = email.message_from_bytes(email_body)
 
-            # Extract details
-            subject = decode_email_subject(msg.get('Subject', ''))
+            # Extract sender details
             from_header = msg.get('From', '')
             from_email = from_header.split('<')[-1].replace('>', '').strip() if '<' in from_header else from_header
+            from_email = from_email.lower()
 
-            print(f"  📩 Processing: {subject[:50]}...")
+            subject = decode_email_subject(msg.get('Subject', ''))
+            print(f"  📩 Email from: {from_email} - {subject[:40]}...")
 
-            # Skip emails from the same address (own sent items)
-            if from_email.lower() == email_address.lower():
-                mark_email_processed(email_id_str, user_id)
+            # Skip emails from the Jottask address itself
+            if from_email == JOTTASK_EMAIL.lower():
+                print(f"    ⏭️ Skipping (from Jottask address)")
                 continue
 
-            # Get body and analyze
+            # Find user by sender email
+            user = get_user_by_email(from_email)
+
+            if not user:
+                print(f"    ⚠️ No user found for: {from_email}")
+                # Mark as read to avoid reprocessing
+                imap.store(email_id, '+FLAGS', '\\Seen')
+                continue
+
+            user_id = user['id']
+            user_timezone = user.get('timezone', 'Australia/Brisbane')
+
+            # Check if already processed
+            if check_if_email_processed(email_id_str, user_id):
+                print(f"    ⏭️ Already processed")
+                continue
+
+            # Get body
             body = get_email_body(msg)
-            analysis = analyze_email_with_ai(subject, body, from_email, user_timezone)
 
-            if analysis.get('is_task'):
-                # Create task
-                task = create_task_for_user(user_id, analysis)
+            # Check if this is a project email
+            if is_project_email(subject):
+                # Get user's name for personalization
+                user_profile = supabase.table('users').select('full_name').eq('id', user_id).single().execute()
+                user_name = user_profile.data.get('full_name') if user_profile.data else None
 
-                if task:
-                    # Add email as note to task
-                    try:
-                        supabase.table('task_notes').insert({
-                            'task_id': task['id'],
-                            'content': f"Created from email:\n\n{body[:1000]}",
-                            'source': 'email',
-                            'source_email_subject': subject,
-                            'source_email_from': from_email,
-                            'created_by': 'system'
-                        }).execute()
-                    except:
-                        pass
+                project = process_project_email(user_id, user['email'], subject, body, user_name)
+                if project:
+                    print(f"    ✅ Project processed for {user['email']}: {project.get('name', 'N/A')}")
+                else:
+                    print(f"    ⚠️ Could not process project email")
+            else:
+                # Regular task email processing
+                analysis = analyze_email_with_ai(subject, body, from_email, user_timezone)
+
+                if analysis.get('is_task'):
+                    # Create task for this user
+                    task = create_task_for_user(user_id, analysis)
+
+                    if task:
+                        print(f"    ✅ Task created for {user['email']}: {task.get('title', 'N/A')}")
+
+                        # Add email as note to task
+                        try:
+                            supabase.table('task_notes').insert({
+                                'task_id': task['id'],
+                                'content': f"Created from email:\n\n{body[:1000]}",
+                                'source': 'email',
+                                'source_email_subject': subject,
+                                'source_email_from': from_email,
+                                'created_by': 'system'
+                            }).execute()
+                        except:
+                            pass
+                else:
+                    print(f"    ℹ️ Not a task: {analysis.get('reason', 'unknown')}")
 
             # Mark as processed
             mark_email_processed(email_id_str, user_id)
 
-        # Update last sync time
-        supabase.table('email_connections').update({
-            'last_sync_at': datetime.utcnow().isoformat()
-        }).eq('id', connection['id']).execute()
+            # Mark email as read
+            imap.store(email_id, '+FLAGS', '\\Seen')
 
     except Exception as e:
-        print(f"❌ Error processing emails: {e}")
+        print(f"❌ Error processing inbox: {e}")
 
     finally:
         try:
@@ -295,25 +561,19 @@ def process_emails_for_connection(connection):
 
 def run_email_processor():
     """Main processor loop - runs continuously"""
-    print("🚀 Starting Jottask SaaS Email Processor")
+    print("🚀 Starting Jottask Central Inbox Processor")
+    print(f"📧 Monitoring: {JOTTASK_EMAIL}")
     print("=" * 50)
 
     while True:
         try:
-            # Get all active connections
-            connections = get_active_email_connections()
             print(f"\n⏰ {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-            print(f"📊 Active email connections: {len(connections)}")
 
-            # Process each connection
-            for connection in connections:
-                try:
-                    process_emails_for_connection(connection)
-                except Exception as e:
-                    print(f"❌ Error with connection {connection.get('email_address')}: {e}")
+            # Process the central Jottask inbox
+            process_central_inbox()
 
-            print(f"\n😴 Sleeping for 15 minutes...")
-            time.sleep(900)  # 15 minutes
+            print(f"\n😴 Sleeping for 5 minutes...")
+            time.sleep(300)  # 5 minutes (more frequent for better responsiveness)
 
         except KeyboardInterrupt:
             print("\n👋 Shutting down email processor...")
