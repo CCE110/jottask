@@ -207,13 +207,27 @@ def mark_email_processed(email_id, user_id):
 
 
 def create_task_for_user(user_id, task_data):
-    """Create a task for a specific user"""
+    """Create a task for a specific user, checking for duplicates first"""
     try:
+        title = task_data.get('title', 'Email Task')
+        due_date = task_data.get('due_date')
+
+        # Check for duplicate task (same title, user, and due date)
+        existing = supabase.table('tasks')\
+            .select('id, title')\
+            .eq('user_id', user_id)\
+            .eq('title', title)\
+            .execute()
+
+        if existing.data:
+            print(f"⏭️ Duplicate task skipped: {title}")
+            return existing.data[0]  # Return existing task
+
         task = {
             'user_id': user_id,
-            'title': task_data.get('title', 'Email Task'),
+            'title': title,
             'description': task_data.get('description'),
-            'due_date': task_data.get('due_date'),
+            'due_date': due_date,
             'due_time': task_data.get('due_time', '09:00') + ':00',
             'priority': task_data.get('priority', 'medium'),
             'status': 'pending',
