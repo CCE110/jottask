@@ -67,38 +67,47 @@ def send_admin_notification(subject, body_html):
 
 
 def send_email(to_email, subject, body_html):
-    """Send email using Resend API"""
-    import requests
+    """Send email using Resend API (using urllib for Railway compatibility)"""
+    import urllib.request
+    import urllib.error
 
     if not RESEND_API_KEY:
         print("❌ RESEND_API_KEY not configured")
         return False, "RESEND_API_KEY not configured"
 
-    print(f"📧 Sending to {to_email} via Resend (FROM_EMAIL={FROM_EMAIL})...")
+    print(f"📧 Sending to {to_email} via Resend...")
 
     try:
-        response = requests.post(
+        data = json.dumps({
+            'from': f'Jottask <{FROM_EMAIL}>',
+            'to': [to_email],
+            'subject': subject,
+            'html': body_html
+        }).encode('utf-8')
+
+        req = urllib.request.Request(
             'https://api.resend.com/emails',
+            data=data,
             headers={
                 'Authorization': f'Bearer {RESEND_API_KEY}',
                 'Content-Type': 'application/json'
             },
-            json={
-                'from': f'Jottask <{FROM_EMAIL}>',
-                'to': [to_email],
-                'subject': subject,
-                'html': body_html
-            },
-            timeout=30
+            method='POST'
         )
-        print(f"📧 Resend response: {response.status_code}")
-        if response.status_code in [200, 201]:
-            print(f"✅ Email sent to {to_email}: {subject}")
-            return True, None
-        else:
-            error_msg = response.text
-            print(f"❌ Resend error ({response.status_code}): {error_msg}")
-            return False, error_msg
+
+        with urllib.request.urlopen(req, timeout=30) as response:
+            status = response.getcode()
+            print(f"📧 Resend response: {status}")
+            if status in [200, 201]:
+                print(f"✅ Email sent to {to_email}: {subject}")
+                return True, None
+            else:
+                return False, f"Status {status}"
+
+    except urllib.error.HTTPError as e:
+        error_msg = e.read().decode('utf-8', errors='ignore')
+        print(f"❌ Resend HTTP error ({e.code}): {error_msg}")
+        return False, error_msg
     except Exception as e:
         print(f"❌ Failed to send email: {type(e).__name__}: {e}")
         return False, str(e)
