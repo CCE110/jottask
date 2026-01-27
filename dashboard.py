@@ -51,11 +51,11 @@ def send_admin_notification(subject, body_html):
             },
             timeout=10
         )
-        if response.status_code == 200:
+        if response.status_code in [200, 201]:
             print(f"✅ Admin notification sent: {subject}")
             return True
         else:
-            print(f"❌ Resend error: {response.text}")
+            print(f"❌ Resend error ({response.status_code}): {response.text}")
             return False
     except Exception as e:
         print(f"❌ Failed to send admin notification: {e}")
@@ -81,15 +81,16 @@ def send_email(to_email, subject, body_html):
             },
             timeout=10
         )
-        if response.status_code == 200:
+        if response.status_code in [200, 201]:
             print(f"✅ Email sent to {to_email}: {subject}")
-            return True
+            return True, None
         else:
-            print(f"❌ Resend error: {response.text}")
-            return False
+            error_msg = response.text
+            print(f"❌ Resend error ({response.status_code}): {error_msg}")
+            return False, error_msg
     except Exception as e:
         print(f"❌ Failed to send email: {e}")
-        return False
+        return False, str(e)
 
 
 # ============================================
@@ -3032,8 +3033,11 @@ def internal_send_email():
     if not all([to_email, subject, body_html]):
         return jsonify({'error': 'Missing required fields'}), 400
 
-    success = send_email(to_email, subject, body_html)
-    return jsonify({'success': success})
+    result = send_email(to_email, subject, body_html)
+    if isinstance(result, tuple):
+        success, error = result
+        return jsonify({'success': success, 'error': error})
+    return jsonify({'success': result})
 
 
 @app.route('/api/chat/start', methods=['POST'])
