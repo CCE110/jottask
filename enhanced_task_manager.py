@@ -14,7 +14,7 @@ class EnhancedTaskManager:
     def __init__(self, task_manager=None):
         self.anthropic = Anthropic(api_key=os.getenv('ANTHROPIC_API_KEY'))
         self.resend_api_key = os.getenv('RESEND_API_KEY')
-        self.from_email = 'rob@cloudcleanenergy.com.au'
+        self.from_email = os.getenv('FROM_EMAIL', 'admin@flowquote.ai')
         self.aest = pytz.timezone('Australia/Brisbane')
         
         # Import TaskManager if not provided

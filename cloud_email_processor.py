@@ -40,8 +40,8 @@ class CloudEmailProcessor:
         self.your_email = 'rob@cloudcleanenergy.com.au'
         
         # Action URL for email buttons
-        self.action_url = os.getenv('TASK_ACTION_URL', 
-            'https://rob-crm-tasks-production.up.railway.app/action')
+        self.action_url = os.getenv('TASK_ACTION_URL',
+            'https://www.jottask.app/action')
         self.etm.action_url = self.action_url
         
         # Timezone
@@ -1026,15 +1026,34 @@ Actions:
                     
                     # 5-20 minute window
                     if -5 <= time_diff <= 20:  # Include recently overdue (up to 5 min late)
+                        # Check if reminder already sent today
+                        if task.get('reminder_sent_at'):
+                            try:
+                                sent_at = datetime.fromisoformat(task['reminder_sent_at'].replace('Z', '+00:00'))
+                                if sent_at.date() == now.date():
+                                    print(f"   ⏭️ Already sent today: {task['title'][:40]}")
+                                    continue
+                            except:
+                                pass
+
                         print(f"   ✅ Sending reminder: {task['title'][:40]}")
-                        
+
                         self.etm.send_task_reminder(
                             task=task,
                             due_time=task_due,
                             action_url=self.action_url
                         )
+
+                        # Mark reminder as sent
+                        try:
+                            self.tm.supabase.table('tasks').update({
+                                'reminder_sent_at': now.isoformat()
+                            }).eq('id', task['id']).execute()
+                        except Exception as e:
+                            print(f"   ⚠️ Failed to mark reminder sent: {e}")
+
                         sent_count += 1
-                        
+
                         # Rate limit (Resend: 2/sec)
                         time.sleep(0.6)
                     
