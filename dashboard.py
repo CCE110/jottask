@@ -2480,12 +2480,171 @@ def handle_action():
         </html>
         '''
 
-    # Task actions - redirect to dashboard for now
-    if task_id:
-        return redirect(url_for('dashboard'))
+    # Task actions - handle without login for email convenience
+    if task_id and action:
+        try:
+            # Get task details
+            task = supabase.table('tasks').select('*, users!tasks_user_id_fkey(id, email, full_name)').eq('id', task_id).single().execute()
+            if not task.data:
+                return render_template_string(ERROR_PAGE, error="Task not found")
+
+            task_data = task.data
+            task_title = task_data.get('title', 'Task')
+            user_id = task_data.get('user_id')
+
+            if action == 'complete':
+                supabase.table('tasks').update({
+                    'status': 'completed',
+                    'completed_at': datetime.now(pytz.UTC).isoformat()
+                }).eq('id', task_id).execute()
+
+                return render_template_string("""
+                <html><head><title>Task Completed</title></head>
+                <body style="font-family: sans-serif; text-align: center; padding: 50px; background: #f0fdf4;">
+                    <h2 style="color: #10B981;">✅ Task Completed!</h2>
+                    <p><strong>{{ title }}</strong></p>
+                    <a href="https://www.jottask.app/dashboard" style="color: #6366F1;">Open Dashboard</a>
+                </body></html>
+                """, title=task_title)
+
+            elif action == 'delay_1hour':
+                current_time = task_data.get('due_time', '09:00:00')
+                try:
+                    parts = current_time.split(':')
+                    hour = int(parts[0]) + 1
+                    if hour >= 24:
+                        hour = 23
+                    new_time = f"{hour:02d}:{parts[1]}:00"
+                except:
+                    new_time = '10:00:00'
+
+                supabase.table('tasks').update({
+                    'due_time': new_time,
+                    'reminder_sent_at': None
+                }).eq('id', task_id).execute()
+
+                return render_template_string("""
+                <html><head><title>Task Delayed</title></head>
+                <body style="font-family: sans-serif; text-align: center; padding: 50px; background: #eff6ff;">
+                    <h2 style="color: #6366F1;">⏰ Task Delayed +1 Hour</h2>
+                    <p><strong>{{ title }}</strong></p>
+                    <p>New time: {{ new_time }}</p>
+                    <a href="https://www.jottask.app/dashboard" style="color: #6366F1;">Open Dashboard</a>
+                </body></html>
+                """, title=task_title, new_time=new_time[:5])
+
+            elif action == 'delay_1day':
+                current_date = task_data.get('due_date')
+                try:
+                    due_date = datetime.fromisoformat(current_date)
+                    new_date = (due_date + timedelta(days=1)).date().isoformat()
+                except:
+                    new_date = (datetime.now() + timedelta(days=1)).date().isoformat()
+
+                supabase.table('tasks').update({
+                    'due_date': new_date,
+                    'reminder_sent_at': None
+                }).eq('id', task_id).execute()
+
+                return render_template_string("""
+                <html><head><title>Task Delayed</title></head>
+                <body style="font-family: sans-serif; text-align: center; padding: 50px; background: #eff6ff;">
+                    <h2 style="color: #6366F1;">📅 Task Delayed +1 Day</h2>
+                    <p><strong>{{ title }}</strong></p>
+                    <p>New date: {{ new_date }}</p>
+                    <a href="https://www.jottask.app/dashboard" style="color: #6366F1;">Open Dashboard</a>
+                </body></html>
+                """, title=task_title, new_date=new_date)
+
+            elif action == 'delay_custom' or action == 'reschedule':
+                # Show reschedule form
+                current_date = task_data.get('due_date', datetime.now().date().isoformat())
+                current_time = task_data.get('due_time', '09:00:00')[:5]
+
+                return render_template_string("""
+                <html><head><title>Reschedule Task</title>
+                <style>
+                    body { font-family: sans-serif; padding: 20px; max-width: 500px; margin: 0 auto; background: #f9fafb; }
+                    .card { background: white; padding: 30px; border-radius: 12px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
+                    h2 { color: #374151; margin-bottom: 20px; }
+                    label { display: block; margin-bottom: 5px; font-weight: 500; }
+                    input { width: 100%; padding: 12px; margin-bottom: 15px; border: 1px solid #d1d5db; border-radius: 8px; font-size: 16px; }
+                    button { width: 100%; padding: 14px; background: #6366F1; color: white; border: none; border-radius: 8px; font-size: 16px; font-weight: 600; cursor: pointer; }
+                    button:hover { background: #4f46e5; }
+                </style>
+                </head>
+                <body>
+                    <div class="card">
+                        <h2>🗓️ Reschedule Task</h2>
+                        <p style="margin-bottom: 20px; color: #6b7280;"><strong>{{ title }}</strong></p>
+                        <form method="POST" action="/action/reschedule_submit">
+                            <input type="hidden" name="task_id" value="{{ task_id }}">
+                            <label>New Date:</label>
+                            <input type="date" name="new_date" value="{{ current_date }}" required>
+                            <label>New Time:</label>
+                            <input type="time" name="new_time" value="{{ current_time }}" required>
+                            <button type="submit">💾 Save Changes</button>
+                        </form>
+                    </div>
+                </body></html>
+                """, title=task_title, task_id=task_id, current_date=current_date, current_time=current_time)
+
+        except Exception as e:
+            print(f"Action error: {e}")
+            return render_template_string("""
+            <html><body style="font-family: sans-serif; text-align: center; padding: 50px;">
+                <h2>Error</h2><p>{{ error }}</p>
+                <a href="https://www.jottask.app/dashboard">Go to Dashboard</a>
+            </body></html>
+            """, error=str(e))
 
     # Default - go to dashboard
     return redirect(url_for('dashboard'))
+
+
+@app.route('/action/reschedule_submit', methods=['POST'])
+def handle_reschedule_submit():
+    """Handle reschedule form submission from email links"""
+    task_id = request.form.get('task_id')
+    new_date = request.form.get('new_date')
+    new_time = request.form.get('new_time')
+
+    if not task_id or not new_date or not new_time:
+        return render_template_string("""
+        <html><body style="font-family: sans-serif; text-align: center; padding: 50px;">
+            <h2>Error</h2><p>Missing required fields</p>
+        </body></html>
+        """)
+
+    try:
+        # Get task title
+        task = supabase.table('tasks').select('title').eq('id', task_id).single().execute()
+        task_title = task.data.get('title', 'Task') if task.data else 'Task'
+
+        # Update task
+        supabase.table('tasks').update({
+            'due_date': new_date,
+            'due_time': new_time + ':00',
+            'reminder_sent_at': None,
+            'status': 'pending'
+        }).eq('id', task_id).execute()
+
+        return render_template_string("""
+        <html><head><title>Task Rescheduled</title></head>
+        <body style="font-family: sans-serif; text-align: center; padding: 50px; background: #eff6ff;">
+            <h2 style="color: #6366F1;">📅 Task Rescheduled!</h2>
+            <p><strong>{{ title }}</strong></p>
+            <p>New: {{ date }} at {{ time }}</p>
+            <a href="https://www.jottask.app/dashboard" style="color: #6366F1;">Open Dashboard</a>
+        </body></html>
+        """, title=task_title, date=new_date, time=new_time)
+
+    except Exception as e:
+        return render_template_string("""
+        <html><body style="font-family: sans-serif; text-align: center; padding: 50px;">
+            <h2>Error</h2><p>{{ error }}</p>
+        </body></html>
+        """, error=str(e))
 
 
 # ============================================
