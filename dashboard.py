@@ -128,6 +128,83 @@ def login_required(f):
 def get_user_timezone():
     return pytz.timezone(session.get('timezone', 'Australia/Brisbane'))
 
+
+# ============================================
+# SUBSCRIPTION HELPERS
+# ============================================
+
+TIER_LIMITS = {
+    'free_trial': {'tasks_per_month': 20, 'projects': True},
+    'starter': {'tasks_per_month': 100, 'projects': True},
+    'pro': {'tasks_per_month': float('inf'), 'projects': True}
+}
+
+def get_user_subscription(user_id):
+    """Get user's subscription status and limits"""
+    user = supabase.table('users').select(
+        'subscription_tier, trial_ends_at, tasks_this_month, tasks_month_reset, referral_code, referral_credits'
+    ).eq('id', user_id).single().execute()
+
+    if not user.data:
+        return {'tier': 'free_trial', 'can_create_task': False, 'reason': 'User not found'}
+
+    data = user.data
+    tier = data.get('subscription_tier', 'free_trial')
+    trial_ends = data.get('trial_ends_at')
+    tasks_this_month = data.get('tasks_this_month', 0)
+    month_reset = data.get('tasks_month_reset')
+
+    # Check if we need to reset monthly count
+    today = datetime.now().date()
+    if month_reset:
+        reset_date = datetime.fromisoformat(month_reset).date() if isinstance(month_reset, str) else month_reset
+        if today.month != reset_date.month or today.year != reset_date.year:
+            # Reset count for new month
+            supabase.table('users').update({
+                'tasks_this_month': 0,
+                'tasks_month_reset': today.replace(day=1).isoformat()
+            }).eq('id', user_id).execute()
+            tasks_this_month = 0
+
+    # Check trial expiry
+    if tier == 'free_trial' and trial_ends:
+        trial_end_date = datetime.fromisoformat(trial_ends.replace('Z', '+00:00')) if isinstance(trial_ends, str) else trial_ends
+        if datetime.now(pytz.UTC) > trial_end_date:
+            return {
+                'tier': tier,
+                'can_create_task': False,
+                'reason': 'Trial expired',
+                'tasks_used': tasks_this_month,
+                'tasks_limit': TIER_LIMITS[tier]['tasks_per_month'],
+                'trial_expired': True
+            }
+
+    # Check task limit
+    limit = TIER_LIMITS.get(tier, TIER_LIMITS['free_trial'])['tasks_per_month']
+    can_create = tasks_this_month < limit
+
+    return {
+        'tier': tier,
+        'can_create_task': can_create,
+        'reason': None if can_create else f'Monthly limit reached ({limit} tasks)',
+        'tasks_used': tasks_this_month,
+        'tasks_limit': limit,
+        'trial_expired': False,
+        'referral_code': data.get('referral_code'),
+        'referral_credits': data.get('referral_credits', 0)
+    }
+
+def increment_task_count(user_id):
+    """Increment user's monthly task count"""
+    supabase.rpc('increment_task_count', {'user_id_param': user_id}).execute()
+    # Fallback if RPC doesn't exist
+    try:
+        user = supabase.table('users').select('tasks_this_month').eq('id', user_id).single().execute()
+        current = user.data.get('tasks_this_month', 0) if user.data else 0
+        supabase.table('users').update({'tasks_this_month': current + 1}).eq('id', user_id).execute()
+    except:
+        pass
+
 # ============================================
 # BASE TEMPLATE
 # ============================================
@@ -940,11 +1017,19 @@ SIGNUP_TEMPLATE = """
             Start your 14-day free trial
         </p>
 
+        {% if referral_code %}
+        <div style="background: #ECFDF5; border: 1px solid #10B981; padding: 12px 16px; border-radius: 8px; margin-bottom: 16px; text-align: center;">
+            <span style="color: #059669; font-weight: 500;">🎁 You were referred! You'll both get $5 credit when you subscribe.</span>
+        </div>
+        {% endif %}
+
         {% if error %}
         <div class="alert alert-error">{{ error }}</div>
         {% endif %}
 
         <form method="POST">
+            <input type="hidden" name="referral_code" value="{{ referral_code or '' }}">
+
             <div class="form-group">
                 <label class="form-label">Full Name</label>
                 <input type="text" name="full_name" class="form-input" required>
@@ -1955,12 +2040,24 @@ def login():
 
 
 @app.route('/signup', methods=['GET', 'POST'])
-def signup():
+@app.route('/r/<referral_code>', methods=['GET'])
+def signup(referral_code=None):
+    # Get referral code from URL or form
+    ref_code = referral_code or request.args.get('ref') or request.form.get('referral_code')
+
     if request.method == 'POST':
         email = request.form.get('email', '').lower()
         password = request.form.get('password', '')
         full_name = request.form.get('full_name', '')
         timezone = request.form.get('timezone', 'Australia/Brisbane')
+        ref_code = request.form.get('referral_code', '').strip().upper()
+
+        # Look up referrer if referral code provided
+        referrer_id = None
+        if ref_code:
+            referrer = supabase.table('users').select('id').eq('referral_code', ref_code).execute()
+            if referrer.data:
+                referrer_id = referrer.data[0]['id']
 
         try:
             # Create auth user
@@ -1970,15 +2067,36 @@ def signup():
             })
 
             if auth_response.user:
-                # Create user profile
-                supabase.table('users').insert({
+                # Create user profile with subscription info
+                import hashlib
+                new_ref_code = hashlib.md5(f"{auth_response.user.id}jottask{datetime.now().timestamp()}".encode()).hexdigest()[:8].upper()
+
+                user_data = {
                     'id': auth_response.user.id,
                     'email': email,
                     'full_name': full_name,
                     'timezone': timezone,
                     'subscription_status': 'trial',
-                    'subscription_tier': 'starter'
-                }).execute()
+                    'subscription_tier': 'free_trial',
+                    'trial_ends_at': (datetime.now(pytz.UTC) + timedelta(days=14)).isoformat(),
+                    'referral_code': new_ref_code,
+                    'tasks_this_month': 0,
+                    'tasks_month_reset': datetime.now().date().replace(day=1).isoformat()
+                }
+
+                if referrer_id:
+                    user_data['referred_by'] = referrer_id
+
+                supabase.table('users').insert(user_data).execute()
+
+                # Create referral record if referred
+                if referrer_id:
+                    supabase.table('referrals').insert({
+                        'referrer_id': referrer_id,
+                        'referred_id': auth_response.user.id,
+                        'referral_code': ref_code,
+                        'status': 'trial'
+                    }).execute()
 
                 # Log them in
                 session['user_id'] = auth_response.user.id
@@ -1987,6 +2105,7 @@ def signup():
                 session['timezone'] = timezone
 
                 # Notify admin of new signup
+                referral_info = f"<p><strong>Referred by:</strong> {ref_code}</p>" if ref_code else ""
                 send_admin_notification(
                     f"New Signup: {full_name}",
                     f"""
@@ -1994,6 +2113,7 @@ def signup():
                     <p><strong>Name:</strong> {full_name}</p>
                     <p><strong>Email:</strong> {email}</p>
                     <p><strong>Timezone:</strong> {timezone}</p>
+                    {referral_info}
                     <p><strong>Time:</strong> {datetime.now().strftime('%Y-%m-%d %H:%M')}</p>
                     <hr>
                     <p><a href="https://www.jottask.app/admin">View Admin Dashboard</a></p>
@@ -2006,9 +2126,9 @@ def signup():
             error_msg = str(e)
             if 'already registered' in error_msg.lower():
                 error_msg = 'Email already registered'
-            return render_template_string(SIGNUP_TEMPLATE, error=error_msg)
+            return render_template_string(SIGNUP_TEMPLATE, error=error_msg, referral_code=ref_code)
 
-    return render_template_string(SIGNUP_TEMPLATE, error=None)
+    return render_template_string(SIGNUP_TEMPLATE, error=None, referral_code=ref_code)
 
 
 @app.route('/logout')
@@ -2168,6 +2288,13 @@ def dashboard():
 def create_task():
     user_id = session['user_id']
 
+    # Check subscription limits
+    sub = get_user_subscription(user_id)
+    if not sub['can_create_task']:
+        if sub.get('trial_expired'):
+            return redirect(url_for('pricing_page', reason='trial_expired'))
+        return redirect(url_for('pricing_page', reason='limit_reached'))
+
     task_data = {
         'user_id': user_id,
         'title': request.form.get('title'),
@@ -2180,6 +2307,7 @@ def create_task():
     }
 
     supabase.table('tasks').insert(task_data).execute()
+    increment_task_count(user_id)
     return redirect(url_for('dashboard'))
 
 
@@ -2404,10 +2532,22 @@ def settings():
     user_id = session['user_id']
     user = supabase.table('users').select('*').eq('id', user_id).single().execute()
 
+    # Get subscription info
+    sub = get_user_subscription(user_id)
+
+    # Get referral stats
+    referrals = supabase.table('referrals').select('*').eq('referrer_id', user_id).execute()
+    referral_count = len(referrals.data) if referrals.data else 0
+    converted_count = len([r for r in (referrals.data or []) if r.get('status') == 'converted'])
+
     return render_template(
         'settings.html',
         title='Settings',
         user=user.data,
+        subscription=sub,
+        referral_count=referral_count,
+        converted_count=converted_count,
+        referral_link=f"https://www.jottask.app/r/{sub.get('referral_code', '')}",
         message=request.args.get('message')
     )
 

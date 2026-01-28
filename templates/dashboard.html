@@ -1,4 +1,4 @@
-{% extends "base" %}
+{% extends "base.html" %}
 {% block content %}
 <nav class="nav">
     <a href="{{ url_for('dashboard') }}" class="nav-brand">
@@ -70,7 +70,7 @@
         <div class="task-list">
             {% if tasks %}
                 {% for task in tasks %}
-                <div class="task-item" data-task-id="{{ task.id }}">
+                <div class="task-item" data-task-id="{{ task.id }}" data-status="{{ task.status }}" data-due-date="{{ task.due_date }}" data-is-today="{{ 'true' if task.due_date == today else 'false' }}" data-is-overdue="{{ 'true' if task.due_date and task.due_date < today and task.status == 'pending' else 'false' }}">
                     <div class="task-checkbox {% if task.status == 'completed' %}completed{% endif %}"
                          onclick="toggleTask('{{ task.id }}', this)">
                         {% if task.status == 'completed' %}✓{% endif %}
@@ -211,7 +211,36 @@
         tab.addEventListener('click', function() {
             document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
             this.classList.add('active');
-            // Filter logic would go here
+
+            const filter = this.dataset.filter;
+            const tasks = document.querySelectorAll('.task-item');
+
+            tasks.forEach(task => {
+                const status = task.dataset.status;
+                const isToday = task.dataset.isToday === 'true';
+                const isOverdue = task.dataset.isOverdue === 'true';
+
+                let show = false;
+
+                switch(filter) {
+                    case 'all':
+                        show = true;
+                        break;
+                    case 'today':
+                        show = isToday && status === 'pending';
+                        break;
+                    case 'overdue':
+                        show = isOverdue;
+                        break;
+                    case 'completed':
+                        show = status === 'completed';
+                        break;
+                    default:
+                        show = true;
+                }
+
+                task.style.display = show ? 'flex' : 'none';
+            });
         });
     });
 </script>

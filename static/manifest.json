@@ -1,0 +1,21 @@
+{
+    "name": "Jottask",
+    "short_name": "Jottask",
+    "description": "Email-powered task management",
+    "start_url": "/dashboard",
+    "display": "standalone",
+    "background_color": "#F9FAFB",
+    "theme_color": "#6366F1",
+    "icons": [
+        {
+            "src": "/static/icon-192.png",
+            "sizes": "192x192",
+            "type": "image/png"
+        },
+        {
+            "src": "/static/icon-512.png",
+            "sizes": "512x512",
+            "type": "image/png"
+        }
+    ]
+}

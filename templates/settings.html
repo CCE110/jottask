@@ -1,4 +1,4 @@
-{% extends "base" %}
+{% extends "base.html" %}
 {% block content %}
 <nav class="nav">
     <a href="{{ url_for('dashboard') }}" class="nav-brand">
@@ -123,28 +123,103 @@
             </div>
 
             <!-- Subscription Section -->
-            <div class="card">
+            <div class="card" style="margin-bottom: 24px;">
                 <div class="card-header">
                     <h2 class="card-title">Subscription</h2>
                 </div>
                 <div class="card-body">
                     <div style="display: flex; align-items: center; gap: 12px; margin-bottom: 20px;">
-                        <span class="status-badge" style="background: {% if user.subscription_status == 'active' %}var(--success){% elif user.subscription_status == 'trial' %}var(--warning){% else %}var(--gray-300){% endif %}; color: white;">
-                            {{ user.subscription_status|capitalize }}
+                        <span class="status-badge" style="background: {% if subscription.tier == 'pro' %}var(--primary){% elif subscription.tier == 'starter' %}var(--success){% else %}var(--warning){% endif %}; color: white;">
+                            {{ subscription.tier|replace('_', ' ')|title }}
                         </span>
-                        <span style="font-weight: 600;">{{ user.subscription_tier|capitalize }} Plan</span>
                     </div>
 
-                    {% if user.subscription_status == 'trial' %}
+                    <!-- Usage Stats -->
+                    <div style="background: var(--gray-50); padding: 16px; border-radius: 8px; margin-bottom: 20px;">
+                        <div style="display: flex; justify-content: space-between; margin-bottom: 8px;">
+                            <span>Tasks this month</span>
+                            <strong>{{ subscription.tasks_used }} / {{ subscription.tasks_limit if subscription.tasks_limit != float('inf') else '∞' }}</strong>
+                        </div>
+                        {% if subscription.tasks_limit != float('inf') %}
+                        <div style="background: var(--gray-200); height: 8px; border-radius: 4px; overflow: hidden;">
+                            <div style="background: var(--primary); height: 100%; width: {{ (subscription.tasks_used / subscription.tasks_limit * 100)|int }}%; transition: width 0.3s;"></div>
+                        </div>
+                        {% endif %}
+                    </div>
+
+                    {% if subscription.tier == 'free_trial' %}
                     <p style="color: var(--gray-500); margin-bottom: 20px;">
                         Your trial ends on {{ user.trial_ends_at[:10] if user.trial_ends_at else 'soon' }}
                     </p>
                     {% endif %}
 
-                    <a href="{{ url_for('billing') }}" class="btn btn-primary">Manage Subscription</a>
+                    <a href="{{ url_for('pricing_page') }}" class="btn btn-primary">
+                        {% if subscription.tier == 'free_trial' %}Upgrade Now{% else %}Manage Subscription{% endif %}
+                    </a>
+                </div>
+            </div>
+
+            <!-- Referral Section -->
+            <div class="card">
+                <div class="card-header">
+                    <h2 class="card-title">Refer a Friend</h2>
+                </div>
+                <div class="card-body">
+                    <p style="color: var(--gray-600); margin-bottom: 16px;">
+                        Share Jottask with friends! When they sign up and subscribe, you both get <strong>$5 credit</strong>.
+                    </p>
+
+                    <!-- Referral Link -->
+                    <div style="margin-bottom: 20px;">
+                        <label class="form-label">Your Referral Link</label>
+                        <div style="display: flex; gap: 8px;">
+                            <input type="text" id="referral-link" class="form-input" value="{{ referral_link }}" readonly style="flex: 1; background: var(--gray-50);">
+                            <button onclick="copyReferralLink()" class="btn btn-secondary" style="white-space: nowrap;">
+                                📋 Copy
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- Referral Stats -->
+                    <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px;">
+                        <div style="background: var(--gray-50); padding: 16px; border-radius: 8px; text-align: center;">
+                            <div style="font-size: 24px; font-weight: 700; color: var(--primary);">{{ referral_count }}</div>
+                            <div style="font-size: 13px; color: var(--gray-500);">Referrals</div>
+                        </div>
+                        <div style="background: var(--gray-50); padding: 16px; border-radius: 8px; text-align: center;">
+                            <div style="font-size: 24px; font-weight: 700; color: var(--success);">{{ converted_count }}</div>
+                            <div style="font-size: 13px; color: var(--gray-500);">Converted</div>
+                        </div>
+                        <div style="background: var(--gray-50); padding: 16px; border-radius: 8px; text-align: center;">
+                            <div style="font-size: 24px; font-weight: 700; color: var(--warning);">${{ subscription.referral_credits|default(0)|round(2) }}</div>
+                            <div style="font-size: 13px; color: var(--gray-500);">Credits</div>
+                        </div>
+                    </div>
+
+                    <!-- Share Buttons -->
+                    <div style="margin-top: 20px; display: flex; gap: 8px; flex-wrap: wrap;">
+                        <a href="mailto:?subject=Try%20Jottask%20-%20AI%20Task%20Management&body=I've%20been%20using%20Jottask%20to%20manage%20my%20tasks%20via%20email.%20Check%20it%20out%3A%20{{ referral_link|urlencode }}" class="btn btn-secondary" style="flex: 1;">
+                            ✉️ Email
+                        </a>
+                        <a href="https://wa.me/?text=Check%20out%20Jottask%20for%20easy%20task%20management%3A%20{{ referral_link|urlencode }}" target="_blank" class="btn btn-secondary" style="flex: 1;">
+                            💬 WhatsApp
+                        </a>
+                        <a href="https://twitter.com/intent/tweet?text=Managing%20tasks%20via%20email%20with%20%40Jottask%20-%20super%20easy!&url={{ referral_link|urlencode }}" target="_blank" class="btn btn-secondary" style="flex: 1;">
+                            🐦 Twitter
+                        </a>
+                    </div>
                 </div>
             </div>
         </div>
     </div>
 </main>
+
+<script>
+function copyReferralLink() {
+    const input = document.getElementById('referral-link');
+    input.select();
+    document.execCommand('copy');
+    alert('Referral link copied!');
+}
+</script>
 {% endblock %}

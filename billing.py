@@ -190,7 +190,7 @@ def handle_checkout_completed(session_data):
         return
 
     # Determine tier from plan name
-    tier = 'pro' if 'pro' in plan else 'business'
+    tier = 'starter' if 'starter' in plan else 'pro'
 
     supabase.table('users').update({
         'subscription_status': 'active',
@@ -199,6 +199,44 @@ def handle_checkout_completed(session_data):
     }).eq('id', user_id).execute()
 
     print(f"✅ Subscription activated for user {user_id}: {tier}")
+
+    # Handle referral rewards
+    try:
+        # Check if this user was referred
+        referral = supabase.table('referrals').select('*').eq('referred_id', user_id).eq('reward_given', False).execute()
+
+        if referral.data and len(referral.data) > 0:
+            ref = referral.data[0]
+            referrer_id = ref['referrer_id']
+
+            # Give both users $5 credit
+            REFERRAL_CREDIT = 5.00
+
+            # Credit the referrer
+            referrer = supabase.table('users').select('referral_credits').eq('id', referrer_id).single().execute()
+            current_credits = referrer.data.get('referral_credits', 0) if referrer.data else 0
+            supabase.table('users').update({
+                'referral_credits': current_credits + REFERRAL_CREDIT
+            }).eq('id', referrer_id).execute()
+
+            # Credit the referred user
+            referred = supabase.table('users').select('referral_credits').eq('id', user_id).single().execute()
+            referred_credits = referred.data.get('referral_credits', 0) if referred.data else 0
+            supabase.table('users').update({
+                'referral_credits': referred_credits + REFERRAL_CREDIT
+            }).eq('id', user_id).execute()
+
+            # Mark referral as converted and reward given
+            supabase.table('referrals').update({
+                'status': 'converted',
+                'reward_given': True,
+                'converted_at': 'now()'
+            }).eq('id', ref['id']).execute()
+
+            print(f"🎁 Referral rewards given: {referrer_id} and {user_id} each got ${REFERRAL_CREDIT}")
+
+    except Exception as e:
+        print(f"⚠️ Error processing referral reward: {e}")
 
 
 def handle_subscription_updated(subscription):
@@ -262,47 +300,49 @@ def handle_payment_failed(invoice):
 
 PLANS = [
     {
-        'id': 'starter',
-        'name': 'Starter',
+        'id': 'free_trial',
+        'name': 'Free Trial',
         'price_monthly': 0,
         'price_yearly': 0,
         'features': [
-            'Up to 50 tasks',
-            '1 email connection',
-            'Basic task management',
-            'Email reminders'
+            '14 days free',
+            '20 tasks per month',
+            'Email-to-task creation',
+            'Smart reminders',
+            'Projects & checklists'
         ],
-        'cta': 'Current Plan' if True else 'Get Started'
+        'cta': 'Start Free Trial'
+    },
+    {
+        'id': 'starter',
+        'name': 'Starter',
+        'price_monthly': 8,
+        'price_yearly': 80,
+        'popular': True,
+        'features': [
+            '100 tasks per month',
+            'Email-to-task creation',
+            'Smart reminders',
+            'Projects & checklists',
+            'Daily summary emails',
+            'Email support'
+        ],
+        'cta': 'Get Started'
     },
     {
         'id': 'pro',
         'name': 'Pro',
-        'price_monthly': 19,
-        'price_yearly': 190,
-        'popular': True,
-        'features': [
-            'Up to 500 tasks',
-            '3 email connections',
-            'AI task summaries',
-            'Custom project statuses',
-            'Priority support'
-        ],
-        'cta': 'Upgrade to Pro'
-    },
-    {
-        'id': 'business',
-        'name': 'Business',
-        'price_monthly': 49,
-        'price_yearly': 490,
+        'price_monthly': 15,
+        'price_yearly': 150,
         'features': [
             'Unlimited tasks',
-            '10 email connections',
-            'Team collaboration (10 members)',
-            'API access',
-            'Advanced analytics',
-            'Dedicated support'
+            'Everything in Starter',
+            'Priority email processing',
+            'Advanced AI features',
+            'Priority support',
+            'Early access to new features'
         ],
-        'cta': 'Contact Sales'
+        'cta': 'Go Pro'
     }
 ]
 

@@ -27,7 +27,7 @@ except Exception as e:
     PROJECT_STATUSES = []
 
 # Get action URL from environment
-ACTION_URL = os.getenv('TASK_ACTION_URL', 'https://rob-crm-tasks-production.up.railway.app/action')
+ACTION_URL = os.getenv('TASK_ACTION_URL', 'https://www.jottask.app/action')
 
 # ============================================
 # HTML TEMPLATES
