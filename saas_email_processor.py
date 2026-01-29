@@ -594,6 +594,84 @@ def is_missed_call_email(subject, body):
     return any(indicator in text for indicator in missed_indicators)
 
 
+def is_awaiting_docs_email(subject, body):
+    """Detect if email is requesting bills/photos from a client"""
+    text = (subject + ' ' + body).lower()
+
+    # Must have at least one bill-related indicator
+    bill_indicators = ['power bill', 'electricity bill', 'bill please', 'send me a bill',
+                       'copy of your bill', 'latest bill', 'energy bill']
+    has_bill = any(indicator in text for indicator in bill_indicators)
+
+    # Must have at least one photo-related indicator
+    photo_indicators = ['photo', 'photos', 'pictures', 'pics', 'images', 'site photo',
+                        'power board', 'meter box', 'switchboard', 'inverter', 'battery location']
+    has_photo = any(indicator in text for indicator in photo_indicators)
+
+    # Return true if both bill AND photo mentioned, OR specific combined phrases
+    combined_indicators = ['bills and site photos', 'bill and photos', 'photos and bill',
+                          'power bill please', 'send me some photos']
+    has_combined = any(indicator in text for indicator in combined_indicators)
+
+    return (has_bill and has_photo) or has_combined
+
+
+def process_awaiting_docs_email(user_id, user_email, subject, body, to_header, user_timezone, user_name=None):
+    """Process a request for docs email - create follow-up task 5 hours from now"""
+    print(f"    📄 Processing awaiting docs follow-up...")
+
+    # Extract contact name from the To field (the client)
+    contact_name = extract_name_from_email(subject, to_header, body)
+
+    # Get user's timezone for task scheduling
+    tz = pytz.timezone(user_timezone)
+    now = datetime.now(tz)
+
+    # Set due time to 5 hours from now
+    due_datetime = now + timedelta(hours=5)
+    due_date = due_datetime.date().isoformat()
+    due_time = due_datetime.strftime('%H:%M') + ':00'
+
+    # Create task title
+    task_title = f"{contact_name} - awaiting bills and site photos"
+
+    # Create the task
+    task_data = {
+        'user_id': user_id,
+        'title': task_title,
+        'description': f"Follow up on documents request - original email subject: {subject}",
+        'due_date': due_date,
+        'due_time': due_time,
+        'priority': 'medium',
+        'status': 'pending',
+        'client_name': contact_name,
+        'source': 'email_cc'
+    }
+
+    try:
+        result = supabase.table('tasks').insert(task_data).execute()
+        if result.data:
+            task = result.data[0]
+            print(f"    ✅ Awaiting docs task created: {task_title} (due {due_date} {due_time[:5]})")
+
+            # Send confirmation email
+            send_task_confirmation_email(
+                user_email=user_email,
+                task_title=task_title,
+                due_date=due_date,
+                due_time=due_time,
+                task_id=task['id'],
+                user_name=user_name,
+                user_id=user_id
+            )
+
+            return task
+    except Exception as e:
+        print(f"    ❌ Failed to create awaiting docs task: {e}")
+
+    return None
+
+
 def extract_name_from_email(subject, to_header, body):
     """Extract contact name from subject, To header, or body"""
     # Try subject first - format: "Name - sorry I missed you"
@@ -755,6 +833,25 @@ def process_central_inbox():
                 user_name = user_profile.data.get('full_name') if user_profile.data else None
 
                 task = process_missed_call_email(
+                    user_id=user_id,
+                    user_email=user['email'],
+                    subject=subject,
+                    body=body,
+                    to_header=to_header,
+                    user_timezone=user_timezone,
+                    user_name=user_name
+                )
+                if task:
+                    mark_email_processed(email_id_str, user_id)
+                    imap.store(email_id, '+FLAGS', '\\Seen')
+                    continue
+
+            # Check if this is requesting bills/photos from a client (CC'd to jottask)
+            if is_awaiting_docs_email(subject, body):
+                user_profile = supabase.table('users').select('full_name').eq('id', user_id).single().execute()
+                user_name = user_profile.data.get('full_name') if user_profile.data else None
+
+                task = process_awaiting_docs_email(
                     user_id=user_id,
                     user_email=user['email'],
                     subject=subject,
