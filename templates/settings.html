@@ -69,6 +69,14 @@
                         </div>
 
                         <div class="form-group">
+                            <label class="form-label">Alternate Emails</label>
+                            <input type="text" name="alternate_emails" class="form-input"
+                                   value="{{ user.alternate_emails|join(', ') if user.alternate_emails else '' }}"
+                                   placeholder="other@email.com, work@email.com">
+                            <small style="color: var(--gray-500);">Comma-separated. Emails you send FROM that should create tasks in your account.</small>
+                        </div>
+
+                        <div class="form-group">
                             <label class="form-label">Company Name</label>
                             <input type="text" name="company_name" class="form-input" value="{{ user.company_name or '' }}">
                         </div>

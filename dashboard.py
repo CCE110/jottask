@@ -2574,10 +2574,15 @@ def settings():
 def update_profile():
     user_id = session['user_id']
 
+    # Parse alternate emails from comma-separated string
+    alternate_emails_str = request.form.get('alternate_emails', '')
+    alternate_emails = [e.strip().lower() for e in alternate_emails_str.split(',') if e.strip()]
+
     update_data = {
         'full_name': request.form.get('full_name'),
         'company_name': request.form.get('company_name'),
-        'timezone': request.form.get('timezone')
+        'timezone': request.form.get('timezone'),
+        'alternate_emails': alternate_emails if alternate_emails else None
     }
 
     supabase.table('users').update(update_data).eq('id', user_id).execute()
