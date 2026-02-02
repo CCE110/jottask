@@ -86,7 +86,7 @@ def get_user_by_email(sender_email):
 
     # First try primary email
     result = supabase.table('users')\
-        .select('id, email, full_name, timezone, subscription_tier, subscription_status')\
+        .select('id, email, full_name, timezone, subscription_tier, subscription_status, alternate_emails')\
         .eq('email', sender_lower)\
         .execute()
 
@@ -95,7 +95,7 @@ def get_user_by_email(sender_email):
 
     # Then check alternate_emails array
     result = supabase.table('users')\
-        .select('id, email, full_name, timezone, subscription_tier, subscription_status')\
+        .select('id, email, full_name, timezone, subscription_tier, subscription_status, alternate_emails')\
         .contains('alternate_emails', [sender_lower])\
         .execute()
 
@@ -197,13 +197,15 @@ If this email contains a task or follow-up needed, respond with JSON:
     "is_task": true,
     "title": "brief task title",
     "description": "task details",
-    "due_date": "YYYY-MM-DD",
-    "due_time": "HH:MM",
+    "due_date": "YYYY-MM-DD or null if no date specified",
+    "due_time": "HH:MM or null if no time specified",
     "priority": "low|medium|high|urgent",
     "client_name": "name if mentioned",
     "client_email": "{from_email}",
     "project_name": "project if mentioned"
 }}
+
+IMPORTANT: If the email does NOT specify a specific date or time for the task, return null for due_date and/or due_time. Do not guess or assume a date/time.
 
 If this is NOT an actionable task (newsletter, spam, notification, etc), respond with:
 {{
@@ -490,7 +492,11 @@ def send_task_confirmation_email(user_email, task_title, due_date, due_time, tas
     """Send confirmation email for task creation - direct to Resend API"""
     WEB_SERVICE_URL = os.getenv('WEB_SERVICE_URL', 'https://www.jottask.app')
 
-    print(f"  📧 Sending task confirmation to {user_email}...")
+    print(f"  📧 Attempting task confirmation email:")
+    print(f"      To: {user_email}")
+    print(f"      Task: {task_title}")
+    print(f"      Task ID: {task_id}")
+    print(f"      Due: {due_date} {due_time}")
 
     # Use query-param format for action URLs (no login required)
     action_base = f"{WEB_SERVICE_URL}/action"
@@ -531,7 +537,14 @@ def send_task_confirmation_email(user_email, task_title, due_date, due_time, tas
     """
 
     # Send directly via Resend API (bypasses web service)
-    send_email_direct(user_email, f"✅ Task Created: {task_title}", html_content)
+    result = send_email_direct(user_email, f"✅ Task Created: {task_title}", html_content)
+
+    if result:
+        print(f"  ✅ Task confirmation email SENT successfully to {user_email}")
+    else:
+        print(f"  ❌ Task confirmation email FAILED for {user_email}")
+
+    return result
 
 
 def process_project_email(user_id, user_email, subject, body, user_name=None):
@@ -668,6 +681,93 @@ def process_awaiting_docs_email(user_id, user_email, subject, body, to_header, u
             return task
     except Exception as e:
         print(f"    ❌ Failed to create awaiting docs task: {e}")
+
+    return None
+
+
+def is_customer_outreach_email(to_header, from_email, user):
+    """Detect if this is an outreach email CC'd to jottask (user emailing a customer)"""
+    from_lower = from_email.lower()
+
+    # Check if the email is FROM the user (primary or alternate email)
+    user_emails = [user['email'].lower()]
+    if user.get('alternate_emails'):
+        user_emails.extend([e.lower() for e in user['alternate_emails']])
+
+    print(f"    🔍 Customer outreach check: from={from_lower}, user_emails={user_emails}, to_header={to_header}")
+
+    if from_lower not in user_emails:
+        print(f"    ❌ Not customer outreach: from_email not in user's emails")
+        return False
+
+    # Check if TO header contains an external recipient (not jottask)
+    if not to_header:
+        print(f"    ❌ Not customer outreach: no TO header")
+        return False
+
+    to_email = to_header.split('<')[-1].replace('>', '').strip().lower() if '<' in to_header else to_header.lower()
+
+    # Make sure it's going to someone external (not jottask itself)
+    if 'jottask' in to_email or 'flowquote' in to_email:
+        print(f"    ❌ Not customer outreach: TO contains jottask/flowquote")
+        return False
+
+    print(f"    ✅ IS customer outreach email")
+    return True
+
+
+def process_customer_followup_email(user_id, user_email, subject, body, to_header, user_timezone, user_name=None):
+    """Process a CC'd customer email - create follow-up task for 1 day later at same time"""
+    print(f"    📬 Processing customer follow-up...")
+
+    # Extract contact name from the To field or subject
+    contact_name = extract_name_from_email(subject, to_header, body)
+
+    # Get user's timezone for task scheduling
+    tz = pytz.timezone(user_timezone)
+    now = datetime.now(tz)
+
+    # Set due time to 1 day later at the same time
+    due_datetime = now + timedelta(days=1)
+    due_date = due_datetime.date().isoformat()
+    due_time = now.strftime('%H:%M') + ':00'  # Same time as email was sent
+
+    # Create task title: "[Name] - no reply try again - Lead"
+    task_title = f"{contact_name} - no reply try again - Lead"
+
+    # Create the task
+    task_data = {
+        'user_id': user_id,
+        'title': task_title,
+        'description': f"Follow up if no reply - original email subject: {subject}",
+        'due_date': due_date,
+        'due_time': due_time,
+        'priority': 'medium',
+        'status': 'pending',
+        'client_name': contact_name,
+        'source': 'email_cc'
+    }
+
+    try:
+        result = supabase.table('tasks').insert(task_data).execute()
+        if result.data:
+            task = result.data[0]
+            print(f"    ✅ Follow-up task created: {task_title} (due {due_date} {due_time[:5]})")
+
+            # Send confirmation email
+            send_task_confirmation_email(
+                user_email=user_email,
+                task_title=task_title,
+                due_date=due_date,
+                due_time=due_time,
+                task_id=task['id'],
+                user_name=user_name,
+                user_id=user_id
+            )
+
+            return task
+    except Exception as e:
+        print(f"    ❌ Failed to create follow-up task: {e}")
 
     return None
 
@@ -865,6 +965,26 @@ def process_central_inbox():
                     imap.store(email_id, '+FLAGS', '\\Seen')
                     continue
 
+            # Check if this is a customer outreach email (user CC'd jottask on email to customer)
+            # Creates a "no reply try again" follow-up task for 1 day later
+            if is_customer_outreach_email(to_header, from_email, user):
+                user_profile = supabase.table('users').select('full_name').eq('id', user_id).single().execute()
+                user_name = user_profile.data.get('full_name') if user_profile.data else None
+
+                task = process_customer_followup_email(
+                    user_id=user_id,
+                    user_email=user['email'],
+                    subject=subject,
+                    body=body,
+                    to_header=to_header,
+                    user_timezone=user_timezone,
+                    user_name=user_name
+                )
+                if task:
+                    mark_email_processed(email_id_str, user_id)
+                    imap.store(email_id, '+FLAGS', '\\Seen')
+                    continue
+
             # Check if this is a project email
             if is_project_email(subject):
                 # Get user's name for personalization
@@ -881,6 +1001,17 @@ def process_central_inbox():
                 analysis = analyze_email_with_ai(subject, body, from_email, user_timezone)
 
                 if analysis.get('is_task'):
+                    # If no date/time specified, default to 4 hours from now
+                    if not analysis.get('due_date') or not analysis.get('due_time'):
+                        tz = pytz.timezone(user_timezone)
+                        now = datetime.now(tz)
+                        due_datetime = now + timedelta(hours=4)
+                        if not analysis.get('due_date'):
+                            analysis['due_date'] = due_datetime.date().isoformat()
+                        if not analysis.get('due_time'):
+                            analysis['due_time'] = due_datetime.strftime('%H:%M')
+                        print(f"    ⏰ No date/time specified - defaulting to 4 hours from now: {analysis['due_date']} {analysis['due_time']}")
+
                     # Create task for this user
                     task = create_task_for_user(user_id, analysis)
 
