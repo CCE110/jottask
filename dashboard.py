@@ -4,6 +4,7 @@ Full SaaS task management interface
 """
 
 import os
+import json
 from flask import Flask, render_template_string, render_template, request, redirect, url_for, session, jsonify, flash
 from datetime import datetime, timedelta
 import pytz
@@ -45,7 +46,8 @@ def send_admin_notification(subject, body_html):
             'https://api.resend.com/emails',
             headers={
                 'Authorization': f'Bearer {RESEND_API_KEY}',
-                'Content-Type': 'application/json'
+                'Content-Type': 'application/json',
+                'User-Agent': 'Jottask/1.0'
             },
             json={
                 'from': f'Jottask <{FROM_EMAIL}>',
@@ -90,7 +92,8 @@ def send_email(to_email, subject, body_html):
             data=data,
             headers={
                 'Authorization': f'Bearer {RESEND_API_KEY}',
-                'Content-Type': 'application/json'
+                'Content-Type': 'application/json',
+                'User-Agent': 'Jottask/1.0'
             },
             method='POST'
         )
@@ -111,6 +114,64 @@ def send_email(to_email, subject, body_html):
     except Exception as e:
         print(f"❌ Failed to send email: {type(e).__name__}: {e}")
         return False, str(e)
+
+
+def send_task_confirmation_email(user_email, task_title, due_date, due_time, task_id, user_name=None):
+    """Send confirmation email when a task is created from dashboard"""
+    WEB_SERVICE_URL = os.getenv('WEB_SERVICE_URL', 'https://www.jottask.app')
+
+    print(f"📧 Attempting task confirmation email from dashboard:")
+    print(f"    To: {user_email}")
+    print(f"    Task: {task_title}")
+    print(f"    Task ID: {task_id}")
+    print(f"    Due: {due_date} {due_time}")
+
+    # Build action URLs
+    action_base = f"{WEB_SERVICE_URL}/action"
+    complete_url = f"{action_base}?action=complete&task_id={task_id}"
+    delay_1hour_url = f"{action_base}?action=delay_1hour&task_id={task_id}"
+    delay_1day_url = f"{action_base}?action=delay_1day&task_id={task_id}"
+    reschedule_url = f"{action_base}?action=delay_custom&task_id={task_id}"
+
+    greeting = f"Hi {user_name}," if user_name else "Hi,"
+    due_display = f"{due_date} at {due_time[:5]}" if due_time else due_date
+
+    html_content = f"""
+    <html>
+    <body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
+        <div style="background: linear-gradient(135deg, #6366F1 0%, #8B5CF6 100%); padding: 24px; border-radius: 12px 12px 0 0;">
+            <h1 style="color: white; margin: 0; font-size: 24px;">✅ Task Created</h1>
+        </div>
+        <div style="background: #f9fafb; padding: 24px; border: 1px solid #e5e7eb; border-top: none; border-radius: 0 0 12px 12px;">
+            <p style="color: #374151;">{greeting}</p>
+            <p style="color: #374151;">Your task has been created:</p>
+            <div style="background: white; border: 1px solid #e5e7eb; border-radius: 8px; padding: 16px; margin: 16px 0;">
+                <h3 style="margin: 0 0 8px 0; color: #111827;">{task_title}</h3>
+                <p style="margin: 0; color: #6b7280; font-size: 14px;">Due: {due_display}</p>
+            </div>
+            <div style="margin-top: 16px; text-align: center;">
+                <a href="{complete_url}" style="display: inline-block; background: #10B981; color: white; padding: 12px 20px; border-radius: 8px; text-decoration: none; margin: 4px; font-weight: 600;">✅ Complete</a>
+                <a href="{delay_1hour_url}" style="display: inline-block; background: #6b7280; color: white; padding: 12px 20px; border-radius: 8px; text-decoration: none; margin: 4px; font-weight: 600;">⏰ +1 Hour</a>
+                <a href="{delay_1day_url}" style="display: inline-block; background: #6b7280; color: white; padding: 12px 20px; border-radius: 8px; text-decoration: none; margin: 4px; font-weight: 600;">📅 +1 Day</a>
+                <a href="{reschedule_url}" style="display: inline-block; background: #6366F1; color: white; padding: 12px 20px; border-radius: 8px; text-decoration: none; margin: 4px; font-weight: 600;">🗓️ Change Time</a>
+            </div>
+            <p style="color: #6b7280; font-size: 13px; margin-top: 16px;">You'll receive a reminder 5-20 minutes before this task is due.</p>
+        </div>
+        <p style="color: #9ca3af; font-size: 12px; text-align: center; margin-top: 24px;">
+            Jottask - AI-Powered Task Management
+        </p>
+    </body>
+    </html>
+    """
+
+    success, error = send_email(user_email, f"✅ Task Created: {task_title}", html_content)
+
+    if success:
+        print(f"✅ Task confirmation email SENT successfully to {user_email}")
+    else:
+        print(f"❌ Task confirmation email FAILED for {user_email}: {error}")
+
+    return success
 
 
 # ============================================
@@ -2323,8 +2384,24 @@ def create_task():
         'client_name': request.form.get('client_name') or None
     }
 
-    supabase.table('tasks').insert(task_data).execute()
+    result = supabase.table('tasks').insert(task_data).execute()
     increment_task_count(user_id)
+
+    # Send confirmation email
+    if result.data:
+        task = result.data[0]
+        user_email = session.get('user_email')
+        user_name = session.get('user_name')
+        if user_email:
+            send_task_confirmation_email(
+                user_email=user_email,
+                task_title=task.get('title'),
+                due_date=task.get('due_date'),
+                due_time=task.get('due_time'),
+                task_id=task.get('id'),
+                user_name=user_name
+            )
+
     return redirect(url_for('dashboard'))
 
 

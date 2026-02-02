@@ -53,7 +53,8 @@ def send_email_direct(to_email, subject, body_html):
             data=data,
             headers={
                 'Authorization': f'Bearer {RESEND_API_KEY}',
-                'Content-Type': 'application/json'
+                'Content-Type': 'application/json',
+                'User-Agent': 'Jottask/1.0'
             },
             method='POST'
         )
