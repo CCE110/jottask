@@ -746,6 +746,17 @@ LANDING_TEMPLATE = """
 
         footer a:hover { color: white; }
 
+        /* Mobile login link - visible only on mobile */
+        .mobile-login {
+            display: none;
+            color: var(--primary);
+            font-weight: 600;
+            text-decoration: none;
+            padding: 8px 16px;
+            border: 2px solid var(--primary);
+            border-radius: 8px;
+        }
+
         /* Responsive */
         @media (max-width: 768px) {
             .hero h1 { font-size: 36px; }
@@ -753,6 +764,7 @@ LANDING_TEMPLATE = """
             .steps { flex-direction: column; align-items: center; }
             .pricing-grid { grid-template-columns: 1fr; }
             .header-links { display: none; }
+            .mobile-login { display: block; }
         }
     </style>
 </head>
@@ -774,6 +786,7 @@ LANDING_TEMPLATE = """
                 </svg>
                 Jottask
             </a>
+            <a href="/login" class="mobile-login">Login</a>
             <div class="header-links">
                 <a href="#features">Features</a>
                 <a href="#pricing">Pricing</a>
