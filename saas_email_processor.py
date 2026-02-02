@@ -657,8 +657,7 @@ def process_awaiting_docs_email(user_id, user_email, subject, body, to_header, u
         'due_time': due_time,
         'priority': 'medium',
         'status': 'pending',
-        'client_name': contact_name,
-        'source': 'email_cc'
+        'client_name': contact_name
     }
 
     try:
@@ -744,8 +743,7 @@ def process_customer_followup_email(user_id, user_email, subject, body, to_heade
         'due_time': due_time,
         'priority': 'medium',
         'status': 'pending',
-        'client_name': contact_name,
-        'source': 'email_cc'
+        'client_name': contact_name
     }
 
     try:
@@ -830,8 +828,7 @@ def process_missed_call_email(user_id, user_email, subject, body, to_header, use
         'due_time': due_time,
         'priority': 'medium',
         'status': 'pending',
-        'client_name': contact_name,
-        'source': 'email_cc'
+        'client_name': contact_name
     }
 
     try:
