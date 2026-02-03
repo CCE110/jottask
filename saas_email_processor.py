@@ -631,7 +631,7 @@ def is_awaiting_docs_email(subject, body):
 
 
 def process_awaiting_docs_email(user_id, user_email, subject, body, to_header, user_timezone, user_name=None):
-    """Process a request for docs email - create follow-up task 5 hours from now"""
+    """Process a request for docs email - create follow-up task 4 hours from now"""
     print(f"    📄 Processing awaiting docs follow-up...")
 
     # Extract contact name from the To field (the client)
@@ -641,13 +641,13 @@ def process_awaiting_docs_email(user_id, user_email, subject, body, to_header, u
     tz = pytz.timezone(user_timezone)
     now = datetime.now(tz)
 
-    # Set due time to 5 hours from now
-    due_datetime = now + timedelta(hours=5)
+    # Set due time to 4 hours from now
+    due_datetime = now + timedelta(hours=4)
     due_date = due_datetime.date().isoformat()
     due_time = due_datetime.strftime('%H:%M') + ':00'
 
     # Create task title
-    task_title = f"{contact_name} - awaiting bills and site photos"
+    task_title = f"{contact_name} - aw bills and site photos"
 
     # Create the task
     task_data = {
