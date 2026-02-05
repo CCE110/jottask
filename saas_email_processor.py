@@ -772,24 +772,25 @@ def process_customer_followup_email(user_id, user_email, subject, body, to_heade
 
 
 def extract_name_from_email(subject, to_header, body):
-    """Extract contact name from subject, To header, or body"""
-    # Try subject first - format: "Name - sorry I missed you"
+    """Extract contact name from To header, subject, or body - prefers full name"""
+    import re
+
+    # Try To header first - best source for full name (e.g. "Helen Williams DSW <helen@...>")
+    if to_header and '<' in to_header:
+        name_part = to_header.split('<')[0].strip().strip('"').strip("'")
+        if name_part and len(name_part) > 1:
+            return name_part
+
+    # Try subject - format: "Name - sorry I missed you"
     if ' - ' in subject:
         name = subject.split(' - ')[0].strip()
         if len(name) > 1 and len(name) < 50:
             return name
 
     # Try "Hi Name" pattern from body
-    import re
-    hi_match = re.search(r'(?:^|\n)\s*(?:Hi|Hello|Hey|Dear)\s+([A-Z][a-z]+)', body)
+    hi_match = re.search(r'(?:^|\n)\s*(?:Hi|Hello|Hey|Dear)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)', body)
     if hi_match:
         return hi_match.group(1)
-
-    # Try To header - extract name before email
-    if to_header and '<' in to_header:
-        name_part = to_header.split('<')[0].strip().strip('"').strip("'")
-        if name_part and len(name_part) > 1:
-            return name_part
 
     # Try extracting from To email address
     if to_header:
