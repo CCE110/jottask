@@ -1,0 +1,440 @@
+{% extends "base.html" %}
+{% block content %}
+<nav class="nav">
+    <a href="{{ url_for('dashboard') }}" class="nav-brand">
+        <svg viewBox="0 0 512 512" width="32" height="32">
+            <defs>
+                <linearGradient id="grad3" x1="0%" y1="0%" x2="0%" y2="100%">
+                    <stop offset="0%" style="stop-color:#8B5CF6" />
+                    <stop offset="100%" style="stop-color:#6366F1" />
+                </linearGradient>
+            </defs>
+            <rect width="512" height="512" rx="96" fill="white"/>
+            <rect x="120" y="80" width="220" height="300" rx="24" fill="url(#grad3)"/>
+            <circle cx="310" cy="350" r="70" fill="#10B981"/>
+            <path d="M275 350 L300 375 L355 315" fill="none" stroke="white" stroke-width="18" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+        Jottask
+    </a>
+
+    <div class="nav-links">
+        <a href="{{ url_for('dashboard') }}" class="nav-link">Tasks</a>
+        <a href="{{ url_for('daily_report') }}" class="nav-link active">Daily Report</a>
+        <a href="{{ url_for('projects') }}" class="nav-link">Projects</a>
+        <a href="{{ url_for('settings') }}" class="nav-link">Settings</a>
+    </div>
+
+    <div class="nav-user">
+        <span style="color: var(--gray-500);">{{ session.user_name }}</span>
+        <div class="avatar">{{ session.user_name[0].upper() }}</div>
+        <a href="{{ url_for('logout') }}" class="btn btn-secondary btn-sm">Logout</a>
+    </div>
+</nav>
+
+<main class="main">
+    <!-- Daily Report Header -->
+    <div class="report-header">
+        <div class="report-header-content">
+            <h1>Daily Report</h1>
+            <p class="report-date">{{ date_display }}</p>
+        </div>
+        <button class="btn btn-primary" onclick="openModal('new-task-modal')">+ Add Task</button>
+    </div>
+
+    <!-- Stats Row -->
+    <div class="stats-grid">
+        <div class="stat-card">
+            <div class="stat-value">{{ stats.total_pending }}</div>
+            <div class="stat-label">Pending</div>
+        </div>
+        <div class="stat-card stat-danger">
+            <div class="stat-value">{{ stats.overdue }}</div>
+            <div class="stat-label">Overdue</div>
+        </div>
+        <div class="stat-card stat-primary">
+            <div class="stat-value">{{ stats.due_today }}</div>
+            <div class="stat-label">Due Today</div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-value">{{ stats.upcoming }}</div>
+            <div class="stat-label">Upcoming</div>
+        </div>
+    </div>
+
+    <!-- Overdue Section -->
+    {% if overdue_tasks %}
+    <div class="card section-overdue">
+        <div class="card-header section-header-overdue">
+            <h2 class="card-title">Overdue</h2>
+            <span class="count-badge count-danger">{{ overdue_tasks|length }}</span>
+        </div>
+        <div class="task-list">
+            {% for task in overdue_tasks %}
+            <div class="task-item task-overdue" data-task-id="{{ task.id }}">
+                <div class="task-checkbox" onclick="completeTask('{{ task.id }}', this)" title="Mark Complete">
+                </div>
+                <div class="task-content" onclick="window.location.href='/tasks/{{ task.id }}/edit'">
+                    <div class="task-title">{{ task.title }}</div>
+                    <div class="task-meta">
+                        <span class="priority-{{ task.priority }}">{{ task.priority|capitalize }}</span>
+                        <span class="overdue-date">Due: {{ task.due_date }}</span>
+                        {% if task.client_name %}<span>{{ task.client_name }}</span>{% endif %}
+                    </div>
+                </div>
+                <div class="task-actions-inline">
+                    <button class="action-btn action-edit" onclick="window.location.href='/tasks/{{ task.id }}/edit'" title="Edit">
+                        <svg width="16" height="16" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"/></svg>
+                    </button>
+                    <button class="action-btn action-delay" onclick="openDelayModal('{{ task.id }}')" title="Delay">
+                        <svg width="16" height="16" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+                    </button>
+                    <button class="action-btn action-complete" onclick="completeTask('{{ task.id }}', this)" title="Complete">
+                        <svg width="16" height="16" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>
+                    </button>
+                </div>
+            </div>
+            {% endfor %}
+        </div>
+    </div>
+    {% endif %}
+
+    <!-- Due Today Section -->
+    {% if today_tasks %}
+    <div class="card section-today">
+        <div class="card-header section-header-today">
+            <h2 class="card-title">Due Today</h2>
+            <span class="count-badge count-primary">{{ today_tasks|length }}</span>
+        </div>
+        <div class="task-list">
+            {% for task in today_tasks %}
+            <div class="task-item task-today" data-task-id="{{ task.id }}">
+                <div class="task-checkbox" onclick="completeTask('{{ task.id }}', this)" title="Mark Complete">
+                </div>
+                <div class="task-content" onclick="window.location.href='/tasks/{{ task.id }}/edit'">
+                    <div class="task-title">{{ task.title }}</div>
+                    <div class="task-meta">
+                        <span class="priority-{{ task.priority }}">{{ task.priority|capitalize }}</span>
+                        <span class="today-time">{{ task.due_time[:5] if task.due_time else 'No time' }}</span>
+                        {% if task.client_name %}<span>{{ task.client_name }}</span>{% endif %}
+                    </div>
+                </div>
+                <div class="task-actions-inline">
+                    <button class="action-btn action-edit" onclick="window.location.href='/tasks/{{ task.id }}/edit'" title="Edit">
+                        <svg width="16" height="16" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"/></svg>
+                    </button>
+                    <button class="action-btn action-delay" onclick="openDelayModal('{{ task.id }}')" title="Delay">
+                        <svg width="16" height="16" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+                    </button>
+                    <button class="action-btn action-complete" onclick="completeTask('{{ task.id }}', this)" title="Complete">
+                        <svg width="16" height="16" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>
+                    </button>
+                </div>
+            </div>
+            {% endfor %}
+        </div>
+    </div>
+    {% endif %}
+
+    <!-- Coming Up Section -->
+    {% if upcoming_tasks %}
+    <div class="card section-upcoming">
+        <div class="card-header">
+            <h2 class="card-title">Coming Up</h2>
+            <span class="count-badge">{{ upcoming_tasks|length }}</span>
+        </div>
+        <div class="task-list">
+            {% for task in upcoming_tasks %}
+            <div class="task-item" data-task-id="{{ task.id }}">
+                <div class="task-checkbox" onclick="completeTask('{{ task.id }}', this)" title="Mark Complete">
+                </div>
+                <div class="task-content" onclick="window.location.href='/tasks/{{ task.id }}/edit'">
+                    <div class="task-title">{{ task.title }}</div>
+                    <div class="task-meta">
+                        <span class="priority-{{ task.priority }}">{{ task.priority|capitalize }}</span>
+                        <span>{{ task.due_date }} {{ task.due_time[:5] if task.due_time else '' }}</span>
+                        {% if task.client_name %}<span>{{ task.client_name }}</span>{% endif %}
+                    </div>
+                </div>
+                <div class="task-actions-inline">
+                    <button class="action-btn action-edit" onclick="window.location.href='/tasks/{{ task.id }}/edit'" title="Edit">
+                        <svg width="16" height="16" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"/></svg>
+                    </button>
+                    <button class="action-btn action-delay" onclick="openDelayModal('{{ task.id }}')" title="Delay">
+                        <svg width="16" height="16" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+                    </button>
+                    <button class="action-btn action-complete" onclick="completeTask('{{ task.id }}', this)" title="Complete">
+                        <svg width="16" height="16" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>
+                    </button>
+                </div>
+            </div>
+            {% endfor %}
+        </div>
+    </div>
+    {% endif %}
+
+    <!-- Empty State -->
+    {% if not overdue_tasks and not today_tasks and not upcoming_tasks %}
+    <div class="card">
+        <div class="empty-state">
+            <div class="empty-state-icon">🎉</div>
+            <h3>All caught up!</h3>
+            <p>No pending tasks. Create a new task to get started.</p>
+            <button class="btn btn-primary" onclick="openModal('new-task-modal')" style="margin-top: 16px;">+ Add Task</button>
+        </div>
+    </div>
+    {% endif %}
+</main>
+
+<!-- New Task Modal -->
+<div id="new-task-modal" class="modal-backdrop" onclick="if(event.target === this) closeModal('new-task-modal')">
+    <div class="modal">
+        <div class="modal-header">
+            <h3 class="modal-title">New Task</h3>
+            <button class="modal-close" onclick="closeModal('new-task-modal')">&times;</button>
+        </div>
+        <form method="POST" action="{{ url_for('create_task') }}">
+            <input type="hidden" name="redirect" value="daily_report">
+            <div class="modal-body">
+                <div class="form-group">
+                    <label class="form-label">Title</label>
+                    <input type="text" name="title" class="form-input" required>
+                </div>
+
+                <div class="form-group">
+                    <label class="form-label">Description</label>
+                    <textarea name="description" class="form-input" rows="3"></textarea>
+                </div>
+
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px;">
+                    <div class="form-group">
+                        <label class="form-label">Due Date</label>
+                        <input type="date" name="due_date" class="form-input" value="{{ today }}">
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">Due Time</label>
+                        <input type="time" name="due_time" class="form-input" value="09:00">
+                    </div>
+                </div>
+
+                <div class="form-group">
+                    <label class="form-label">Priority</label>
+                    <select name="priority" class="form-input">
+                        <option value="low">Low</option>
+                        <option value="medium" selected>Medium</option>
+                        <option value="high">High</option>
+                        <option value="urgent">Urgent</option>
+                    </select>
+                </div>
+
+                <div class="form-group">
+                    <label class="form-label">Client Name (optional)</label>
+                    <input type="text" name="client_name" class="form-input">
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" onclick="closeModal('new-task-modal')">Cancel</button>
+                <button type="submit" class="btn btn-primary">Create Task</button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<!-- Delay Modal -->
+<div id="delay-modal" class="modal-backdrop" onclick="if(event.target === this) closeModal('delay-modal')">
+    <div class="modal">
+        <div class="modal-header">
+            <h3 class="modal-title">Delay Task</h3>
+            <button class="modal-close" onclick="closeModal('delay-modal')">&times;</button>
+        </div>
+        <div class="modal-body">
+            <p style="color: var(--gray-500); margin-bottom: 16px;">Quick delay options:</p>
+            <div class="delay-buttons">
+                <button class="delay-btn" onclick="delayTask(currentTaskId, 1, 0)">+1 Hour</button>
+                <button class="delay-btn" onclick="delayTask(currentTaskId, 3, 0)">+3 Hours</button>
+                <button class="delay-btn" onclick="delayTask(currentTaskId, 0, 1)">+1 Day</button>
+                <button class="delay-btn" onclick="delayTask(currentTaskId, 0, 7)">+1 Week</button>
+            </div>
+
+            <hr style="margin: 20px 0; border: none; border-top: 1px solid var(--gray-200);">
+
+            <form method="POST" action="{{ url_for('delay_task_custom') }}" id="custom-delay-form">
+                <input type="hidden" name="task_id" id="delay-task-id">
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px;">
+                    <div class="form-group">
+                        <label class="form-label">New Date</label>
+                        <input type="date" name="new_date" class="form-input" value="{{ today }}">
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">New Time</label>
+                        <input type="time" name="new_time" class="form-input" value="09:00">
+                    </div>
+                </div>
+                <button type="submit" class="btn btn-primary" style="width: 100%;">Set Custom Date/Time</button>
+            </form>
+        </div>
+    </div>
+</div>
+
+<style>
+    .report-header {
+        background: linear-gradient(135deg, #6366F1 0%, #8B5CF6 100%);
+        padding: 32px;
+        border-radius: 16px;
+        margin-bottom: 24px;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+    }
+
+    .report-header-content h1 {
+        color: white;
+        font-size: 28px;
+        margin: 0 0 8px 0;
+    }
+
+    .report-date {
+        color: rgba(255,255,255,0.9);
+        font-size: 16px;
+        margin: 0;
+    }
+
+    .report-header .btn-primary {
+        background: white;
+        color: var(--primary);
+    }
+
+    .report-header .btn-primary:hover {
+        background: #f3f4f6;
+    }
+
+    .stat-card.stat-danger .stat-value { color: var(--danger); }
+    .stat-card.stat-primary .stat-value { color: var(--primary); }
+
+    .count-badge {
+        background: var(--gray-200);
+        color: var(--gray-700);
+        padding: 4px 12px;
+        border-radius: 12px;
+        font-size: 13px;
+        font-weight: 600;
+    }
+
+    .count-badge.count-danger { background: #FEE2E2; color: #991B1B; }
+    .count-badge.count-primary { background: #EEF2FF; color: #4338CA; }
+
+    .section-overdue { margin-bottom: 24px; }
+    .section-today { margin-bottom: 24px; }
+    .section-upcoming { margin-bottom: 24px; }
+
+    .section-header-overdue { border-left: 4px solid var(--danger); }
+    .section-header-today { border-left: 4px solid var(--primary); }
+
+    .task-overdue { border-left: 3px solid var(--danger); }
+    .task-today { border-left: 3px solid var(--primary); }
+
+    .overdue-date { color: var(--danger); font-weight: 500; }
+    .today-time { color: var(--primary); font-weight: 500; }
+
+    .task-content {
+        cursor: pointer;
+    }
+
+    .task-content:hover .task-title {
+        color: var(--primary);
+    }
+
+    .task-actions-inline {
+        display: flex;
+        gap: 4px;
+        opacity: 0;
+        transition: opacity 0.2s;
+    }
+
+    .task-item:hover .task-actions-inline {
+        opacity: 1;
+    }
+
+    .action-btn {
+        width: 32px;
+        height: 32px;
+        border: none;
+        border-radius: 6px;
+        cursor: pointer;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        transition: all 0.2s;
+        background: var(--gray-100);
+        color: var(--gray-600);
+    }
+
+    .action-btn:hover {
+        background: var(--gray-200);
+    }
+
+    .action-btn.action-edit:hover {
+        background: #EEF2FF;
+        color: var(--primary);
+    }
+
+    .action-btn.action-delay:hover {
+        background: #FEF3C7;
+        color: #B45309;
+    }
+
+    .action-btn.action-complete:hover {
+        background: #D1FAE5;
+        color: #047857;
+    }
+
+    .priority-urgent { color: #7C2D12; font-weight: 600; }
+
+    @media (max-width: 768px) {
+        .report-header {
+            flex-direction: column;
+            text-align: center;
+            gap: 16px;
+        }
+
+        .task-actions-inline {
+            opacity: 1;
+        }
+
+        .stats-grid {
+            grid-template-columns: repeat(2, 1fr);
+        }
+    }
+</style>
+
+<script>
+    let currentTaskId = null;
+
+    function openDelayModal(taskId) {
+        currentTaskId = taskId;
+        document.getElementById('delay-task-id').value = taskId;
+        openModal('delay-modal');
+    }
+
+    async function completeTask(taskId, element) {
+        try {
+            const response = await fetch(`/api/tasks/${taskId}/status`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ status: 'completed' })
+            });
+
+            if (response.ok) {
+                const taskItem = element.closest('.task-item');
+                taskItem.style.opacity = '0.5';
+                taskItem.style.transform = 'translateX(20px)';
+                setTimeout(() => {
+                    taskItem.style.display = 'none';
+                    location.reload();
+                }, 300);
+            }
+        } catch (err) {
+            console.error('Failed to complete task:', err);
+        }
+    }
+</script>
+{% endblock %}

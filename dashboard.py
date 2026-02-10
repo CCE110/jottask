@@ -2361,6 +2361,67 @@ def dashboard():
     )
 
 
+@app.route('/daily-report')
+@login_required
+def daily_report():
+    """Daily report view with clickable tasks grouped by urgency"""
+    user_id = session['user_id']
+    tz = get_user_timezone()
+    now = datetime.now(tz)
+    today = now.date().isoformat()
+
+    # Format date display
+    date_display = now.strftime('%A, %B %d, %Y')
+
+    # Get all pending tasks
+    tasks_result = supabase.table('tasks')\
+        .select('*')\
+        .eq('user_id', user_id)\
+        .eq('status', 'pending')\
+        .order('due_date')\
+        .order('due_time')\
+        .execute()
+
+    all_tasks = tasks_result.data or []
+
+    # Categorize tasks
+    overdue_tasks = []
+    today_tasks = []
+    upcoming_tasks = []
+
+    for task in all_tasks:
+        due_date = task.get('due_date')
+        if not due_date:
+            upcoming_tasks.append(task)
+        elif due_date < today:
+            overdue_tasks.append(task)
+        elif due_date == today:
+            today_tasks.append(task)
+        else:
+            upcoming_tasks.append(task)
+
+    # Limit upcoming to 15
+    upcoming_tasks = upcoming_tasks[:15]
+
+    stats = {
+        'total_pending': len(all_tasks),
+        'overdue': len(overdue_tasks),
+        'due_today': len(today_tasks),
+        'upcoming': len(upcoming_tasks)
+    }
+
+    return render_template(
+        'daily_report.html',
+        title='Daily Report',
+        date_display=date_display,
+        overdue_tasks=overdue_tasks,
+        today_tasks=today_tasks,
+        upcoming_tasks=upcoming_tasks,
+        stats=stats,
+        today=today
+    )
+
+
 @app.route('/tasks/create', methods=['POST'])
 @login_required
 def create_task():
