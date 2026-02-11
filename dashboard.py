@@ -827,13 +827,18 @@ BASE_TEMPLATE = """
 
                 if (response.ok) {
                     checkbox.classList.toggle('completed');
+                    const taskItem = checkbox.closest('.task-item');
+                    taskItem.setAttribute('data-status', newStatus);
                     if (newStatus === 'completed') {
                         checkbox.innerHTML = '✓';
-                        checkbox.closest('.task-item').style.opacity = '0.6';
+                        taskItem.style.opacity = '0.6';
                     } else {
                         checkbox.innerHTML = '';
-                        checkbox.closest('.task-item').style.opacity = '1';
+                        taskItem.style.opacity = '1';
                     }
+                    // Re-apply current tab filter
+                    const activeTab = document.querySelector('.tabs .tab.active');
+                    if (activeTab) activeTab.click();
                 }
             } catch (err) {
                 console.error('Failed to update task:', err);
@@ -1211,7 +1216,7 @@ DASHBOARD_TEMPLATE = """
         <div class="task-list">
             {% if tasks %}
                 {% for task in tasks %}
-                <div class="task-item" data-task-id="{{ task.id }}">
+                <div class="task-item" data-task-id="{{ task.id }}" data-status="{{ task.status }}" data-due-date="{{ task.due_date or '' }}">
                     <div class="task-checkbox {% if task.status == 'completed' %}completed{% endif %}"
                          onclick="toggleTask('{{ task.id }}', this)">
                         {% if task.status == 'completed' %}✓{% endif %}
@@ -1348,13 +1353,31 @@ DASHBOARD_TEMPLATE = """
     }
 
     // Tab filtering
-    document.querySelectorAll('.tab').forEach(tab => {
+    const today = '{{ today }}';
+    document.querySelectorAll('.tabs .tab').forEach(tab => {
         tab.addEventListener('click', function() {
-            document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+            document.querySelectorAll('.tabs .tab').forEach(t => t.classList.remove('active'));
             this.classList.add('active');
-            // Filter logic would go here
+            const filter = this.getAttribute('data-filter');
+            document.querySelectorAll('.task-item').forEach(item => {
+                const status = item.getAttribute('data-status');
+                const dueDate = item.getAttribute('data-due-date');
+                let show = false;
+                if (filter === 'all') {
+                    show = (status === 'pending');
+                } else if (filter === 'today') {
+                    show = (status === 'pending' && dueDate === today);
+                } else if (filter === 'overdue') {
+                    show = (status === 'pending' && dueDate && dueDate < today);
+                } else if (filter === 'completed') {
+                    show = (status === 'completed');
+                }
+                item.style.display = show ? '' : 'none';
+            });
         });
     });
+    // Apply default filter on load - show pending tasks (All tab)
+    document.querySelector('.tabs .tab[data-filter="all"]').click();
 </script>
 {% endblock %}
 """
