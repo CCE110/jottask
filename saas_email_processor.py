@@ -717,7 +717,7 @@ def is_customer_outreach_email(to_header, from_email, user):
 
 
 def process_customer_followup_email(user_id, user_email, subject, body, to_header, user_timezone, user_name=None):
-    """Process a CC'd customer email - create follow-up task for 1 day later at same time"""
+    """Process a CC'd customer email - create follow-up task for 4 hours from send time"""
     print(f"    📬 Processing customer follow-up...")
 
     # Extract contact name from the To field or subject
@@ -727,10 +727,10 @@ def process_customer_followup_email(user_id, user_email, subject, body, to_heade
     tz = pytz.timezone(user_timezone)
     now = datetime.now(tz)
 
-    # Set due time to 1 day later at the same time
-    due_datetime = now + timedelta(days=1)
+    # Set due time to 4 hours from now
+    due_datetime = now + timedelta(hours=4)
     due_date = due_datetime.date().isoformat()
-    due_time = now.strftime('%H:%M') + ':00'  # Same time as email was sent
+    due_time = due_datetime.strftime('%H:%M') + ':00'
 
     # Create task title: "[Name] - no reply try again - Lead"
     task_title = f"{contact_name} - no reply try again - Lead"
