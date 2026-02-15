@@ -27,6 +27,10 @@ SUPABASE_URL = os.getenv('SUPABASE_URL')
 SUPABASE_KEY = os.getenv('SUPABASE_KEY')
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
+# Shopping list secret token (allows access without login)
+SHOPPING_LIST_TOKEN = os.getenv('SHOPPING_LIST_TOKEN', '')
+SHOPPING_LIST_USER_EMAIL = os.getenv('SHOPPING_LIST_USER_EMAIL', '')
+
 # Admin notification settings
 ADMIN_EMAIL = os.getenv('ADMIN_EMAIL', 'admin@flowquote.ai')
 RESEND_API_KEY = os.getenv('RESEND_API_KEY')
@@ -2702,12 +2706,23 @@ def api_toggle_checklist_item(task_id, item_id):
     return jsonify({'success': True})
 
 
-@app.route('/shopping-list')
-@login_required
-def shopping_list():
-    user_id = session['user_id']
+def _get_shopping_list_user_id():
+    """Look up the user_id for the shopping list owner."""
+    user = supabase.table('users').select('id')\
+        .eq('email', SHOPPING_LIST_USER_EMAIL)\
+        .limit(1).execute()
+    return user.data[0]['id'] if user.data else None
 
-    # Find or create the permanent Shopping List task
+
+def _verify_shopping_token(token):
+    """Return user_id if token is valid, else None."""
+    if not SHOPPING_LIST_TOKEN or token != SHOPPING_LIST_TOKEN:
+        return None
+    return _get_shopping_list_user_id()
+
+
+def _render_shopping_list(user_id, token=None):
+    """Shared logic for rendering the shopping list."""
     task = supabase.table('tasks').select('id')\
         .eq('user_id', user_id)\
         .eq('title', 'Shopping List')\
@@ -2724,7 +2739,6 @@ def shopping_list():
         }).execute()
         task_id = result.data[0]['id']
 
-    # Fetch checklist items: uncompleted first, then completed
     items = supabase.table('task_checklist_items')\
         .select('*')\
         .eq('task_id', task_id)\
@@ -2736,6 +2750,7 @@ def shopping_list():
     completed = [i for i in items.data if i['is_completed']]
 
     return render_template('shopping_list.html',
+                           token=token,
                            task_id=task_id,
                            uncompleted=uncompleted,
                            completed=completed,
@@ -2743,10 +2758,80 @@ def shopping_list():
                            title='Shopping List')
 
 
-@app.route('/api/shopping-list/clear', methods=['POST'])
+@app.route('/shopping-list')
 @login_required
-def clear_completed_shopping():
-    user_id = session['user_id']
+def shopping_list():
+    return _render_shopping_list(session['user_id'])
+
+
+@app.route('/sl/<token>')
+def shopping_list_public(token):
+    user_id = _verify_shopping_token(token)
+    if not user_id:
+        return 'Not found', 404
+    return _render_shopping_list(user_id, token=token)
+
+
+@app.route('/sl/<token>/add', methods=['POST'])
+def shopping_list_add(token):
+    user_id = _verify_shopping_token(token)
+    if not user_id:
+        return 'Not found', 404
+
+    item_text = request.form.get('item_text', '').strip()
+    if not item_text:
+        return redirect(url_for('shopping_list_public', token=token))
+
+    task = supabase.table('tasks').select('id')\
+        .eq('user_id', user_id)\
+        .eq('title', 'Shopping List')\
+        .execute()
+    if not task.data:
+        return redirect(url_for('shopping_list_public', token=token))
+
+    task_id = task.data[0]['id']
+
+    existing = supabase.table('task_checklist_items')\
+        .select('display_order')\
+        .eq('task_id', task_id)\
+        .order('display_order', desc=True)\
+        .limit(1).execute()
+    max_order = existing.data[0]['display_order'] if existing.data else 0
+
+    supabase.table('task_checklist_items').insert({
+        'task_id': task_id,
+        'item_text': item_text,
+        'is_completed': False,
+        'display_order': max_order + 1
+    }).execute()
+
+    return redirect(url_for('shopping_list_public', token=token))
+
+
+@app.route('/sl/<token>/toggle/<item_id>', methods=['POST'])
+def shopping_list_toggle(token, item_id):
+    user_id = _verify_shopping_token(token)
+    if not user_id:
+        return jsonify({'error': 'Not found'}), 404
+
+    data = request.get_json()
+    is_completed = data.get('is_completed', False)
+
+    update_data = {'is_completed': is_completed}
+    if is_completed:
+        update_data['completed_at'] = datetime.now(pytz.UTC).isoformat()
+    else:
+        update_data['completed_at'] = None
+
+    supabase.table('task_checklist_items').update(update_data).eq('id', item_id).execute()
+    return jsonify({'success': True})
+
+
+@app.route('/sl/<token>/clear', methods=['POST'])
+def shopping_list_clear(token):
+    user_id = _verify_shopping_token(token)
+    if not user_id:
+        return 'Not found', 404
 
     task = supabase.table('tasks').select('id')\
         .eq('user_id', user_id)\
@@ -2754,17 +2839,31 @@ def clear_completed_shopping():
         .execute()
 
     if not task.data:
-        return jsonify({'error': 'Not found'}), 404
+        return redirect(url_for('shopping_list_public', token=token))
 
-    task_id = task.data[0]['id']
-
-    # Delete all completed checklist items
     supabase.table('task_checklist_items')\
         .delete()\
-        .eq('task_id', task_id)\
+        .eq('task_id', task.data[0]['id'])\
         .eq('is_completed', True)\
         .execute()
 
+    return redirect(url_for('shopping_list_public', token=token))
+
+
+@app.route('/api/shopping-list/clear', methods=['POST'])
+@login_required
+def clear_completed_shopping():
+    user_id = session['user_id']
+    task = supabase.table('tasks').select('id')\
+        .eq('user_id', user_id)\
+        .eq('title', 'Shopping List')\
+        .execute()
+    if task.data:
+        supabase.table('task_checklist_items')\
+            .delete()\
+            .eq('task_id', task.data[0]['id'])\
+            .eq('is_completed', True)\
+            .execute()
     return redirect(url_for('shopping_list'))
 
 

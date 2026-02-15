@@ -1,35 +1,5 @@
 {% extends "base.html" %}
 {% block content %}
-<nav class="nav">
-    <a href="{{ url_for('dashboard') }}" class="nav-brand">
-        <svg viewBox="0 0 512 512" width="32" height="32">
-            <defs>
-                <linearGradient id="grad3" x1="0%" y1="0%" x2="0%" y2="100%">
-                    <stop offset="0%" style="stop-color:#8B5CF6" />
-                    <stop offset="100%" style="stop-color:#6366F1" />
-                </linearGradient>
-            </defs>
-            <rect width="512" height="512" rx="96" fill="white"/>
-            <rect x="120" y="80" width="220" height="300" rx="24" fill="url(#grad3)"/>
-            <circle cx="310" cy="350" r="70" fill="#10B981"/>
-            <path d="M275 350 L300 375 L355 315" fill="none" stroke="white" stroke-width="18" stroke-linecap="round" stroke-linejoin="round"/>
-        </svg>
-        Jottask
-    </a>
-
-    <div class="nav-links">
-        <a href="{{ url_for('dashboard') }}" class="nav-link">Tasks</a>
-        <a href="{{ url_for('shopping_list') }}" class="nav-link active">Shopping List</a>
-        <a href="{{ url_for('projects') }}" class="nav-link">Projects</a>
-        <a href="{{ url_for('settings') }}" class="nav-link">Settings</a>
-    </div>
-
-    <div class="nav-user">
-        <span style="color: var(--gray-500);">{{ session.user_name }}</span>
-        <div class="avatar">{{ session.user_name[0].upper() }}</div>
-        <a href="{{ url_for('logout') }}" class="btn btn-secondary btn-sm">Logout</a>
-    </div>
-</nav>
 
 <style>
     .sl-container {
@@ -195,8 +165,8 @@
         <span class="sl-count" id="item-count">{{ uncompleted|length }} item{{ 's' if uncompleted|length != 1 else '' }}</span>
     </div>
 
-    <form class="sl-add-form" method="POST" action="{{ url_for('add_checklist_item', task_id=task_id) }}">
-        <input type="hidden" name="redirect_to" value="shopping">
+    <form class="sl-add-form" method="POST" action="{% if token %}{{ url_for('shopping_list_add', token=token) }}{% else %}{{ url_for('add_checklist_item', task_id=task_id) }}{% endif %}">
+        {% if not token %}<input type="hidden" name="redirect_to" value="shopping">{% endif %}
         <input type="text" name="item_text" class="sl-add-input" placeholder="Add an item..." autocomplete="off" autofocus id="add-input">
         <button type="submit" class="sl-add-btn">Add</button>
     </form>
@@ -205,7 +175,7 @@
     <div class="sl-items">
         {% if uncompleted %}
         {% for item in uncompleted %}
-        <div class="sl-item" onclick="toggleItem(this, '{{ task_id }}', '{{ item.id }}', false)">
+        <div class="sl-item" onclick="toggleItem(this, '{{ item.id }}', false)">
             <div class="sl-item-checkbox">
                 <svg viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
                     <polyline points="20 6 9 17 4 12"></polyline>
@@ -219,7 +189,7 @@
         {% if completed %}
         <div class="sl-section-label">Completed ({{ completed|length }})</div>
         {% for item in completed %}
-        <div class="sl-item completed" onclick="toggleItem(this, '{{ task_id }}', '{{ item.id }}', true)">
+        <div class="sl-item completed" onclick="toggleItem(this, '{{ item.id }}', true)">
             <div class="sl-item-checkbox checked">
                 <svg viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
                     <polyline points="20 6 9 17 4 12"></polyline>
@@ -233,7 +203,7 @@
 
     {% if completed %}
     <div class="sl-clear-bar">
-        <form method="POST" action="{{ url_for('clear_completed_shopping') }}">
+        <form method="POST" action="{% if token %}{{ url_for('shopping_list_clear', token=token) }}{% else %}{{ url_for('clear_completed_shopping') }}{% endif %}">
             <button type="submit" class="sl-clear-btn">Clear completed</button>
         </form>
     </div>
@@ -248,11 +218,13 @@
 </div>
 
 <script>
-async function toggleItem(el, taskId, itemId, currentlyCompleted) {
+const TOKEN = '{{ token or "" }}';
+const TASK_ID = '{{ task_id }}';
+
+async function toggleItem(el, itemId, currentlyCompleted) {
     const newState = !currentlyCompleted;
     const checkbox = el.querySelector('.sl-item-checkbox');
 
-    // Optimistic UI update
     if (newState) {
         checkbox.classList.add('checked');
         el.classList.add('completed');
@@ -263,19 +235,21 @@ async function toggleItem(el, taskId, itemId, currentlyCompleted) {
         el.querySelector('.sl-item-text').style.textDecoration = 'none';
     }
 
+    const url = TOKEN
+        ? `/sl/${TOKEN}/toggle/${itemId}`
+        : `/api/tasks/${TASK_ID}/checklist/${itemId}/toggle`;
+
     try {
-        const response = await fetch(`/api/tasks/${taskId}/checklist/${itemId}/toggle`, {
+        const response = await fetch(url, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ is_completed: newState })
         });
 
         if (response.ok) {
-            // Move item to correct section after a brief delay
             setTimeout(() => location.reload(), 400);
         }
     } catch (err) {
-        // Revert on error
         if (newState) {
             checkbox.classList.remove('checked');
             el.classList.remove('completed');
