@@ -92,8 +92,7 @@
                         {% if task.client_name %}<span>{{ task.client_name }}</span>{% endif %}
                     </div>
                     <div class="kanban-card-actions">
-                        <button onclick="event.stopPropagation(); toggleTask('{{ task.id }}', null, this)">&#10003;</button>
-                        <button onclick="event.stopPropagation(); openEditModal('{{ task.id }}')">Edit</button>
+                        <button class="btn-complete" onclick="event.stopPropagation(); completeTask('{{ task.id }}', this)">Complete</button>
                         <button onclick="event.stopPropagation(); openDelayModal('{{ task.id }}')">Delay</button>
                     </div>
                 </div>
@@ -118,8 +117,7 @@
                         {% if task.client_name %}<span>{{ task.client_name }}</span>{% endif %}
                     </div>
                     <div class="kanban-card-actions">
-                        <button onclick="event.stopPropagation(); toggleTask('{{ task.id }}', null, this)">&#10003;</button>
-                        <button onclick="event.stopPropagation(); openEditModal('{{ task.id }}')">Edit</button>
+                        <button class="btn-complete" onclick="event.stopPropagation(); completeTask('{{ task.id }}', this)">Complete</button>
                         <button onclick="event.stopPropagation(); openDelayModal('{{ task.id }}')">Delay</button>
                     </div>
                 </div>
@@ -144,8 +142,7 @@
                         {% if task.client_name %}<span>{{ task.client_name }}</span>{% endif %}
                     </div>
                     <div class="kanban-card-actions">
-                        <button onclick="event.stopPropagation(); toggleTask('{{ task.id }}', null, this)">&#10003;</button>
-                        <button onclick="event.stopPropagation(); openEditModal('{{ task.id }}')">Edit</button>
+                        <button class="btn-complete" onclick="event.stopPropagation(); completeTask('{{ task.id }}', this)">Complete</button>
                         <button onclick="event.stopPropagation(); openDelayModal('{{ task.id }}')">Delay</button>
                     </div>
                 </div>
@@ -281,10 +278,14 @@
 
     // --- Kanban Drag & Drop ---
     let draggedCard = null;
+    let isDragging = false;
 
     document.querySelectorAll('.kanban-card').forEach(card => {
+        card.style.cursor = 'pointer';
+
         card.addEventListener('dragstart', function(e) {
             draggedCard = this;
+            isDragging = true;
             this.classList.add('dragging');
             e.dataTransfer.effectAllowed = 'move';
             e.dataTransfer.setData('text/plain', this.dataset.taskId);
@@ -293,7 +294,15 @@
         card.addEventListener('dragend', function() {
             this.classList.remove('dragging');
             draggedCard = null;
+            setTimeout(() => { isDragging = false; }, 100);
             document.querySelectorAll('.kanban-cards').forEach(col => col.classList.remove('drag-over'));
+        });
+
+        // Click card to open edit
+        card.addEventListener('click', function() {
+            if (isDragging) return;
+            const taskId = this.dataset.taskId;
+            if (taskId) window.location.href = `/tasks/${taskId}/edit`;
         });
     });
 
@@ -409,8 +418,8 @@
         }
     });
 
-    // Override toggleTask for kanban card buttons
-    async function toggleTask(taskId, checkbox, btn) {
+    // Complete task from kanban card button
+    async function completeTask(taskId, btn) {
         try {
             const response = await fetch(`/api/tasks/${taskId}/status`, {
                 method: 'POST',
@@ -429,7 +438,7 @@
                 updateCounts();
             }
         } catch (err) {
-            console.error('Failed to update task:', err);
+            console.error('Failed to complete task:', err);
         }
     }
 </script>

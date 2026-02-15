@@ -601,28 +601,35 @@
 
         .kanban-card-actions {
             display: flex;
-            gap: 4px;
-            margin-top: 8px;
-            opacity: 0;
-            transition: opacity 0.2s;
-        }
-
-        .kanban-card:hover .kanban-card-actions {
-            opacity: 1;
+            gap: 6px;
+            margin-top: 10px;
         }
 
         .kanban-card-actions button {
-            padding: 4px 8px;
-            font-size: 11px;
-            border-radius: 4px;
+            padding: 6px 14px;
+            font-size: 13px;
+            font-weight: 500;
+            border-radius: 6px;
             border: 1px solid var(--gray-200);
             background: white;
             cursor: pointer;
             color: var(--gray-700);
+            transition: all 0.2s;
         }
 
         .kanban-card-actions button:hover {
             background: var(--gray-100);
+            border-color: var(--gray-300);
+        }
+
+        .kanban-card-actions .btn-complete {
+            background: #D1FAE5;
+            color: #065F46;
+            border-color: #A7F3D0;
+        }
+
+        .kanban-card-actions .btn-complete:hover {
+            background: #A7F3D0;
         }
 
         /* Responsive */
@@ -652,9 +659,6 @@
                 max-height: none;
             }
 
-            .kanban-card-actions {
-                opacity: 1;
-            }
         }
     </style>
 </head>
