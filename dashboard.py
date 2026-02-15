@@ -2736,6 +2736,7 @@ def _render_shopping_list(user_id, token=None):
             'title': 'Shopping List',
             'status': 'ongoing',
             'priority': 'medium',
+            'due_date': '2099-12-31',
         }).execute()
         task_id = result.data[0]['id']
 
