@@ -2674,6 +2674,8 @@ def add_checklist_item(task_id):
     redirect_to = request.form.get('redirect_to', 'detail')
     if redirect_to == 'edit':
         return redirect(url_for('edit_task', task_id=task_id))
+    elif redirect_to == 'shopping':
+        return redirect(url_for('shopping_list'))
     return redirect(url_for('task_detail', task_id=task_id))
 
 
@@ -2698,6 +2700,72 @@ def api_toggle_checklist_item(task_id, item_id):
 
     supabase.table('task_checklist_items').update(update_data).eq('id', item_id).execute()
     return jsonify({'success': True})
+
+
+@app.route('/shopping-list')
+@login_required
+def shopping_list():
+    user_id = session['user_id']
+
+    # Find or create the permanent Shopping List task
+    task = supabase.table('tasks').select('id')\
+        .eq('user_id', user_id)\
+        .eq('title', 'Shopping List')\
+        .execute()
+
+    if task.data:
+        task_id = task.data[0]['id']
+    else:
+        result = supabase.table('tasks').insert({
+            'user_id': user_id,
+            'title': 'Shopping List',
+            'status': 'ongoing',
+            'priority': 'medium',
+        }).execute()
+        task_id = result.data[0]['id']
+
+    # Fetch checklist items: uncompleted first, then completed
+    items = supabase.table('task_checklist_items')\
+        .select('*')\
+        .eq('task_id', task_id)\
+        .order('is_completed')\
+        .order('display_order')\
+        .execute()
+
+    uncompleted = [i for i in items.data if not i['is_completed']]
+    completed = [i for i in items.data if i['is_completed']]
+
+    return render_template('shopping_list.html',
+                           task_id=task_id,
+                           uncompleted=uncompleted,
+                           completed=completed,
+                           total=len(items.data),
+                           title='Shopping List')
+
+
+@app.route('/api/shopping-list/clear', methods=['POST'])
+@login_required
+def clear_completed_shopping():
+    user_id = session['user_id']
+
+    task = supabase.table('tasks').select('id')\
+        .eq('user_id', user_id)\
+        .eq('title', 'Shopping List')\
+        .execute()
+
+    if not task.data:
+        return jsonify({'error': 'Not found'}), 404
+
+    task_id = task.data[0]['id']
+
+    # Delete all completed checklist items
+    supabase.table('task_checklist_items')\
+        .delete()\
+        .eq('task_id', task_id)\
+        .eq('is_completed', True)\
+        .execute()
+
+    return redirect(url_for('shopping_list'))
 
 
 @app.route('/tasks/<task_id>/notes/add', methods=['POST'])
