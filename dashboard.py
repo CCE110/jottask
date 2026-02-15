@@ -2734,7 +2734,7 @@ def _render_shopping_list(user_id, token=None):
         result = supabase.table('tasks').insert({
             'user_id': user_id,
             'title': 'Shopping List',
-            'status': 'ongoing',
+            'status': 'pending',
             'priority': 'medium',
             'due_date': '2099-12-31',
         }).execute()
