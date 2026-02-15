@@ -3572,6 +3572,24 @@ def api_delay_task(task_id):
     return jsonify({'success': True, 'new_due': new_dt.isoformat()})
 
 
+@app.route('/api/tasks/<task_id>/title', methods=['POST'])
+@login_required
+def api_update_task_title(task_id):
+    user_id = session['user_id']
+    data = request.get_json()
+    new_title = data.get('title', '').strip()
+
+    if not new_title:
+        return jsonify({'error': 'Title required'}), 400
+
+    task = supabase.table('tasks').select('id').eq('id', task_id).eq('user_id', user_id).execute()
+    if not task.data:
+        return jsonify({'error': 'Not found'}), 404
+
+    supabase.table('tasks').update({'title': new_title}).eq('id', task_id).execute()
+    return jsonify({'success': True})
+
+
 @app.route('/api/projects/<project_id>/status', methods=['POST'])
 @login_required
 def api_update_project_status(project_id):

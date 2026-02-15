@@ -196,13 +196,34 @@ async function delayTask(taskId, hours, days) {
 // Follow up: delay 1 day and go to dashboard
 async function followUp() {
     const taskId = '{{ task.id }}';
+    // Update title: keep name prefix, replace action with "followup"
+    const titleInput = document.querySelector('input[name="title"]');
+    const currentTitle = titleInput.value;
+    const dashIndex = currentTitle.indexOf(' - ');
+    const newTitle = dashIndex !== -1
+        ? currentTitle.substring(0, dashIndex) + ' - followup'
+        : currentTitle + ' - followup';
+
     try {
+        // Update title
+        await fetch(`/api/tasks/${taskId}/status`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ status: 'pending' })
+        });
+        // Delay 1 day and update title via form submit
         const response = await fetch(`/api/tasks/${taskId}/delay`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ hours: 0, days: 1 })
         });
         if (response.ok) {
+            // Also update the title
+            await fetch(`/api/tasks/${taskId}/title`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ title: newTitle })
+            });
             window.location.href = '{{ url_for("dashboard") }}';
         }
     } catch (err) {
