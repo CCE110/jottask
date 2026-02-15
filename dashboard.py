@@ -2716,9 +2716,13 @@ def _get_shopping_list_user_id():
 
 def _verify_shopping_token(token):
     """Return user_id if token is valid, else None."""
+    print(f"[SL] Token check: got='{token}', expected='{SHOPPING_LIST_TOKEN}', email='{SHOPPING_LIST_USER_EMAIL}'")
     if not SHOPPING_LIST_TOKEN or token != SHOPPING_LIST_TOKEN:
+        print(f"[SL] Token mismatch")
         return None
-    return _get_shopping_list_user_id()
+    user_id = _get_shopping_list_user_id()
+    print(f"[SL] User lookup result: {user_id}")
+    return user_id
 
 
 def _render_shopping_list(user_id, token=None):
