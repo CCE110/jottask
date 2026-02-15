@@ -29,9 +29,10 @@ class AIEmailProcessor:
         self.tm = TaskManager()
         self.claude = Anthropic(api_key=os.getenv('ANTHROPIC_API_KEY'))
 
-        # Gmail settings
-        self.gmail_user = os.getenv('GMAIL_ADDRESS', 'robcrm.ai@gmail.com')
-        self.gmail_password = os.getenv('GMAIL_APP_PASSWORD')
+        # Email settings - Jottask inbound email (jottask@flowquote.ai on privateemail.com)
+        self.email_user = os.getenv('JOTTASK_EMAIL', 'jottask@flowquote.ai')
+        self.email_password = os.getenv('JOTTASK_EMAIL_PASSWORD')
+        self.imap_server = os.getenv('IMAP_SERVER', 'mail.privateemail.com')
 
         # Business IDs
         self.businesses = {
@@ -70,11 +71,11 @@ class AIEmailProcessor:
     def process_forwarded_emails(self):
         """Check for new forwarded emails and analyze them"""
         print("AI Email Processor v2 Starting...")
-        print(f"Checking {self.gmail_user} for forwarded emails...")
+        print(f"Checking {self.email_user} on {self.imap_server} for emails...")
 
         try:
-            mail = imaplib.IMAP4_SSL('imap.gmail.com')
-            mail.login(self.gmail_user, self.gmail_password)
+            mail = imaplib.IMAP4_SSL(self.imap_server)
+            mail.login(self.email_user, self.email_password)
             mail.select('inbox')
 
             # Search for unread emails
