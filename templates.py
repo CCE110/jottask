@@ -129,6 +129,7 @@ TASK_EDIT_TEMPLATE = """
 
             <div style="display: flex; gap: 12px;">
                 <button type="submit" class="btn btn-primary" style="flex: 1;">Save Changes</button>
+                <button type="button" class="btn btn-secondary" style="flex: 1;" onclick="followUp()">Follow Up (+1 Day)</button>
                 <a href="{{ url_for('task_detail', task_id=task.id) }}" class="btn btn-secondary">View Details</a>
             </div>
         </form>
@@ -189,6 +190,23 @@ async function delayTask(taskId, hours, days) {
         }
     } catch (err) {
         console.error('Failed to delay task:', err);
+    }
+}
+
+// Follow up: delay 1 day and go to dashboard
+async function followUp() {
+    const taskId = '{{ task.id }}';
+    try {
+        const response = await fetch(`/api/tasks/${taskId}/delay`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ hours: 0, days: 1 })
+        });
+        if (response.ok) {
+            window.location.href = '{{ url_for("dashboard") }}';
+        }
+    } catch (err) {
+        console.error('Failed to set follow up:', err);
     }
 }
 
