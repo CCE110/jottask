@@ -20,6 +20,7 @@ from dotenv import load_dotenv
 import os
 import uuid
 import hashlib
+import resend
 
 load_dotenv()
 
@@ -33,6 +34,10 @@ class AIEmailProcessor:
         self.email_user = os.getenv('JOTTASK_EMAIL', 'jottask@flowquote.ai')
         self.email_password = os.getenv('JOTTASK_EMAIL_PASSWORD')
         self.imap_server = os.getenv('IMAP_SERVER', 'mail.privateemail.com')
+
+        # Resend for outbound emails (approval emails etc)
+        resend.api_key = os.getenv('RESEND_API_KEY')
+        self.from_email = os.getenv('FROM_EMAIL', 'admin@flowquote.ai')
 
         # Business IDs
         self.businesses = {
@@ -461,13 +466,15 @@ Rules:
         </div>
         """
 
-        # Send via Resend (or your existing email sending method)
+        # Send via Resend
         try:
-            self.tm.send_email(
-                to=os.getenv('ROB_EMAIL', 'rob@cloudcleanenergy.com.au'),
-                subject=f"Jottask Approval: {email_subject}",
-                html=email_html
-            )
+            params = {
+                "from": self.from_email,
+                "to": [os.getenv('ROB_EMAIL', 'rob@cloudcleanenergy.com.au')],
+                "subject": f"Jottask Approval: {email_subject}",
+                "html": email_html
+            }
+            resend.Emails.send(params)
             print(f"  Approval email sent for {len(actions)} action(s)")
         except Exception as e:
             print(f"  Error sending approval email: {e}")
