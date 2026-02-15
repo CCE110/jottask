@@ -193,7 +193,7 @@ async function delayTask(taskId, hours, days) {
 }
 
 // Status button toggle
-function setStatus(status) {
+async function setStatus(status) {
     document.getElementById('status-input').value = status;
 
     const styles = {
@@ -209,6 +209,23 @@ function setStatus(status) {
         btn.style.background = active ? styles[s].bg : 'white';
         btn.style.color = active ? styles[s].color : '#6B7280';
     });
+
+    // If completed, save immediately and go to dashboard
+    if (status === 'completed') {
+        const taskId = '{{ task.id }}';
+        try {
+            const response = await fetch(`/api/tasks/${taskId}/status`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ status: 'completed' })
+            });
+            if (response.ok) {
+                window.location.href = '{{ url_for("dashboard") }}';
+            }
+        } catch (err) {
+            console.error('Failed to complete task:', err);
+        }
+    }
 }
 
 // Checklist toggle via API
