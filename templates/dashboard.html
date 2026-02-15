@@ -31,7 +31,7 @@
     </div>
 </nav>
 
-<main class="main">
+<main class="main" style="max-width: 1400px;">
     <!-- Stats -->
     <div class="stats-grid">
         <div class="stat-card">
@@ -52,26 +52,20 @@
         </div>
     </div>
 
-    <!-- Search Bar -->
-    <div class="card" style="margin-bottom: 20px; padding: 16px;">
-        <form method="GET" action="{{ url_for('dashboard') }}" style="display: flex; gap: 12px; align-items: center;">
-            <div style="position: relative; flex: 1;">
-                <input type="text"
-                       name="q"
-                       id="search-input"
-                       class="form-input"
-                       placeholder="Search tasks by title, description, or client..."
-                       value="{{ search_query or '' }}"
-                       style="padding-left: 40px;">
-                <svg style="position: absolute; left: 12px; top: 50%; transform: translateY(-50%); width: 20px; height: 20px; color: var(--gray-400);" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/>
-                </svg>
-            </div>
-            <button type="submit" class="btn btn-primary">Search</button>
-            {% if search_query %}
-            <a href="{{ url_for('dashboard') }}" class="btn btn-secondary">Clear</a>
-            {% endif %}
-        </form>
+    <!-- Toolbar: Search + New Task -->
+    <div style="display: flex; gap: 12px; align-items: center; margin-bottom: 20px;">
+        <div style="position: relative; flex: 1;">
+            <input type="text"
+                   id="search-input"
+                   class="form-input"
+                   placeholder="Search tasks by title, description, or client..."
+                   value="{{ search_query or '' }}"
+                   style="padding-left: 40px;">
+            <svg style="position: absolute; left: 12px; top: 50%; transform: translateY(-50%); width: 20px; height: 20px; color: var(--gray-400);" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/>
+            </svg>
+        </div>
+        <button class="btn btn-primary" onclick="openModal('new-task-modal')">+ New Task</button>
     </div>
 
     {% if search_query %}
@@ -80,55 +74,105 @@
     </div>
     {% endif %}
 
-    <!-- Task Card -->
-    <div class="card">
-        <div class="card-header">
-            <h2 class="card-title">Tasks</h2>
-            <button class="btn btn-primary" onclick="openModal('new-task-modal')">
-                + New Task
-            </button>
-        </div>
-
-        <div class="tabs" style="padding: 0 20px;">
-            <div class="tab active" data-filter="all">All</div>
-            <div class="tab" data-filter="today">Today</div>
-            <div class="tab" data-filter="overdue">Overdue</div>
-            <div class="tab" data-filter="completed">Completed</div>
-        </div>
-
-        <div class="task-list">
-            {% if tasks %}
+    <!-- Kanban Board -->
+    <div class="kanban-board">
+        <!-- Overdue Column -->
+        <div class="kanban-column">
+            <div class="kanban-header" style="background: #FEE2E2; color: #991B1B;">
+                Overdue <span class="count" id="count-overdue">0</span>
+            </div>
+            <div class="kanban-cards" data-status="overdue" id="col-overdue">
                 {% for task in tasks %}
-                <div class="task-item" data-task-id="{{ task.id }}" data-status="{{ task.status }}" data-due-date="{{ task.due_date }}" data-is-today="{{ 'true' if task.due_date == today else 'false' }}" data-is-overdue="{{ 'true' if task.due_date and task.due_date < today and task.status == 'pending' else 'false' }}">
-                    <div class="task-checkbox {% if task.status == 'completed' %}completed{% endif %}"
-                         onclick="toggleTask('{{ task.id }}', this)">
-                        {% if task.status == 'completed' %}✓{% endif %}
+                {% if task.status == 'pending' and task.due_date and task.due_date < today %}
+                <div class="kanban-card" draggable="true" data-task-id="{{ task.id }}" data-status="pending" data-due-date="{{ task.due_date }}">
+                    <div class="kanban-card-title">{{ task.title }}</div>
+                    <div class="kanban-card-meta">
+                        <span class="badge" style="background: {% if task.priority == 'urgent' %}#FEE2E2; color: #991B1B{% elif task.priority == 'high' %}#FEE2E2; color: #991B1B{% elif task.priority == 'medium' %}#FEF3C7; color: #92400E{% else %}#D1FAE5; color: #065F46{% endif %};">{{ task.priority|capitalize }}</span>
+                        <span>{{ task.due_date }} {{ task.due_time[:5] if task.due_time else '' }}</span>
+                        {% if task.client_name %}<span>{{ task.client_name }}</span>{% endif %}
                     </div>
-
-                    <div class="task-content">
-                        <div class="task-title">{{ task.title }}</div>
-                        <div class="task-meta">
-                            <span class="priority-{{ task.priority }}">{{ task.priority|capitalize }}</span>
-                            <span>Due: {{ task.due_date }} {{ task.due_time[:5] if task.due_time else '' }}</span>
-                            {% if task.client_name %}
-                            <span>{{ task.client_name }}</span>
-                            {% endif %}
-                        </div>
-                    </div>
-
-                    <div class="task-actions">
-                        <button class="btn btn-secondary btn-sm" onclick="openEditModal('{{ task.id }}')">Edit</button>
-                        <button class="btn btn-secondary btn-sm" onclick="openDelayModal('{{ task.id }}')">Delay</button>
+                    <div class="kanban-card-actions">
+                        <button onclick="event.stopPropagation(); toggleTask('{{ task.id }}', null, this)">&#10003;</button>
+                        <button onclick="event.stopPropagation(); openEditModal('{{ task.id }}')">Edit</button>
+                        <button onclick="event.stopPropagation(); openDelayModal('{{ task.id }}')">Delay</button>
                     </div>
                 </div>
+                {% endif %}
                 {% endfor %}
-            {% else %}
-                <div class="empty-state">
-                    <div class="empty-state-icon">📋</div>
-                    <h3>No tasks yet</h3>
-                    <p>Create your first task to get started</p>
+            </div>
+        </div>
+
+        <!-- Today Column -->
+        <div class="kanban-column">
+            <div class="kanban-header" style="background: #FEF3C7; color: #92400E;">
+                Today <span class="count" id="count-today">0</span>
+            </div>
+            <div class="kanban-cards" data-status="today" id="col-today">
+                {% for task in tasks %}
+                {% if task.status == 'pending' and task.due_date == today %}
+                <div class="kanban-card" draggable="true" data-task-id="{{ task.id }}" data-status="pending" data-due-date="{{ task.due_date }}">
+                    <div class="kanban-card-title">{{ task.title }}</div>
+                    <div class="kanban-card-meta">
+                        <span class="badge" style="background: {% if task.priority == 'urgent' %}#FEE2E2; color: #991B1B{% elif task.priority == 'high' %}#FEE2E2; color: #991B1B{% elif task.priority == 'medium' %}#FEF3C7; color: #92400E{% else %}#D1FAE5; color: #065F46{% endif %};">{{ task.priority|capitalize }}</span>
+                        <span>{{ task.due_time[:5] if task.due_time else 'No time' }}</span>
+                        {% if task.client_name %}<span>{{ task.client_name }}</span>{% endif %}
+                    </div>
+                    <div class="kanban-card-actions">
+                        <button onclick="event.stopPropagation(); toggleTask('{{ task.id }}', null, this)">&#10003;</button>
+                        <button onclick="event.stopPropagation(); openEditModal('{{ task.id }}')">Edit</button>
+                        <button onclick="event.stopPropagation(); openDelayModal('{{ task.id }}')">Delay</button>
+                    </div>
                 </div>
-            {% endif %}
+                {% endif %}
+                {% endfor %}
+            </div>
+        </div>
+
+        <!-- Upcoming Column -->
+        <div class="kanban-column">
+            <div class="kanban-header" style="background: #E0E7FF; color: #3730A3;">
+                Upcoming <span class="count" id="count-upcoming">0</span>
+            </div>
+            <div class="kanban-cards" data-status="upcoming" id="col-upcoming">
+                {% for task in tasks %}
+                {% if task.status == 'pending' and (not task.due_date or task.due_date > today) %}
+                <div class="kanban-card" draggable="true" data-task-id="{{ task.id }}" data-status="pending" data-due-date="{{ task.due_date or '' }}">
+                    <div class="kanban-card-title">{{ task.title }}</div>
+                    <div class="kanban-card-meta">
+                        <span class="badge" style="background: {% if task.priority == 'urgent' %}#FEE2E2; color: #991B1B{% elif task.priority == 'high' %}#FEE2E2; color: #991B1B{% elif task.priority == 'medium' %}#FEF3C7; color: #92400E{% else %}#D1FAE5; color: #065F46{% endif %};">{{ task.priority|capitalize }}</span>
+                        {% if task.due_date %}<span>{{ task.due_date }} {{ task.due_time[:5] if task.due_time else '' }}</span>{% else %}<span>No date</span>{% endif %}
+                        {% if task.client_name %}<span>{{ task.client_name }}</span>{% endif %}
+                    </div>
+                    <div class="kanban-card-actions">
+                        <button onclick="event.stopPropagation(); toggleTask('{{ task.id }}', null, this)">&#10003;</button>
+                        <button onclick="event.stopPropagation(); openEditModal('{{ task.id }}')">Edit</button>
+                        <button onclick="event.stopPropagation(); openDelayModal('{{ task.id }}')">Delay</button>
+                    </div>
+                </div>
+                {% endif %}
+                {% endfor %}
+            </div>
+        </div>
+
+        <!-- Completed Column -->
+        <div class="kanban-column">
+            <div class="kanban-header" style="background: #D1FAE5; color: #065F46;">
+                Completed <span class="count" id="count-completed">0</span>
+            </div>
+            <div class="kanban-cards" data-status="completed" id="col-completed">
+                {% for task in tasks %}
+                {% if task.status == 'completed' %}
+                <div class="kanban-card" draggable="true" data-task-id="{{ task.id }}" data-status="completed" data-due-date="{{ task.due_date or '' }}" style="opacity: 0.7;">
+                    <div class="kanban-card-title" style="text-decoration: line-through;">{{ task.title }}</div>
+                    <div class="kanban-card-meta">
+                        <span class="badge" style="background: #D1FAE5; color: #065F46;">Done</span>
+                        {% if task.due_date %}<span>{{ task.due_date }}</span>{% endif %}
+                        {% if task.client_name %}<span>{{ task.client_name }}</span>{% endif %}
+                    </div>
+                </div>
+                {% endif %}
+                {% endfor %}
+            </div>
         </div>
     </div>
 </main>
@@ -235,31 +279,115 @@
         window.location.href = `/tasks/${taskId}/edit`;
     }
 
-    // Tab filtering
-    document.querySelectorAll('.tab').forEach(tab => {
-        tab.addEventListener('click', function() {
-            document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
-            this.classList.add('active');
+    // --- Kanban Drag & Drop ---
+    let draggedCard = null;
 
-            const filter = this.dataset.filter;
-            filterTasks(filter, document.getElementById('search-input').value);
+    document.querySelectorAll('.kanban-card').forEach(card => {
+        card.addEventListener('dragstart', function(e) {
+            draggedCard = this;
+            this.classList.add('dragging');
+            e.dataTransfer.effectAllowed = 'move';
+            e.dataTransfer.setData('text/plain', this.dataset.taskId);
+        });
+
+        card.addEventListener('dragend', function() {
+            this.classList.remove('dragging');
+            draggedCard = null;
+            document.querySelectorAll('.kanban-cards').forEach(col => col.classList.remove('drag-over'));
         });
     });
 
-    // Instant search filtering
+    document.querySelectorAll('.kanban-cards').forEach(column => {
+        column.addEventListener('dragover', function(e) {
+            e.preventDefault();
+            e.dataTransfer.dropEffect = 'move';
+            this.classList.add('drag-over');
+        });
+
+        column.addEventListener('dragleave', function(e) {
+            if (!this.contains(e.relatedTarget)) {
+                this.classList.remove('drag-over');
+            }
+        });
+
+        column.addEventListener('drop', async function(e) {
+            e.preventDefault();
+            this.classList.remove('drag-over');
+            if (!draggedCard) return;
+
+            const taskId = draggedCard.dataset.taskId;
+            const targetStatus = this.dataset.status;
+            const sourceStatus = draggedCard.dataset.status;
+
+            // Determine new task status
+            let newStatus;
+            if (targetStatus === 'completed') {
+                newStatus = 'completed';
+            } else {
+                newStatus = 'pending';
+            }
+
+            // Only call API if status actually changes
+            if ((sourceStatus === 'completed' && newStatus === 'pending') ||
+                (sourceStatus === 'pending' && newStatus === 'completed')) {
+                try {
+                    const response = await fetch(`/api/tasks/${taskId}/status`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ status: newStatus })
+                    });
+                    if (!response.ok) return;
+                } catch (err) {
+                    console.error('Failed to update task:', err);
+                    return;
+                }
+            }
+
+            // Move card in DOM
+            this.appendChild(draggedCard);
+            draggedCard.dataset.status = newStatus;
+
+            // Update visual style
+            if (newStatus === 'completed') {
+                draggedCard.style.opacity = '0.7';
+                draggedCard.querySelector('.kanban-card-title').style.textDecoration = 'line-through';
+                const actions = draggedCard.querySelector('.kanban-card-actions');
+                if (actions) actions.remove();
+            } else {
+                draggedCard.style.opacity = '1';
+                draggedCard.querySelector('.kanban-card-title').style.textDecoration = 'none';
+            }
+
+            updateCounts();
+        });
+    });
+
+    // Update column counts
+    function updateCounts() {
+        ['overdue', 'today', 'upcoming', 'completed'].forEach(col => {
+            const cards = document.querySelectorAll(`#col-${col} .kanban-card:not([style*="display: none"])`);
+            document.getElementById(`count-${col}`).textContent = cards.length;
+        });
+    }
+    updateCounts();
+
+    // --- Search Filtering ---
     const searchInput = document.getElementById('search-input');
     let searchTimeout;
 
     searchInput.addEventListener('input', function() {
         clearTimeout(searchTimeout);
         searchTimeout = setTimeout(() => {
-            const activeTab = document.querySelector('.tab.active');
-            const filter = activeTab ? activeTab.dataset.filter : 'all';
-            filterTasks(filter, this.value);
+            const query = this.value.toLowerCase();
+            document.querySelectorAll('.kanban-card').forEach(card => {
+                const title = card.querySelector('.kanban-card-title').textContent.toLowerCase();
+                const meta = card.querySelector('.kanban-card-meta').textContent.toLowerCase();
+                card.style.display = (!query || title.includes(query) || meta.includes(query)) ? '' : 'none';
+            });
+            updateCounts();
         }, 150);
     });
 
-    // Handle Enter key for search
     searchInput.addEventListener('keydown', function(e) {
         if (e.key === 'Enter') {
             e.preventDefault();
@@ -272,49 +400,6 @@
         }
     });
 
-    function filterTasks(filter, searchQuery) {
-        const tasks = document.querySelectorAll('.task-item');
-        const searchLower = (searchQuery || '').toLowerCase();
-
-        tasks.forEach(task => {
-            const status = task.dataset.status;
-            const isToday = task.dataset.isToday === 'true';
-            const isOverdue = task.dataset.isOverdue === 'true';
-            const title = task.querySelector('.task-title').textContent.toLowerCase();
-            const meta = task.querySelector('.task-meta').textContent.toLowerCase();
-
-            // Check search match
-            let matchesSearch = true;
-            if (searchLower) {
-                matchesSearch = title.includes(searchLower) || meta.includes(searchLower);
-            }
-
-            // Check tab filter
-            let matchesFilter = false;
-            switch(filter) {
-                case 'all':
-                    matchesFilter = true;
-                    break;
-                case 'today':
-                    matchesFilter = isToday && status === 'pending';
-                    break;
-                case 'overdue':
-                    matchesFilter = isOverdue;
-                    break;
-                case 'completed':
-                    matchesFilter = status === 'completed';
-                    break;
-                default:
-                    matchesFilter = true;
-            }
-
-            task.style.display = (matchesSearch && matchesFilter) ? 'flex' : 'none';
-        });
-
-        // Update visible count
-        const visibleTasks = document.querySelectorAll('.task-item[style="display: flex;"], .task-item:not([style])');
-    }
-
     // Keyboard shortcut: Cmd/Ctrl + K to focus search
     document.addEventListener('keydown', function(e) {
         if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
@@ -323,5 +408,29 @@
             searchInput.select();
         }
     });
+
+    // Override toggleTask for kanban card buttons
+    async function toggleTask(taskId, checkbox, btn) {
+        try {
+            const response = await fetch(`/api/tasks/${taskId}/status`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ status: 'completed' })
+            });
+            if (response.ok) {
+                const card = btn.closest('.kanban-card');
+                const completedCol = document.getElementById('col-completed');
+                card.dataset.status = 'completed';
+                card.style.opacity = '0.7';
+                card.querySelector('.kanban-card-title').style.textDecoration = 'line-through';
+                const actions = card.querySelector('.kanban-card-actions');
+                if (actions) actions.remove();
+                completedCol.appendChild(card);
+                updateCounts();
+            }
+        } catch (err) {
+            console.error('Failed to update task:', err);
+        }
+    }
 </script>
 {% endblock %}

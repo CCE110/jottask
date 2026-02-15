@@ -662,6 +662,16 @@ def process_awaiting_docs_email(user_id, user_email, subject, body, to_header, u
     }
 
     try:
+        # Check for duplicate task (same title + user)
+        existing = supabase.table('tasks')\
+            .select('id, title')\
+            .eq('user_id', user_id)\
+            .eq('title', task_title)\
+            .execute()
+        if existing.data:
+            print(f"    ⏭️ Duplicate awaiting docs task skipped: {task_title}")
+            return existing.data[0]
+
         result = supabase.table('tasks').insert(task_data).execute()
         if result.data:
             task = result.data[0]
@@ -748,6 +758,16 @@ def process_customer_followup_email(user_id, user_email, subject, body, to_heade
     }
 
     try:
+        # Check for duplicate task (same title + user)
+        existing = supabase.table('tasks')\
+            .select('id, title')\
+            .eq('user_id', user_id)\
+            .eq('title', task_title)\
+            .execute()
+        if existing.data:
+            print(f"    ⏭️ Duplicate follow-up task skipped: {task_title}")
+            return existing.data[0]
+
         result = supabase.table('tasks').insert(task_data).execute()
         if result.data:
             task = result.data[0]
@@ -834,6 +854,16 @@ def process_missed_call_email(user_id, user_email, subject, body, to_header, use
     }
 
     try:
+        # Check for duplicate task (same title + user)
+        existing = supabase.table('tasks')\
+            .select('id, title')\
+            .eq('user_id', user_id)\
+            .eq('title', task_title)\
+            .execute()
+        if existing.data:
+            print(f"    ⏭️ Duplicate missed call task skipped: {task_title}")
+            return existing.data[0]
+
         result = supabase.table('tasks').insert(task_data).execute()
         if result.data:
             task = result.data[0]
@@ -1287,6 +1317,147 @@ def check_and_send_reminders():
         print(f"❌ Reminder check error: {e}")
 
 
+def scan_and_notify_duplicates():
+    """Scan for duplicate pending tasks per user and send notification emails"""
+    print(f"\n🔍 Scanning for duplicate tasks...")
+
+    try:
+        # Get all pending tasks
+        result = supabase.table('tasks')\
+            .select('id, title, description, due_date, due_time, priority, client_name, user_id, created_at')\
+            .eq('status', 'pending')\
+            .execute()
+
+        tasks = result.data or []
+        if not tasks:
+            print("    No pending tasks to check")
+            return
+
+        # Load dismissed duplicate groups
+        dismissed_result = supabase.table('duplicate_dismissed')\
+            .select('task_ids')\
+            .execute()
+        dismissed_keys = set()
+        for row in (dismissed_result.data or []):
+            dismissed_keys.add(row['task_ids'])
+
+        # Group tasks by (user_id, lowercase title)
+        from collections import defaultdict
+        groups = defaultdict(list)
+        for task in tasks:
+            key = (task['user_id'], task['title'].strip().lower())
+            groups[key].append(task)
+
+        notified = 0
+        for (user_id, _title_lower), group_tasks in groups.items():
+            if len(group_tasks) < 2:
+                continue
+
+            # Sort by created_at so oldest is first
+            group_tasks.sort(key=lambda t: t.get('created_at', ''))
+
+            # Build sorted comma-separated ID key for dismissal check
+            sorted_ids = ','.join(sorted(t['id'] for t in group_tasks))
+            if sorted_ids in dismissed_keys:
+                continue
+
+            # Get user email
+            user_result = supabase.table('users')\
+                .select('email, full_name')\
+                .eq('id', user_id)\
+                .single()\
+                .execute()
+            if not user_result.data:
+                continue
+
+            user_email = user_result.data['email']
+            user_name = user_result.data.get('full_name', '')
+
+            # Build and send notification email
+            send_duplicate_notification_email(
+                user_email=user_email,
+                user_name=user_name,
+                tasks=group_tasks,
+                sorted_ids=sorted_ids
+            )
+            notified += 1
+
+        if notified > 0:
+            print(f"    ✅ Sent {notified} duplicate notification(s)")
+        else:
+            print("    No new duplicates found")
+
+    except Exception as e:
+        print(f"❌ Duplicate scan error: {e}")
+
+
+def send_duplicate_notification_email(user_email, user_name, tasks, sorted_ids):
+    """Send email showing duplicate tasks side by side with Merge / Keep Both buttons"""
+    WEB_SERVICE_URL = os.getenv('WEB_SERVICE_URL', 'https://www.jottask.app')
+    action_base = f"{WEB_SERVICE_URL}/action"
+
+    keep_id = tasks[0]['id']  # oldest task
+    delete_ids = ','.join(t['id'] for t in tasks[1:])
+    all_ids = ','.join(t['id'] for t in tasks)
+
+    merge_url = f"{action_base}?action=merge_tasks&keep_id={keep_id}&delete_ids={delete_ids}"
+    keep_url = f"{action_base}?action=keep_duplicates&task_ids={all_ids}"
+
+    greeting = f"Hi {user_name}," if user_name else "Hi,"
+    title = tasks[0]['title']
+
+    # Build side-by-side task cards
+    cards_html = ""
+    for i, task in enumerate(tasks):
+        due_display = ""
+        if task.get('due_date'):
+            due_display = task['due_date']
+            if task.get('due_time'):
+                due_display += f" at {task['due_time'][:5]}"
+
+        label = "Oldest (will be kept)" if i == 0 else f"Duplicate #{i}"
+        border_color = "#10B981" if i == 0 else "#EF4444"
+
+        cards_html += f"""
+        <div style="background: white; border: 2px solid {border_color}; border-radius: 8px; padding: 16px; margin: 8px 0; flex: 1; min-width: 200px;">
+            <p style="margin: 0 0 4px 0; font-size: 12px; color: {border_color}; font-weight: 600;">{label}</p>
+            <h4 style="margin: 0 0 8px 0; color: #111827;">{task['title']}</h4>
+            <p style="margin: 2px 0; color: #6b7280; font-size: 13px;">Due: {due_display or 'Not set'}</p>
+            <p style="margin: 2px 0; color: #6b7280; font-size: 13px;">Priority: {task.get('priority', 'medium')}</p>
+            <p style="margin: 2px 0; color: #6b7280; font-size: 13px;">Client: {task.get('client_name') or 'N/A'}</p>
+            <p style="margin: 2px 0; color: #9ca3af; font-size: 12px;">Desc: {(task.get('description') or 'None')[:80]}</p>
+        </div>
+        """
+
+    html_content = f"""
+    <html>
+    <body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
+        <div style="background: linear-gradient(135deg, #F59E0B 0%, #EF4444 100%); padding: 24px; border-radius: 12px 12px 0 0;">
+            <h1 style="color: white; margin: 0; font-size: 24px;">Duplicate Tasks Found</h1>
+        </div>
+        <div style="background: #f9fafb; padding: 24px; border: 1px solid #e5e7eb; border-top: none; border-radius: 0 0 12px 12px;">
+            <p style="color: #374151;">{greeting}</p>
+            <p style="color: #374151;">We found <strong>{len(tasks)} tasks</strong> with the same title:</p>
+            <h3 style="color: #111827; margin: 8px 0 16px 0;">&ldquo;{title}&rdquo;</h3>
+            <div style="display: flex; gap: 12px; flex-wrap: wrap;">
+                {cards_html}
+            </div>
+            <div style="margin-top: 24px; text-align: center;">
+                <a href="{merge_url}" style="display: inline-block; background: #10B981; color: white; padding: 14px 28px; border-radius: 8px; text-decoration: none; margin: 6px; font-weight: 600; font-size: 16px;">Merge (keep oldest, due in 2h)</a>
+                <a href="{keep_url}" style="display: inline-block; background: #6B7280; color: white; padding: 14px 28px; border-radius: 8px; text-decoration: none; margin: 6px; font-weight: 600; font-size: 16px;">Keep Both</a>
+            </div>
+            <p style="color: #9ca3af; font-size: 12px; margin-top: 16px; text-align: center;">Merge keeps the oldest task and deletes duplicates, setting due to 2 hours from now.</p>
+        </div>
+        <p style="color: #9ca3af; font-size: 12px; text-align: center; margin-top: 24px;">
+            Jottask - AI-Powered Task Management
+        </p>
+    </body>
+    </html>
+    """
+
+    send_email_direct(user_email, f"Duplicate Tasks: {title[:50]}", html_content)
+
+
 def run_email_processor():
     """Main processor loop - runs continuously"""
     print("🚀 Starting Jottask Central Inbox Processor")
@@ -1297,6 +1468,7 @@ def run_email_processor():
     print("=" * 50)
 
     last_reminder_check = 0
+    last_dedup_check = 0
 
     while True:
         try:
@@ -1313,6 +1485,11 @@ def run_email_processor():
             if current_time - last_reminder_check >= 60:
                 check_and_send_reminders()
                 last_reminder_check = current_time
+
+            # Scan for duplicate tasks every 10 minutes
+            if current_time - last_dedup_check >= 600:
+                scan_and_notify_duplicates()
+                last_dedup_check = current_time
 
             print(f"\n😴 Sleeping for 1 minute...")
             time.sleep(60)  # Check every minute for better reminder timing

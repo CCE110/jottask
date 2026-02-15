@@ -2979,6 +2979,97 @@ def handle_action():
             </body></html>
             """, error=str(e))
 
+    # Merge duplicate tasks
+    if action == 'merge_tasks':
+        keep_id = request.args.get('keep_id')
+        delete_ids = request.args.get('delete_ids', '')
+        if not keep_id or not delete_ids:
+            return render_template_string("""
+            <html><body style="font-family: sans-serif; text-align: center; padding: 50px;">
+                <h2>Error</h2><p>Missing task IDs for merge.</p>
+            </body></html>
+            """)
+        try:
+            # Delete the duplicate tasks
+            for did in delete_ids.split(','):
+                did = did.strip()
+                if did:
+                    supabase.table('tasks').delete().eq('id', did).execute()
+
+            # Update kept task: set due to 2 hours from now
+            now = datetime.now(pytz.UTC)
+            new_due = now + timedelta(hours=2)
+            supabase.table('tasks').update({
+                'due_date': new_due.date().isoformat(),
+                'due_time': new_due.strftime('%H:%M') + ':00',
+                'reminder_sent_at': None
+            }).eq('id', keep_id).execute()
+
+            # Get the kept task title for display
+            kept = supabase.table('tasks').select('title').eq('id', keep_id).single().execute()
+            kept_title = kept.data.get('title', 'Task') if kept.data else 'Task'
+            deleted_count = len([d for d in delete_ids.split(',') if d.strip()])
+
+            return render_template_string("""
+            <html><head><title>Tasks Merged</title>
+            <meta name="viewport" content="width=device-width, initial-scale=1">
+            </head>
+            <body style="font-family: -apple-system, sans-serif; text-align: center; padding: 50px; background: #f0fdf4;">
+                <h2 style="color: #10B981;">Tasks Merged</h2>
+                <p><strong>{{ title }}</strong></p>
+                <p>{{ deleted_count }} duplicate(s) removed. Remaining task due in 2 hours.</p>
+                <a href="https://www.jottask.app/dashboard" style="display: inline-block; margin-top: 20px; padding: 12px 24px; background: #6366F1; color: white; text-decoration: none; border-radius: 8px;">Open Dashboard</a>
+            </body></html>
+            """, title=kept_title, deleted_count=deleted_count)
+
+        except Exception as e:
+            print(f"Merge tasks error: {e}")
+            return render_template_string("""
+            <html><body style="font-family: sans-serif; text-align: center; padding: 50px;">
+                <h2>Error</h2><p>{{ error }}</p>
+            </body></html>
+            """, error=str(e))
+
+    # Keep both duplicates (dismiss notification)
+    if action == 'keep_duplicates':
+        task_ids_param = request.args.get('task_ids', '')
+        if not task_ids_param:
+            return render_template_string("""
+            <html><body style="font-family: sans-serif; text-align: center; padding: 50px;">
+                <h2>Error</h2><p>Missing task IDs.</p>
+            </body></html>
+            """)
+        try:
+            sorted_ids = ','.join(sorted(task_ids_param.split(',')))
+            # Get user_id from the first task
+            first_id = task_ids_param.split(',')[0].strip()
+            task_result = supabase.table('tasks').select('user_id').eq('id', first_id).single().execute()
+            user_id = task_result.data['user_id'] if task_result.data else None
+
+            supabase.table('duplicate_dismissed').insert({
+                'task_ids': sorted_ids,
+                'user_id': user_id
+            }).execute()
+
+            return render_template_string("""
+            <html><head><title>Duplicates Kept</title>
+            <meta name="viewport" content="width=device-width, initial-scale=1">
+            </head>
+            <body style="font-family: -apple-system, sans-serif; text-align: center; padding: 50px; background: #eff6ff;">
+                <h2 style="color: #6366F1;">Both Tasks Kept</h2>
+                <p>You won't be notified about these duplicates again.</p>
+                <a href="https://www.jottask.app/dashboard" style="display: inline-block; margin-top: 20px; padding: 12px 24px; background: #6366F1; color: white; text-decoration: none; border-radius: 8px;">Open Dashboard</a>
+            </body></html>
+            """)
+
+        except Exception as e:
+            print(f"Keep duplicates error: {e}")
+            return render_template_string("""
+            <html><body style="font-family: sans-serif; text-align: center; padding: 50px;">
+                <h2>Error</h2><p>{{ error }}</p>
+            </body></html>
+            """, error=str(e))
+
     # Default - show error (don't redirect to login-required dashboard)
     return render_template_string("""
     <html><body style="font-family: sans-serif; text-align: center; padding: 50px;">
@@ -3101,11 +3192,8 @@ def projects():
     user_id = session['user_id']
     filter_status = request.args.get('filter', 'active')
 
-    # Build query
+    # Build query - fetch all projects for kanban board
     query = supabase.table('saas_projects').select('*').eq('user_id', user_id)
-
-    if filter_status != 'all':
-        query = query.eq('status', filter_status)
 
     result = query.order('created_at', desc=True).execute()
     projects_list = result.data or []
@@ -3438,6 +3526,31 @@ def api_delay_task(task_id):
     }).eq('id', task_id).execute()
 
     return jsonify({'success': True, 'new_due': new_dt.isoformat()})
+
+
+@app.route('/api/projects/<project_id>/status', methods=['POST'])
+@login_required
+def api_update_project_status(project_id):
+    user_id = session['user_id']
+    data = request.get_json()
+    new_status = data.get('status')
+
+    if new_status not in ('active', 'completed', 'archived'):
+        return jsonify({'error': 'Invalid status'}), 400
+
+    # Verify ownership
+    project = supabase.table('saas_projects').select('id').eq('id', project_id).eq('user_id', user_id).execute()
+    if not project.data:
+        return jsonify({'error': 'Not found'}), 404
+
+    update_data = {'status': new_status}
+    if new_status == 'completed':
+        update_data['completed_at'] = datetime.now(pytz.UTC).isoformat()
+    elif new_status == 'active':
+        update_data['completed_at'] = None
+
+    supabase.table('saas_projects').update(update_data).eq('id', project_id).execute()
+    return jsonify({'success': True})
 
 
 # ============================================

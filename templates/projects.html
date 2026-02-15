@@ -31,7 +31,7 @@
     </div>
 </nav>
 
-<main class="main">
+<main class="main" style="max-width: 1400px;">
     <!-- Stats -->
     <div class="stats-grid">
         <div class="stat-card">
@@ -52,146 +52,190 @@
         </div>
     </div>
 
-    <!-- Projects Card -->
-    <div class="card">
-        <div class="card-header">
-            <h2 class="card-title">Projects</h2>
-            <a href="{{ url_for('project_create') }}" class="btn btn-primary">
-                + New Project
-            </a>
-        </div>
+    <!-- Toolbar -->
+    <div style="display: flex; justify-content: flex-end; margin-bottom: 20px;">
+        <a href="{{ url_for('project_create') }}" class="btn btn-primary">+ New Project</a>
+    </div>
 
-        <div class="tabs" style="padding: 0 20px;">
-            <div class="tab {% if filter == 'active' %}active{% endif %}" onclick="location.href='?filter=active'">Active</div>
-            <div class="tab {% if filter == 'completed' %}active{% endif %}" onclick="location.href='?filter=completed'">Completed</div>
-            <div class="tab {% if filter == 'archived' %}active{% endif %}" onclick="location.href='?filter=archived'">Archived</div>
-            <div class="tab {% if filter == 'all' %}active{% endif %}" onclick="location.href='?filter=all'">All</div>
-        </div>
-
-        <div class="project-list">
-            {% if projects %}
+    <!-- Kanban Board -->
+    <div class="kanban-board">
+        <!-- Active Column -->
+        <div class="kanban-column">
+            <div class="kanban-header" style="background: #E0E7FF; color: #3730A3;">
+                Active <span class="count" id="count-active">0</span>
+            </div>
+            <div class="kanban-cards" data-status="active" id="col-active">
                 {% for project in projects %}
-                <a href="{{ url_for('project_detail', project_id=project.id) }}" class="project-item" style="text-decoration: none; color: inherit;">
-                    <div class="project-color" style="background: {{ project.color or '#6366F1' }};"></div>
-
-                    <div class="project-content">
-                        <div class="project-title">{{ project.name }}</div>
-                        <div class="project-meta">
-                            <span>{{ project.item_count or 0 }} items</span>
-                            {% if project.description %}
-                            <span>{{ project.description[:50] }}{% if project.description|length > 50 %}...{% endif %}</span>
+                {% if project.status == 'active' %}
+                <a href="{{ url_for('project_detail', project_id=project.id) }}" class="kanban-card" draggable="true" data-project-id="{{ project.id }}" data-status="active" style="text-decoration: none; color: inherit;">
+                    <div style="display: flex; gap: 10px; align-items: flex-start;">
+                        <div style="width: 6px; height: 40px; border-radius: 3px; background: {{ project.color or '#6366F1' }}; flex-shrink: 0;"></div>
+                        <div style="flex: 1; min-width: 0;">
+                            <div class="kanban-card-title">{{ project.name }}</div>
+                            <div class="kanban-card-meta">
+                                <span>{{ project.item_count or 0 }} items</span>
+                                {% if project.description %}
+                                <span>{{ project.description[:40] }}{% if project.description|length > 40 %}...{% endif %}</span>
+                                {% endif %}
+                            </div>
+                            {% if project.item_count %}
+                            <div style="margin-top: 8px; display: flex; align-items: center; gap: 8px;">
+                                <div style="flex: 1; height: 6px; background: var(--gray-200); border-radius: 3px; overflow: hidden;">
+                                    <div style="height: 100%; background: var(--success); width: {{ project.progress or 0 }}%;"></div>
+                                </div>
+                                <span style="font-size: 11px; color: var(--gray-500);">{{ project.progress or 0 }}%</span>
+                            </div>
                             {% endif %}
                         </div>
                     </div>
+                </a>
+                {% endif %}
+                {% endfor %}
+            </div>
+        </div>
 
-                    <div class="project-progress">
-                        <div class="progress-bar">
-                            <div class="progress-fill" style="width: {{ project.progress or 0 }}%;"></div>
+        <!-- Completed Column -->
+        <div class="kanban-column">
+            <div class="kanban-header" style="background: #D1FAE5; color: #065F46;">
+                Completed <span class="count" id="count-completed">0</span>
+            </div>
+            <div class="kanban-cards" data-status="completed" id="col-completed">
+                {% for project in projects %}
+                {% if project.status == 'completed' %}
+                <a href="{{ url_for('project_detail', project_id=project.id) }}" class="kanban-card" draggable="true" data-project-id="{{ project.id }}" data-status="completed" style="text-decoration: none; color: inherit; opacity: 0.8;">
+                    <div style="display: flex; gap: 10px; align-items: flex-start;">
+                        <div style="width: 6px; height: 40px; border-radius: 3px; background: {{ project.color or '#6366F1' }}; flex-shrink: 0;"></div>
+                        <div style="flex: 1; min-width: 0;">
+                            <div class="kanban-card-title">{{ project.name }}</div>
+                            <div class="kanban-card-meta">
+                                <span>{{ project.item_count or 0 }} items</span>
+                                <span class="badge" style="background: #D1FAE5; color: #065F46;">Done</span>
+                            </div>
                         </div>
-                        <span class="progress-text">{{ project.progress or 0 }}%</span>
-                    </div>
-
-                    <div class="project-status">
-                        <span class="status-badge" style="background: {% if project.status == 'active' %}var(--primary){% elif project.status == 'completed' %}var(--success){% else %}var(--gray-300){% endif %}; color: white;">
-                            {{ project.status|capitalize }}
-                        </span>
                     </div>
                 </a>
+                {% endif %}
                 {% endfor %}
-            {% else %}
-                <div class="empty-state">
-                    <div class="empty-state-icon">📁</div>
-                    <h3>No projects yet</h3>
-                    <p>Create your first project or email "Project: Name - items" to jottask@flowquote.ai</p>
-                </div>
-            {% endif %}
+            </div>
+        </div>
+
+        <!-- Archived Column -->
+        <div class="kanban-column">
+            <div class="kanban-header" style="background: var(--gray-200); color: var(--gray-700);">
+                Archived <span class="count" id="count-archived">0</span>
+            </div>
+            <div class="kanban-cards" data-status="archived" id="col-archived">
+                {% for project in projects %}
+                {% if project.status == 'archived' %}
+                <a href="{{ url_for('project_detail', project_id=project.id) }}" class="kanban-card" draggable="true" data-project-id="{{ project.id }}" data-status="archived" style="text-decoration: none; color: inherit; opacity: 0.6;">
+                    <div style="display: flex; gap: 10px; align-items: flex-start;">
+                        <div style="width: 6px; height: 40px; border-radius: 3px; background: var(--gray-300); flex-shrink: 0;"></div>
+                        <div style="flex: 1; min-width: 0;">
+                            <div class="kanban-card-title">{{ project.name }}</div>
+                            <div class="kanban-card-meta">
+                                <span>{{ project.item_count or 0 }} items</span>
+                                <span class="badge" style="background: var(--gray-200); color: var(--gray-700);">Archived</span>
+                            </div>
+                        </div>
+                    </div>
+                </a>
+                {% endif %}
+                {% endfor %}
+            </div>
         </div>
     </div>
 </main>
 
-<style>
-.project-list {
-    display: flex;
-    flex-direction: column;
-}
+<script>
+    // --- Project Kanban Drag & Drop ---
+    let draggedCard = null;
+    let dragStartedAt = 0;
 
-.project-item {
-    display: flex;
-    align-items: center;
-    padding: 16px 20px;
-    border-bottom: 1px solid var(--gray-100);
-    gap: 16px;
-    transition: background 0.2s;
-}
+    document.querySelectorAll('.kanban-card').forEach(card => {
+        card.addEventListener('dragstart', function(e) {
+            draggedCard = this;
+            dragStartedAt = Date.now();
+            this.classList.add('dragging');
+            e.dataTransfer.effectAllowed = 'move';
+            e.dataTransfer.setData('text/plain', this.dataset.projectId);
+        });
 
-.project-item:hover {
-    background: var(--gray-50);
-}
+        card.addEventListener('dragend', function() {
+            this.classList.remove('dragging');
+            draggedCard = null;
+            document.querySelectorAll('.kanban-cards').forEach(col => col.classList.remove('drag-over'));
+        });
 
-.project-item:last-child {
-    border-bottom: none;
-}
+        // Prevent link navigation when dragging
+        card.addEventListener('click', function(e) {
+            if (Date.now() - dragStartedAt < 300) {
+                // Normal click - allow navigation
+            } else {
+                e.preventDefault();
+            }
+        });
+    });
 
-.project-color {
-    width: 8px;
-    height: 48px;
-    border-radius: 4px;
-    flex-shrink: 0;
-}
+    document.querySelectorAll('.kanban-cards').forEach(column => {
+        column.addEventListener('dragover', function(e) {
+            e.preventDefault();
+            e.dataTransfer.dropEffect = 'move';
+            this.classList.add('drag-over');
+        });
 
-.project-content {
-    flex: 1;
-    min-width: 0;
-}
+        column.addEventListener('dragleave', function(e) {
+            if (!this.contains(e.relatedTarget)) {
+                this.classList.remove('drag-over');
+            }
+        });
 
-.project-title {
-    font-weight: 600;
-    color: var(--gray-900);
-    margin-bottom: 4px;
-}
+        column.addEventListener('drop', async function(e) {
+            e.preventDefault();
+            this.classList.remove('drag-over');
+            if (!draggedCard) return;
 
-.project-meta {
-    display: flex;
-    gap: 16px;
-    font-size: 13px;
-    color: var(--gray-500);
-}
+            const projectId = draggedCard.dataset.projectId;
+            const targetStatus = this.dataset.status;
+            const sourceStatus = draggedCard.dataset.status;
 
-.project-progress {
-    display: flex;
-    align-items: center;
-    gap: 12px;
-    width: 150px;
-}
+            if (targetStatus === sourceStatus) return;
 
-.progress-bar {
-    flex: 1;
-    height: 8px;
-    background: var(--gray-200);
-    border-radius: 4px;
-    overflow: hidden;
-}
+            try {
+                const response = await fetch(`/api/projects/${projectId}/status`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ status: targetStatus })
+                });
+                if (!response.ok) return;
+            } catch (err) {
+                console.error('Failed to update project:', err);
+                return;
+            }
 
-.progress-fill {
-    height: 100%;
-    background: var(--success);
-    transition: width 0.3s;
-}
+            // Move card in DOM
+            this.appendChild(draggedCard);
+            draggedCard.dataset.status = targetStatus;
 
-.progress-text {
-    font-size: 13px;
-    color: var(--gray-500);
-    min-width: 35px;
-}
+            // Update visual style
+            if (targetStatus === 'completed') {
+                draggedCard.style.opacity = '0.8';
+            } else if (targetStatus === 'archived') {
+                draggedCard.style.opacity = '0.6';
+            } else {
+                draggedCard.style.opacity = '1';
+            }
 
-.project-status {
-    flex-shrink: 0;
-}
+            updateCounts();
+        });
+    });
 
-@media (max-width: 768px) {
-    .project-progress {
-        display: none;
+    // Update column counts
+    function updateCounts() {
+        ['active', 'completed', 'archived'].forEach(col => {
+            const cards = document.querySelectorAll(`#col-${col} .kanban-card`);
+            document.getElementById(`count-${col}`).textContent = cards.length;
+        });
     }
-}
-</style>
+    updateCounts();
+</script>
 {% endblock %}
