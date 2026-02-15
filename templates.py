@@ -62,22 +62,32 @@ TASK_EDIT_TEMPLATE = """
                 </div>
             </div>
 
-            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px;">
-                <div class="form-group">
-                    <label class="form-label">Priority</label>
-                    <select name="priority" class="form-input">
-                        <option value="low" {% if task.priority == 'low' %}selected{% endif %}>Low</option>
-                        <option value="medium" {% if task.priority == 'medium' %}selected{% endif %}>Medium</option>
-                        <option value="high" {% if task.priority == 'high' %}selected{% endif %}>High</option>
-                        <option value="urgent" {% if task.priority == 'urgent' %}selected{% endif %}>Urgent</option>
-                    </select>
-                </div>
-                <div class="form-group">
-                    <label class="form-label">Status</label>
-                    <select name="status" class="form-input">
-                        <option value="pending" {% if task.status == 'pending' %}selected{% endif %}>Pending</option>
-                        <option value="completed" {% if task.status == 'completed' %}selected{% endif %}>Completed</option>
-                    </select>
+            <div class="form-group">
+                <label class="form-label">Priority</label>
+                <select name="priority" class="form-input">
+                    <option value="low" {% if task.priority == 'low' %}selected{% endif %}>Low</option>
+                    <option value="medium" {% if task.priority == 'medium' %}selected{% endif %}>Medium</option>
+                    <option value="high" {% if task.priority == 'high' %}selected{% endif %}>High</option>
+                    <option value="urgent" {% if task.priority == 'urgent' %}selected{% endif %}>Urgent</option>
+                </select>
+            </div>
+
+            <div class="form-group">
+                <label class="form-label">Status</label>
+                <input type="hidden" name="status" id="status-input" value="{{ task.status }}">
+                <div style="display: flex; gap: 8px;">
+                    <button type="button" class="status-btn" data-status="pending" onclick="setStatus('pending')"
+                        style="flex: 1; padding: 10px 16px; border-radius: 8px; font-weight: 600; font-size: 14px; cursor: pointer; border: 2px solid {% if task.status == 'pending' %}#F59E0B{% else %}var(--gray-200){% endif %}; background: {% if task.status == 'pending' %}#FEF3C7{% else %}white{% endif %}; color: {% if task.status == 'pending' %}#92400E{% else %}var(--gray-500){% endif %};">
+                        Pending
+                    </button>
+                    <button type="button" class="status-btn" data-status="ongoing" onclick="setStatus('ongoing')"
+                        style="flex: 1; padding: 10px 16px; border-radius: 8px; font-weight: 600; font-size: 14px; cursor: pointer; border: 2px solid {% if task.status == 'ongoing' %}var(--primary){% else %}var(--gray-200){% endif %}; background: {% if task.status == 'ongoing' %}#E0E7FF{% else %}white{% endif %}; color: {% if task.status == 'ongoing' %}#3730A3{% else %}var(--gray-500){% endif %};">
+                        Ongoing
+                    </button>
+                    <button type="button" class="status-btn" data-status="completed" onclick="setStatus('completed')"
+                        style="flex: 1; padding: 10px 16px; border-radius: 8px; font-weight: 600; font-size: 14px; cursor: pointer; border: 2px solid {% if task.status == 'completed' %}var(--success){% else %}var(--gray-200){% endif %}; background: {% if task.status == 'completed' %}#D1FAE5{% else %}white{% endif %}; color: {% if task.status == 'completed' %}#065F46{% else %}var(--gray-500){% endif %};">
+                        Completed
+                    </button>
                 </div>
             </div>
 
@@ -124,6 +134,39 @@ TASK_EDIT_TEMPLATE = """
         </form>
     </div>
 
+    <!-- Checklist Card -->
+    <div class="card" style="margin-top: 20px;">
+        <div class="card-header">
+            <h3 class="card-title">Checklist</h3>
+            <span style="color: var(--gray-500); font-size: 14px;" id="checklist-counter">
+                {{ checklist|selectattr('is_completed')|list|length }}/{{ checklist|length }}
+            </span>
+        </div>
+        <div class="card-body" style="padding: 12px 20px;">
+            {% if checklist %}
+            <div style="display: flex; flex-direction: column; gap: 4px; margin-bottom: 16px;">
+                {% for item in checklist %}
+                <label style="display: flex; align-items: center; gap: 12px; padding: 10px 12px; border-radius: 8px; cursor: pointer; transition: background 0.15s; {% if item.is_completed %}opacity: 0.6;{% endif %}"
+                       onmouseover="this.style.background='var(--gray-50)'" onmouseout="this.style.background='transparent'">
+                    <input type="checkbox" {% if item.is_completed %}checked{% endif %}
+                           onchange="toggleChecklistItem('{{ task.id }}', '{{ item.id }}', this.checked)"
+                           style="width: 20px; height: 20px; accent-color: var(--success); cursor: pointer;">
+                    <span style="font-size: 14px; {% if item.is_completed %}text-decoration: line-through; color: var(--gray-500);{% endif %}">{{ item.item_text }}</span>
+                </label>
+                {% endfor %}
+            </div>
+            {% else %}
+            <p style="color: var(--gray-500); text-align: center; padding: 16px 0; font-size: 14px;">No checklist items yet</p>
+            {% endif %}
+
+            <form method="POST" action="{{ url_for('add_checklist_item', task_id=task.id) }}" style="display: flex; gap: 8px;">
+                <input type="hidden" name="redirect_to" value="edit">
+                <input type="text" name="item_text" class="form-input" placeholder="Add a checklist item..." required style="flex: 1;">
+                <button type="submit" class="btn btn-primary btn-sm">Add</button>
+            </form>
+        </div>
+    </div>
+
     {% if task.status == 'pending' %}
     <div style="text-align: center; margin-top: 24px;">
         <form method="POST" action="{{ url_for('delete_task', task_id=task.id) }}" onsubmit="return confirm('Are you sure you want to delete this task?');">
@@ -146,6 +189,55 @@ async function delayTask(taskId, hours, days) {
         }
     } catch (err) {
         console.error('Failed to delay task:', err);
+    }
+}
+
+// Status button toggle
+function setStatus(status) {
+    document.getElementById('status-input').value = status;
+
+    const styles = {
+        pending:   { border: '#F59E0B', bg: '#FEF3C7', color: '#92400E' },
+        ongoing:   { border: '#6366F1', bg: '#E0E7FF', color: '#3730A3' },
+        completed: { border: '#10B981', bg: '#D1FAE5', color: '#065F46' }
+    };
+
+    document.querySelectorAll('.status-btn').forEach(btn => {
+        const s = btn.dataset.status;
+        const active = s === status;
+        btn.style.borderColor = active ? styles[s].border : '#E5E7EB';
+        btn.style.background = active ? styles[s].bg : 'white';
+        btn.style.color = active ? styles[s].color : '#6B7280';
+    });
+}
+
+// Checklist toggle via API
+async function toggleChecklistItem(taskId, itemId, isChecked) {
+    try {
+        const response = await fetch(`/api/tasks/${taskId}/checklist/${itemId}/toggle`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ is_completed: isChecked })
+        });
+        if (response.ok) {
+            const label = event.target.closest('label');
+            const span = label.querySelector('span');
+            if (isChecked) {
+                label.style.opacity = '0.6';
+                span.style.textDecoration = 'line-through';
+                span.style.color = 'var(--gray-500)';
+            } else {
+                label.style.opacity = '1';
+                span.style.textDecoration = 'none';
+                span.style.color = '';
+            }
+            // Update counter
+            const checkboxes = document.querySelectorAll('.card-body input[type="checkbox"]');
+            const checked = [...checkboxes].filter(c => c.checked).length;
+            document.getElementById('checklist-counter').textContent = checked + '/' + checkboxes.length;
+        }
+    } catch (err) {
+        console.error('Failed to toggle checklist item:', err);
     }
 }
 </script>

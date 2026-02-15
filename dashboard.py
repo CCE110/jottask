@@ -2328,11 +2328,11 @@ def dashboard():
     today = datetime.now(tz).date().isoformat()
     search_query = request.args.get('q', '').strip()
 
-    # Get pending tasks first (most important)
+    # Get pending and ongoing tasks (most important)
     pending_tasks_result = supabase.table('tasks')\
         .select('*')\
         .eq('user_id', user_id)\
-        .eq('status', 'pending')\
+        .in_('status', ['pending', 'ongoing'])\
         .order('due_date')\
         .order('due_time')\
         .execute()
@@ -2346,7 +2346,7 @@ def dashboard():
         .limit(50)\
         .execute()
 
-    # Combine: pending first, then recent completed
+    # Combine: pending/ongoing first, then recent completed
     pending_list = pending_tasks_result.data or []
     completed_list = completed_tasks_result.data or []
     all_tasks = pending_list + completed_list
@@ -2514,13 +2514,26 @@ def edit_task(task_id):
             'project_name': request.form.get('project_name') or None
         }
 
+        if update_data['status'] == 'completed':
+            update_data['completed_at'] = datetime.now(pytz.UTC).isoformat()
+        elif update_data['status'] in ('pending', 'ongoing'):
+            update_data['completed_at'] = None
+
         supabase.table('tasks').update(update_data).eq('id', task_id).execute()
         return redirect(url_for('dashboard'))
+
+    # Get checklist items
+    checklist = supabase.table('task_checklist_items')\
+        .select('*')\
+        .eq('task_id', task_id)\
+        .order('display_order')\
+        .execute()
 
     return render_template_string(
         TASK_EDIT_TEMPLATE,
         title='Edit Task',
         task=task.data,
+        checklist=checklist.data or [],
         **{'base': BASE_TEMPLATE}
     )
 
@@ -2621,6 +2634,9 @@ def update_checklist(task_id):
 
         supabase.table('task_checklist_items').update(update_data).eq('id', item['id']).execute()
 
+    redirect_to = request.form.get('redirect_to', 'detail')
+    if redirect_to == 'edit':
+        return redirect(url_for('edit_task', task_id=task_id))
     return redirect(url_for('task_detail', task_id=task_id))
 
 
@@ -2655,7 +2671,33 @@ def add_checklist_item(task_id):
         'display_order': max_order + 1
     }).execute()
 
+    redirect_to = request.form.get('redirect_to', 'detail')
+    if redirect_to == 'edit':
+        return redirect(url_for('edit_task', task_id=task_id))
     return redirect(url_for('task_detail', task_id=task_id))
+
+
+@app.route('/api/tasks/<task_id>/checklist/<item_id>/toggle', methods=['POST'])
+@login_required
+def api_toggle_checklist_item(task_id, item_id):
+    user_id = session['user_id']
+
+    # Verify task ownership
+    task = supabase.table('tasks').select('id').eq('id', task_id).eq('user_id', user_id).execute()
+    if not task.data:
+        return jsonify({'error': 'Not found'}), 404
+
+    data = request.get_json()
+    is_completed = data.get('is_completed', False)
+
+    update_data = {'is_completed': is_completed}
+    if is_completed:
+        update_data['completed_at'] = datetime.now(pytz.UTC).isoformat()
+    else:
+        update_data['completed_at'] = None
+
+    supabase.table('task_checklist_items').update(update_data).eq('id', item_id).execute()
+    return jsonify({'success': True})
 
 
 @app.route('/tasks/<task_id>/notes/add', methods=['POST'])
@@ -3497,6 +3539,8 @@ def api_update_task_status(task_id):
     update_data = {'status': new_status}
     if new_status == 'completed':
         update_data['completed_at'] = datetime.now(pytz.UTC).isoformat()
+    elif new_status in ('pending', 'ongoing'):
+        update_data['completed_at'] = None
 
     supabase.table('tasks').update(update_data).eq('id', task_id).execute()
     return jsonify({'success': True})

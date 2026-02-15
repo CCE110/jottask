@@ -83,12 +83,13 @@
             </div>
             <div class="kanban-cards" data-status="overdue" id="col-overdue">
                 {% for task in tasks %}
-                {% if task.status == 'pending' and task.due_date and task.due_date < today %}
-                <div class="kanban-card" draggable="true" data-task-id="{{ task.id }}" data-status="pending" data-due-date="{{ task.due_date }}">
+                {% if task.status in ('pending', 'ongoing') and task.due_date and task.due_date < today %}
+                <div class="kanban-card" draggable="true" data-task-id="{{ task.id }}" data-status="{{ task.status }}" data-due-date="{{ task.due_date }}">
                     <div class="kanban-card-title">{{ task.title }}</div>
                     <div class="kanban-card-meta">
                         <span class="badge" style="background: {% if task.priority == 'urgent' %}#FEE2E2; color: #991B1B{% elif task.priority == 'high' %}#FEE2E2; color: #991B1B{% elif task.priority == 'medium' %}#FEF3C7; color: #92400E{% else %}#D1FAE5; color: #065F46{% endif %};">{{ task.priority|capitalize }}</span>
                         <span>{{ task.due_date }} {{ task.due_time[:5] if task.due_time else '' }}</span>
+                        {% if task.status == 'ongoing' %}<span class="badge" style="background: #E0E7FF; color: #3730A3;">Ongoing</span>{% endif %}
                         {% if task.client_name %}<span>{{ task.client_name }}</span>{% endif %}
                     </div>
                     <div class="kanban-card-actions">
@@ -108,12 +109,13 @@
             </div>
             <div class="kanban-cards" data-status="today" id="col-today">
                 {% for task in tasks %}
-                {% if task.status == 'pending' and task.due_date == today %}
-                <div class="kanban-card" draggable="true" data-task-id="{{ task.id }}" data-status="pending" data-due-date="{{ task.due_date }}">
+                {% if task.status in ('pending', 'ongoing') and task.due_date == today %}
+                <div class="kanban-card" draggable="true" data-task-id="{{ task.id }}" data-status="{{ task.status }}" data-due-date="{{ task.due_date }}">
                     <div class="kanban-card-title">{{ task.title }}</div>
                     <div class="kanban-card-meta">
                         <span class="badge" style="background: {% if task.priority == 'urgent' %}#FEE2E2; color: #991B1B{% elif task.priority == 'high' %}#FEE2E2; color: #991B1B{% elif task.priority == 'medium' %}#FEF3C7; color: #92400E{% else %}#D1FAE5; color: #065F46{% endif %};">{{ task.priority|capitalize }}</span>
                         <span>{{ task.due_time[:5] if task.due_time else 'No time' }}</span>
+                        {% if task.status == 'ongoing' %}<span class="badge" style="background: #E0E7FF; color: #3730A3;">Ongoing</span>{% endif %}
                         {% if task.client_name %}<span>{{ task.client_name }}</span>{% endif %}
                     </div>
                     <div class="kanban-card-actions">
@@ -133,12 +135,13 @@
             </div>
             <div class="kanban-cards" data-status="upcoming" id="col-upcoming">
                 {% for task in tasks %}
-                {% if task.status == 'pending' and (not task.due_date or task.due_date > today) %}
-                <div class="kanban-card" draggable="true" data-task-id="{{ task.id }}" data-status="pending" data-due-date="{{ task.due_date or '' }}">
+                {% if task.status in ('pending', 'ongoing') and (not task.due_date or task.due_date > today) %}
+                <div class="kanban-card" draggable="true" data-task-id="{{ task.id }}" data-status="{{ task.status }}" data-due-date="{{ task.due_date or '' }}">
                     <div class="kanban-card-title">{{ task.title }}</div>
                     <div class="kanban-card-meta">
                         <span class="badge" style="background: {% if task.priority == 'urgent' %}#FEE2E2; color: #991B1B{% elif task.priority == 'high' %}#FEE2E2; color: #991B1B{% elif task.priority == 'medium' %}#FEF3C7; color: #92400E{% else %}#D1FAE5; color: #065F46{% endif %};">{{ task.priority|capitalize }}</span>
                         {% if task.due_date %}<span>{{ task.due_date }} {{ task.due_time[:5] if task.due_time else '' }}</span>{% else %}<span>No date</span>{% endif %}
+                        {% if task.status == 'ongoing' %}<span class="badge" style="background: #E0E7FF; color: #3730A3;">Ongoing</span>{% endif %}
                         {% if task.client_name %}<span>{{ task.client_name }}</span>{% endif %}
                     </div>
                     <div class="kanban-card-actions">
@@ -338,7 +341,7 @@
 
             // Only call API if status actually changes
             if ((sourceStatus === 'completed' && newStatus === 'pending') ||
-                (sourceStatus === 'pending' && newStatus === 'completed')) {
+                (sourceStatus !== 'completed' && newStatus === 'completed')) {
                 try {
                     const response = await fetch(`/api/tasks/${taskId}/status`, {
                         method: 'POST',
