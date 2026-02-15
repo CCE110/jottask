@@ -1,8 +1,8 @@
-# AI Task Management & CRM System
+# Jottask
 
 ## Quick Reference
 
-**GitHub**: https://github.com/CCE110/rob-crm-ai-tasks
+**GitHub**: https://github.com/CCE110/jottask
 **Railway**: rob-crm-tasks-production.up.railway.app
 **Status**: FULLY OPERATIONAL
 
