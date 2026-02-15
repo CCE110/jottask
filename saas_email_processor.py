@@ -471,7 +471,7 @@ Rules:
             params = {
                 "from": self.from_email,
                 "to": [os.getenv('ROB_EMAIL', 'rob@cloudcleanenergy.com.au')],
-                "subject": f"Jottask Approval: {email_subject}",
+                "subject": f"Jottask Approval: {' '.join(email_subject.split())}",
                 "html": email_html
             }
             resend.Emails.send(params)
