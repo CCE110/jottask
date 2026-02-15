@@ -95,6 +95,8 @@ class AIEmailProcessor:
 
             for msg_id in messages[0].split():
                 self.process_single_email(mail, msg_id)
+                # Explicitly mark email as read to prevent duplicate processing
+                mail.store(msg_id, '+FLAGS', '\\Seen')
 
             mail.close()
             mail.logout()
