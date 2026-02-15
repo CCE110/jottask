@@ -763,5 +763,14 @@ def edit_action():
 
 
 if __name__ == "__main__":
+    import time
     processor = AIEmailProcessor()
-    processor.process_forwarded_emails()
+    poll_interval = int(os.getenv('POLL_INTERVAL_SECONDS', '900'))  # Default 15 minutes
+    print(f"Starting email polling loop (every {poll_interval}s)...")
+    while True:
+        try:
+            processor.process_forwarded_emails()
+        except Exception as e:
+            print(f"Error in polling cycle: {e}")
+        print(f"Sleeping {poll_interval}s until next check...")
+        time.sleep(poll_interval)
