@@ -2750,7 +2750,8 @@ def _render_shopping_list(user_id, token=None):
     uncompleted = [i for i in items.data if not i['is_completed']]
     completed = [i for i in items.data if i['is_completed']]
 
-    return render_template('shopping_list.html',
+    template = 'shopping_list_public.html' if token else 'shopping_list.html'
+    return render_template(template,
                            token=token,
                            task_id=task_id,
                            uncompleted=uncompleted,

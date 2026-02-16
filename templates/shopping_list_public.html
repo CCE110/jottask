@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Shopping List</title>
+    <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
+    <link rel="apple-touch-icon" href="/static/apple-touch-icon.png">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="default">
+    <meta name="apple-mobile-web-app-title" content="Shopping List">
+    <meta name="theme-color" content="#6366F1">
+    <style>
+        :root {
+            --primary: #6366F1;
+            --primary-dark: #4F46E5;
+            --success: #10B981;
+            --danger: #EF4444;
+            --gray-50: #F9FAFB;
+            --gray-100: #F3F4F6;
+            --gray-200: #E5E7EB;
+            --gray-300: #D1D5DB;
+            --gray-500: #6B7280;
+            --gray-900: #111827;
+        }
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: var(--gray-50);
+            color: var(--gray-900);
+            line-height: 1.5;
+        }
+        .sl-container { max-width: 600px; margin: 0 auto; padding: 20px 16px; }
+        .sl-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 20px; }
+        .sl-title { font-size: 28px; font-weight: 700; }
+        .sl-count { font-size: 14px; color: var(--gray-500); background: var(--gray-100); padding: 4px 12px; border-radius: 12px; font-weight: 500; }
+        .sl-add-form { display: flex; gap: 8px; margin-bottom: 24px; }
+        .sl-add-input { flex: 1; padding: 14px 16px; border: 2px solid var(--gray-200); border-radius: 12px; font-size: 16px; transition: border-color 0.2s; }
+        .sl-add-input:focus { outline: none; border-color: var(--primary); }
+        .sl-add-btn { padding: 14px 24px; background: var(--primary); color: white; border: none; border-radius: 12px; font-size: 16px; font-weight: 600; cursor: pointer; white-space: nowrap; }
+        .sl-add-btn:hover { background: var(--primary-dark); }
+        .sl-items { background: white; border-radius: 12px; border: 1px solid var(--gray-200); overflow: hidden; }
+        .sl-item { display: flex; align-items: center; gap: 14px; padding: 16px 20px; border-bottom: 1px solid var(--gray-100); cursor: pointer; -webkit-tap-highlight-color: transparent; }
+        .sl-item:last-child { border-bottom: none; }
+        .sl-item:active { background: var(--gray-50); }
+        .sl-item-checkbox { width: 26px; height: 26px; border-radius: 50%; border: 2px solid var(--gray-300); display: flex; align-items: center; justify-content: center; flex-shrink: 0; transition: all 0.2s; }
+        .sl-item-checkbox.checked { background: var(--success); border-color: var(--success); }
+        .sl-item-checkbox.checked svg { display: block; }
+        .sl-item-checkbox svg { display: none; width: 14px; height: 14px; }
+        .sl-item-text { font-size: 16px; color: var(--gray-900); line-height: 1.4; }
+        .sl-item.completed { opacity: 0.5; }
+        .sl-item.completed .sl-item-text { text-decoration: line-through; color: var(--gray-500); }
+        .sl-section-label { font-size: 13px; font-weight: 600; color: var(--gray-500); text-transform: uppercase; letter-spacing: 0.5px; padding: 12px 20px 8px; background: var(--gray-50); border-bottom: 1px solid var(--gray-100); }
+        .sl-clear-bar { display: flex; justify-content: center; margin-top: 16px; }
+        .sl-clear-btn { padding: 10px 20px; background: none; border: 1px solid var(--gray-300); border-radius: 8px; color: var(--gray-500); font-size: 14px; font-weight: 500; cursor: pointer; }
+        .sl-clear-btn:hover { border-color: var(--danger); color: var(--danger); }
+        .sl-empty { text-align: center; padding: 48px 20px; color: var(--gray-500); }
+        .sl-empty-icon { font-size: 48px; margin-bottom: 12px; }
+        @media (max-width: 768px) { .sl-title { font-size: 24px; } }
+    </style>
+</head>
+<body>
+<div class="sl-container">
+    <div class="sl-header">
+        <h1 class="sl-title">Shopping List</h1>
+        <span class="sl-count">{{ uncompleted|length }} item{{ 's' if uncompleted|length != 1 else '' }}</span>
+    </div>
+
+    <form class="sl-add-form" method="POST" action="{{ url_for('shopping_list_add', token=token) }}">
+        <input type="text" name="item_text" class="sl-add-input" placeholder="Add an item..." autocomplete="off" autofocus>
+        <button type="submit" class="sl-add-btn">Add</button>
+    </form>
+
+    {% if uncompleted or completed %}
+    <div class="sl-items">
+        {% for item in uncompleted %}
+        <div class="sl-item" onclick="toggleItem(this, '{{ item.id }}', false)">
+            <div class="sl-item-checkbox">
+                <svg viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>
+            </div>
+            <span class="sl-item-text">{{ item.item_text }}</span>
+        </div>
+        {% endfor %}
+
+        {% if completed %}
+        <div class="sl-section-label">Completed ({{ completed|length }})</div>
+        {% for item in completed %}
+        <div class="sl-item completed" onclick="toggleItem(this, '{{ item.id }}', true)">
+            <div class="sl-item-checkbox checked">
+                <svg viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>
+            </div>
+            <span class="sl-item-text">{{ item.item_text }}</span>
+        </div>
+        {% endfor %}
+        {% endif %}
+    </div>
+
+    {% if completed %}
+    <div class="sl-clear-bar">
+        <form method="POST" action="{{ url_for('shopping_list_clear', token=token) }}">
+            <button type="submit" class="sl-clear-btn">Clear completed</button>
+        </form>
+    </div>
+    {% endif %}
+
+    {% else %}
+    <div class="sl-empty">
+        <div class="sl-empty-icon">&#x1F6D2;</div>
+        <p>Your shopping list is empty.<br>Add items above to get started.</p>
+    </div>
+    {% endif %}
+</div>
+
+<script>
+const TOKEN = '{{ token }}';
+async function toggleItem(el, itemId, currentlyCompleted) {
+    const newState = !currentlyCompleted;
+    const cb = el.querySelector('.sl-item-checkbox');
+    if (newState) { cb.classList.add('checked'); el.classList.add('completed'); el.querySelector('.sl-item-text').style.textDecoration = 'line-through'; }
+    else { cb.classList.remove('checked'); el.classList.remove('completed'); el.querySelector('.sl-item-text').style.textDecoration = 'none'; }
+    try {
+        const r = await fetch(`/sl/${TOKEN}/toggle/${itemId}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ is_completed: newState }) });
+        if (r.ok) setTimeout(() => location.reload(), 400);
+    } catch (e) {
+        if (newState) { cb.classList.remove('checked'); el.classList.remove('completed'); el.querySelector('.sl-item-text').style.textDecoration = 'none'; }
+        else { cb.classList.add('checked'); el.classList.add('completed'); el.querySelector('.sl-item-text').style.textDecoration = 'line-through'; }
+    }
+}
+</script>
+</body>
+</html>
