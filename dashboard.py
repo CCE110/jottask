@@ -31,6 +31,13 @@ supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 SHOPPING_LIST_TOKEN = os.getenv('SHOPPING_LIST_TOKEN', '')
 SHOPPING_LIST_USER_EMAIL = os.getenv('SHOPPING_LIST_USER_EMAIL', '')
 
+@app.context_processor
+def inject_shopping_list_url():
+    """Make shopping list token URL available to all templates."""
+    if SHOPPING_LIST_TOKEN:
+        return {'shopping_list_url': f'/sl/{SHOPPING_LIST_TOKEN}'}
+    return {'shopping_list_url': '/shopping-list'}
+
 # Admin notification settings
 ADMIN_EMAIL = os.getenv('ADMIN_EMAIL', 'admin@flowquote.ai')
 RESEND_API_KEY = os.getenv('RESEND_API_KEY')
