@@ -9,7 +9,7 @@ Upgraded with:
 - Jottask category intelligence
 """
 
-import imaplib
+import imapli
 import email
 from email.header import decode_header
 import json
@@ -506,6 +506,7 @@ Rules:
 
         task_data = {
             'business_id': business_id,
+            'user_id': os.getenv('ROB_USER_ID', 'e515407e-dbd6-4331-a815-1878815c89bc'),
             'title': action['title'],
             'description': action.get('description', ''),
             'due_date': action.get('due_date'),
