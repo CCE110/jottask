@@ -9,7 +9,7 @@ Upgraded with:
 - Jottask category intelligence
 """
 
-import imapli
+import imaplib
 import email
 from email.header import decode_header
 import json
