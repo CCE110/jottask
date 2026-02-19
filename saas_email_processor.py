@@ -1,18 +1,22 @@
 #!/usr/bin/env python3
 """
-AI Email Task Processor v2
+AI Email Task Processor v3 — Multi-Tenant
 Upgraded with:
 - Solar sales pipeline awareness (DSW/Cloud Clean Energy workflow)
 - Plaud voice transcription detection & multi-action parsing
 - Tiered action system (auto-execute vs email approval)
 - Email-based approval flow (replaces terminal input)
 - Jottask category intelligence
+- Multi-tenant: processes all active email_connections, per-user AI context
+- Backward compatible: falls back to env-var single-inbox when no connections exist
 """
 
 import imaplib
 import email
 from email.header import decode_header
 import json
+from dataclasses import dataclass, field
+from typing import Optional, Dict
 from datetime import datetime, date, timedelta
 from task_manager import TaskManager
 from anthropic import Anthropic
@@ -24,6 +28,23 @@ import resend
 import pytz
 
 load_dotenv()
+
+
+# =========================================================================
+# USER CONTEXT — per-tenant data passed through the processing pipeline
+# =========================================================================
+
+@dataclass
+class UserContext:
+    """Per-user context for multi-tenant email processing"""
+    user_id: str
+    email_address: str
+    company_name: str = ''
+    full_name: str = ''
+    timezone: str = 'Australia/Brisbane'
+    businesses: Dict[str, str] = field(default_factory=dict)
+    ai_context: Optional[dict] = None
+    connection_id: Optional[str] = None
 
 
 class AIEmailProcessor:
@@ -41,7 +62,7 @@ class AIEmailProcessor:
         resend.api_key = os.getenv('RESEND_API_KEY')
         self.from_email = os.getenv('FROM_EMAIL', 'admin@flowquote.ai')
 
-        # Business IDs
+        # Business IDs (env-var fallback for legacy single-tenant mode)
         self.businesses = {
             'Cloud Clean Energy': os.getenv('BUSINESS_ID_CCE', 'feb14276-5c3d-4fcf-af06-9a8f54cf7159'),
             'AI Project Pro': os.getenv('BUSINESS_ID_AIPP', 'ec5d7aab-8d74-4ef2-9d92-01b143c68c82')
@@ -75,7 +96,208 @@ class AIEmailProcessor:
         ]
 
     # =========================================================================
-    # MAIN PROCESSING LOOP
+    # MULTI-TENANT MAIN LOOP
+    # =========================================================================
+
+    def _get_active_connections(self):
+        """Query email_connections for active connections due for sync"""
+        try:
+            result = self.tm.supabase.table('email_connections') \
+                .select('*, users(id, email, full_name, company_name, timezone, ai_context)') \
+                .eq('is_active', True) \
+                .execute()
+
+            if not result.data:
+                return []
+
+            now = datetime.now(pytz.UTC)
+            due_connections = []
+            for conn in result.data:
+                last_sync = conn.get('last_sync_at')
+                freq_minutes = conn.get('sync_frequency_minutes', 15)
+
+                if last_sync:
+                    last_sync_dt = datetime.fromisoformat(last_sync.replace('Z', '+00:00'))
+                    next_sync = last_sync_dt + timedelta(minutes=freq_minutes)
+                    if now < next_sync:
+                        continue  # Not due yet
+
+                due_connections.append(conn)
+
+            return due_connections
+
+        except Exception as e:
+            print(f"Error fetching active connections: {e}")
+            return []
+
+    def _build_user_context(self, connection):
+        """Build a UserContext from an email_connections row (with joined user data)"""
+        user_data = connection.get('users') or {}
+        ai_context = user_data.get('ai_context') or {}
+
+        # Build businesses dict from ai_context, fall back to env vars
+        businesses = ai_context.get('businesses', {})
+        if not businesses:
+            businesses = self.businesses.copy()
+
+        return UserContext(
+            user_id=connection['user_id'],
+            email_address=connection['email_address'],
+            company_name=user_data.get('company_name', ''),
+            full_name=user_data.get('full_name', ''),
+            timezone=user_data.get('timezone', 'Australia/Brisbane'),
+            businesses=businesses,
+            ai_context=ai_context,
+            connection_id=str(connection['id']),
+        )
+
+    def process_connection(self, connection):
+        """Process emails for a single connection"""
+        user_ctx = self._build_user_context(connection)
+        use_env = connection.get('use_env_credentials', False)
+
+        if use_env:
+            imap_server = os.getenv('IMAP_SERVER', 'mail.privateemail.com')
+            imap_user = os.getenv('JOTTASK_EMAIL', 'jottask@flowquote.ai')
+            imap_password = os.getenv('JOTTASK_EMAIL_PASSWORD')
+        else:
+            imap_server = connection.get('imap_server', 'imap.gmail.com')
+            imap_user = connection['email_address']
+            imap_password = connection.get('imap_password', '')
+
+        if not imap_password:
+            print(f"  Skipping {user_ctx.email_address}: no IMAP password configured")
+            return
+
+        print(f"Processing connection: {user_ctx.email_address} (user: {user_ctx.full_name})")
+
+        # Load processed emails scoped to this connection
+        processed = self._load_processed_emails(connection_id=user_ctx.connection_id)
+
+        try:
+            mail = imaplib.IMAP4_SSL(imap_server)
+            mail.login(imap_user, imap_password)
+            mail.select('inbox')
+
+            seven_days_ago = (date.today() - timedelta(days=7)).strftime("%d-%b-%Y")
+            status, messages = mail.uid("search", None, f'(SINCE {seven_days_ago})')
+
+            if not messages[0]:
+                print(f"  No emails in last 7 days for {user_ctx.email_address}")
+                mail.close()
+                mail.logout()
+                self._update_last_sync(user_ctx.connection_id)
+                return
+
+            email_ids = messages[0].split()
+
+            unprocessed = []
+            for eid in email_ids:
+                uid_str = eid.decode() if isinstance(eid, bytes) else str(eid)
+                if uid_str not in processed:
+                    unprocessed.append(eid)
+
+            if not unprocessed:
+                print(f"  No new emails for {user_ctx.email_address}")
+                mail.close()
+                mail.logout()
+                self._update_last_sync(user_ctx.connection_id)
+                return
+
+            print(f"  Found {len(email_ids)} total ({len(unprocessed)} new)")
+
+            processed_count = 0
+            skipped_dupes = 0
+            seen_subjects = set()
+
+            for msg_id in reversed(unprocessed[-20:]):
+                msg_id_str = msg_id.decode() if isinstance(msg_id, bytes) else str(msg_id)
+
+                status, msg_data = mail.uid("fetch", msg_id, '(RFC822)')
+                if status != 'OK':
+                    self._mark_email_processed(
+                        f'fetch-fail-{msg_id_str}', msg_id_str,
+                        connection_id=user_ctx.connection_id, user_id=user_ctx.user_id
+                    )
+                    continue
+
+                email_body = email.message_from_bytes(msg_data[0][1])
+                message_id = email_body.get('Message-ID', msg_id_str)
+
+                if msg_id_str in processed or message_id in processed:
+                    continue
+
+                raw_subject = email_body.get('Subject', '')
+                if raw_subject:
+                    decoded_parts = decode_header(raw_subject)
+                    raw_subject = ''.join(
+                        part.decode(enc or 'utf-8') if isinstance(part, bytes) else part
+                        for part, enc in decoded_parts
+                    )
+                norm_subject = self._normalize_subject(raw_subject)
+                if norm_subject and norm_subject in seen_subjects:
+                    print(f"  Skipping duplicate subject: {raw_subject[:60]}")
+                    self._mark_email_processed(
+                        message_id, msg_id_str,
+                        connection_id=user_ctx.connection_id, user_id=user_ctx.user_id
+                    )
+                    skipped_dupes += 1
+                    continue
+                if norm_subject:
+                    seen_subjects.add(norm_subject)
+
+                self.process_single_email_body(email_body, user_context=user_ctx)
+                processed_count += 1
+
+                self._mark_email_processed(
+                    message_id, msg_id_str,
+                    connection_id=user_ctx.connection_id, user_id=user_ctx.user_id
+                )
+
+                mail.uid('store', msg_id, '+FLAGS', '\\Seen')
+
+            print(f"  Processed {processed_count} emails ({skipped_dupes} duplicates skipped) for {user_ctx.email_address}")
+
+            mail.close()
+            mail.logout()
+
+        except Exception as e:
+            print(f"  Error processing connection {user_ctx.email_address}: {e}")
+            import traceback
+            traceback.print_exc()
+
+        self._update_last_sync(user_ctx.connection_id)
+
+    def _update_last_sync(self, connection_id):
+        """Stamp last_sync_at on the connection after processing"""
+        try:
+            self.tm.supabase.table('email_connections').update({
+                'last_sync_at': datetime.now(pytz.UTC).isoformat(),
+            }).eq('id', connection_id).execute()
+        except Exception as e:
+            print(f"  Error updating last_sync_at: {e}")
+
+    def process_all_connections(self):
+        """Main entry point: process all active connections, fall back to legacy single-inbox"""
+        connections = self._get_active_connections()
+
+        if connections:
+            print(f"Multi-tenant mode: {len(connections)} connection(s) due for sync")
+            for conn in connections:
+                try:
+                    self.process_connection(conn)
+                except Exception as e:
+                    email_addr = conn.get('email_address', 'unknown')
+                    print(f"Error processing connection {email_addr}: {e}")
+                    import traceback
+                    traceback.print_exc()
+        else:
+            # Fallback: no connections in DB, use legacy env-var single-inbox
+            print("No active connections found, falling back to legacy single-inbox mode")
+            self.process_forwarded_emails()
+
+    # =========================================================================
+    # LEGACY SINGLE-INBOX PROCESSING (preserved as fallback)
     # =========================================================================
 
     @staticmethod
@@ -94,8 +316,8 @@ class AIEmailProcessor:
         return cleaned.lower()
 
     def process_forwarded_emails(self):
-        """Check for new forwarded emails and analyze them"""
-        print("AI Email Processor v2 Starting...")
+        """Check for new forwarded emails and analyze them (legacy single-inbox mode)"""
+        print("AI Email Processor v2 Starting (legacy mode)...")
         print(f"Checking {self.email_user} on {self.imap_server} for emails...")
 
         # Reload processed emails from DB each cycle (catches entries from other services)
@@ -165,7 +387,7 @@ class AIEmailProcessor:
                     )
                 norm_subject = self._normalize_subject(raw_subject)
                 if norm_subject and norm_subject in seen_subjects:
-                    print(f"  ⏭️ Skipping duplicate subject: {raw_subject[:60]}")
+                    print(f"  Skipping duplicate subject: {raw_subject[:60]}")
                     self._mark_email_processed(message_id, msg_id_str)
                     skipped_dupes += 1
                     continue
@@ -192,32 +414,45 @@ class AIEmailProcessor:
             import traceback
             traceback.print_exc()
 
-    def _load_processed_emails(self):
+    # =========================================================================
+    # CONNECTION-AWARE DEDUP
+    # =========================================================================
+
+    def _load_processed_emails(self, connection_id=None):
         """Load set of already-processed email IDs and UIDs from Supabase"""
         try:
-            result = self.tm.supabase.table('processed_emails') \
-                .select('email_id,uid') \
-                .execute()
+            query = self.tm.supabase.table('processed_emails').select('email_id,uid')
+
+            if connection_id:
+                query = query.eq('connection_id', connection_id)
+
+            result = query.execute()
             ids = set()
             for row in (result.data or []):
                 if row.get('email_id'):
                     ids.add(row['email_id'])
                 if row.get('uid'):
                     ids.add(row['uid'])
-            print(f"📊 Loaded {len(ids)} processed email IDs")
+            print(f"Loaded {len(ids)} processed email IDs" + (f" for connection {connection_id[:8]}..." if connection_id else ""))
             return ids
         except Exception as e:
             print(f"Warning: Could not load processed emails: {e}")
             return set()
 
-    def _mark_email_processed(self, message_id, uid_str=''):
+    def _mark_email_processed(self, message_id, uid_str='', connection_id=None, user_id=None):
         """Mark an email as processed in Supabase"""
         try:
-            self.tm.supabase.table('processed_emails').insert({
+            data = {
                 'email_id': message_id,
                 'uid': uid_str,
                 'processed_at': datetime.now().isoformat(),
-            }).execute()
+            }
+            if connection_id:
+                data['connection_id'] = connection_id
+            if user_id:
+                data['user_id'] = user_id
+
+            self.tm.supabase.table('processed_emails').insert(data).execute()
             self.processed_emails.add(message_id)
             if uid_str:
                 self.processed_emails.add(uid_str)
@@ -229,9 +464,13 @@ class AIEmailProcessor:
                 if uid_str:
                     self.processed_emails.add(uid_str)
             else:
-                print(f"❌ Failed to mark email processed: {e}")
+                print(f"Failed to mark email processed: {e}")
 
-    def process_single_email_body(self, email_body):
+    # =========================================================================
+    # EMAIL PROCESSING
+    # =========================================================================
+
+    def process_single_email_body(self, email_body, user_context=None):
         """Process one email from an already-fetched email body"""
         try:
 
@@ -249,7 +488,7 @@ class AIEmailProcessor:
             print(f"{'[PLAUD]' if is_plaud else '[EMAIL]'} Analyzing: {subject}")
 
             # Parse with appropriate prompt
-            analysis = self.analyze_with_claude(subject, sender, content, email_type)
+            analysis = self.analyze_with_claude(subject, sender, content, email_type, user_context=user_context)
 
             if not analysis or not analysis.get('actions'):
                 print(f"  No actionable items found")
@@ -272,7 +511,7 @@ class AIEmailProcessor:
             if auto_actions:
                 print(f"  Auto-executing {len(auto_actions)} low-risk action(s)...")
                 for action in auto_actions:
-                    self.execute_action(action)
+                    self.execute_action(action, user_context=user_context)
 
             # Queue Tier 2 actions for email approval
             if approval_actions:
@@ -281,7 +520,8 @@ class AIEmailProcessor:
                     email_subject=subject,
                     email_sender=sender,
                     actions=approval_actions,
-                    context=analysis.get('summary', '')
+                    context=analysis.get('summary', ''),
+                    user_context=user_context,
                 )
 
         except Exception as e:
@@ -297,16 +537,45 @@ class AIEmailProcessor:
         return any(plaud in sender_lower for plaud in self.plaud_senders)
 
     # =========================================================================
-    # CLAUDE AI ANALYSIS
+    # CLAUDE AI ANALYSIS — with per-user prompt context
     # =========================================================================
 
-    def analyze_with_claude(self, subject, sender, content, email_type):
+    def _build_user_prompt_context(self, user_context=None):
+        """Build prompt variables from user context. Falls back to Rob's defaults."""
+        if user_context and user_context.ai_context:
+            ctx = user_context.ai_context
+            return {
+                'user_name': user_context.full_name or 'the user',
+                'company_name': user_context.company_name or ctx.get('company_name', 'the company'),
+                'role_description': ctx.get('role_description', 'a sales professional'),
+                'crm_name': ctx.get('crm_name', 'their CRM'),
+                'workflow': ctx.get('workflow', 'Lead → Follow Up → Close'),
+                'businesses': user_context.businesses,
+                'default_business': ctx.get('default_business', list(user_context.businesses.keys())[0] if user_context.businesses else 'Default'),
+                'categories': ctx.get('categories', ['Remember to Callback', 'Quote Follow Up', 'CRM Update', 'New Lead', 'Research', 'General']),
+                'extra_context': ctx.get('extra_context', ''),
+            }
+
+        # Rob's hardcoded defaults (zero behavior change for legacy mode)
+        return {
+            'user_name': 'Rob Lowe',
+            'company_name': 'Direct Solar Wholesalers (DSW)',
+            'role_description': 'a solar & battery sales engineer at Direct Solar Wholesalers (DSW), QLD Australia',
+            'crm_name': 'PipeReply',
+            'workflow': 'Lead → Scoping Call → Quote (OpenSolar) → Price (DSW Tool) → Send Proposal → Follow Up → Close',
+            'businesses': self.businesses,
+            'default_business': 'Cloud Clean Energy',
+            'categories': ['Remember to Callback', 'Quote Follow Up', 'CRM Update', 'Site Visit', 'New Lead', 'Research', 'General'],
+            'extra_context': '',
+        }
+
+    def analyze_with_claude(self, subject, sender, content, email_type, user_context=None):
         """Use Claude to analyze email with solar-sales-aware prompt"""
 
         if email_type == 'plaud_transcription':
-            prompt = self._build_plaud_prompt(subject, content)
+            prompt = self._build_plaud_prompt(subject, content, user_context=user_context)
         else:
-            prompt = self._build_email_prompt(subject, sender, content)
+            prompt = self._build_email_prompt(subject, sender, content, user_context=user_context)
 
         try:
             response = self.claude.messages.create(
@@ -332,25 +601,29 @@ class AIEmailProcessor:
             print(f"  Claude API error: {e}")
             return None
 
-    def _build_plaud_prompt(self, subject, content):
+    def _build_plaud_prompt(self, subject, content, user_context=None):
         """Build Claude prompt for Plaud voice transcription parsing"""
-        return f"""You are Rob Lowe's AI task assistant for his solar battery sales business.
+        ctx = self._build_user_prompt_context(user_context)
 
-Rob just recorded a voice memo after a call/site visit using his Plaud device.
+        businesses_list = '\n'.join(f'- {name}' for name in ctx['businesses'].keys())
+        categories_list = '|'.join(ctx['categories'])
+
+        return f"""You are {ctx['user_name']}'s AI task assistant for their business.
+
+{ctx['user_name']} just recorded a voice memo after a call/site visit using their Plaud device.
 The transcription below may contain MULTIPLE action items. Extract ALL of them.
 
 TRANSCRIPTION:
 {content}
 
-ROB'S BUSINESS CONTEXT:
-- Rob is a solar & battery sales engineer at Direct Solar Wholesalers (DSW), QLD Australia
-- He sells residential solar panel + battery systems (GoodWe, SolaX brands)
-- His workflow: Lead → Scoping Call → Quote (OpenSolar) → Price (DSW Tool) → Send Proposal → Follow Up → Close
-- CRM: PipeReply (company CRM at app.pipereply.com) — used for contact details and notes
-- Personal CRM: Jottask (his own task manager at jottask.app)
-- Quoting: OpenSolar (app.opensolar.com) + DSW Quoting Tool (dswenergygroup.com.au)
+{ctx['user_name'].upper()}'S BUSINESS CONTEXT:
+- {ctx['user_name']} is {ctx['role_description']}
+- Workflow: {ctx['workflow']}
+- CRM: {ctx['crm_name']}
+- Personal task manager: Jottask (jottask.app)
+{ctx['extra_context']}
 
-COMMON ACTION PATTERNS IN ROB'S VOICE MEMOS:
+COMMON ACTION PATTERNS:
 - "Call back [name]" → create_task (callback reminder)
 - "Update CRM for [name]" or "add notes to [name]'s CRM" → update_crm
 - "Send quote to [name]" → send_email (needs approval)
@@ -359,6 +632,9 @@ COMMON ACTION PATTERNS IN ROB'S VOICE MEMOS:
 - "Follow up with [name] in [X] days" → create_task with due date
 - "Need to check [something]" → create_task (research)
 - "[Name] wants [change to quote]" → create_task (quote revision)
+
+BUSINESSES:
+{businesses_list}
 
 EXTRACT actions as JSON:
 {{
@@ -371,12 +647,12 @@ EXTRACT actions as JSON:
             "description": "What needs to be done — include specifics from the memo plus any useful context (e.g. referral source)",
             "customer_name": "Customer FULL NAME (first + last)",
             "email_address": "Customer email if visible anywhere in the content, null if not",
-            "business": "Cloud Clean Energy",
+            "business": "{ctx['default_business']}",
             "priority": "low|medium|high|urgent",
             "due_date": "YYYY-MM-DD or null",
             "due_time": "HH:MM or null",
-            "category": "Remember to Callback|Quote Follow Up|CRM Update|Site Visit|Research|General",
-            "crm_notes": "If action_type is update_crm, the exact text to add as a CRM note. Keep Rob's voice — punchy, not formal.",
+            "category": "{categories_list}",
+            "crm_notes": "If action_type is update_crm, the exact text to add as a CRM note. Keep {ctx['user_name']}'s voice — punchy, not formal.",
             "calendar_details": "If action_type is create_calendar_event: location, duration, attendees"
         }}
     ]
@@ -385,19 +661,24 @@ EXTRACT actions as JSON:
 Rules:
 - CRITICAL: Task titles MUST use format "[Full Name]- [concise status/action]". Examples: "Graham Kildey- awaiting site photos and electricity bills", "Paul Thompson- follow up on battery quote", "Paul Van Zijl- call 8am re solar battery referral". NO space before the dash. Never use generic prefixes like "CRM Update:" or vague titles like "Follow up with Paul"
 - If only a first name is in the voice memo, use the full name from the email subject line or content
-- Extract EVERY action item, even if Rob mentions it casually
+- Extract EVERY action item, even if {ctx['user_name']} mentions it casually
 - If an email address is visible anywhere in the email content, headers, or signature, capture it in the email_address field
-- If Rob says "call back" or "follow up", create a callback task with the right date
-- If Rob mentions updating CRM or adding notes, set action_type to "update_crm" and write the crm_notes in Rob's voice (short, punchy, no corporate speak)
+- If {ctx['user_name']} says "call back" or "follow up", create a callback task with the right date
+- If {ctx['user_name']} mentions updating CRM or adding notes, set action_type to "update_crm" and write the crm_notes in {ctx['user_name']}'s voice (short, punchy, no corporate speak)
 - "Going with option X" = deal won, needs both change_deal_status and update_crm
-- Default business is "Cloud Clean Energy" unless Rob mentions AI Project Pro
+- Default business is "{ctx['default_business']}" unless another business is mentioned
 - For callbacks without a specific date, default to next business day
 - For follow-ups, "in X days" means X calendar days from today ({datetime.now().strftime('%Y-%m-%d')})
 """
 
-    def _build_email_prompt(self, subject, sender, content):
+    def _build_email_prompt(self, subject, sender, content, user_context=None):
         """Build Claude prompt for regular forwarded emails"""
-        return f"""You are Rob Lowe's AI task assistant for his solar battery sales business.
+        ctx = self._build_user_prompt_context(user_context)
+
+        businesses_list = '\n'.join(f'- {name}' for name in ctx['businesses'].keys())
+        categories_list = '|'.join(ctx['categories'])
+
+        return f"""You are {ctx['user_name']}'s AI task assistant for their business.
 
 Analyze this forwarded email and extract any action items.
 
@@ -406,24 +687,15 @@ From: {sender}
 Subject: {subject}
 Content: {content}
 
-ROB'S BUSINESS CONTEXT:
-- Rob is a solar & battery sales engineer at Direct Solar Wholesalers (DSW), QLD Australia
-- He sells residential solar panel + battery systems (GoodWe, SolaX brands)
-- His workflow: Lead → Scoping Call → Quote (OpenSolar) → Price (DSW Tool) → Send Proposal → Follow Up → Close
-- CRM: PipeReply (company CRM) for contact details and lead notes
-- Personal CRM: Jottask for task tracking and follow-ups
+{ctx['user_name'].upper()}'S BUSINESS CONTEXT:
+- {ctx['user_name']} is {ctx['role_description']}
+- Workflow: {ctx['workflow']}
+- CRM: {ctx['crm_name']}
+- Personal task manager: Jottask (jottask.app)
+{ctx['extra_context']}
 
 BUSINESSES:
-- Cloud Clean Energy (solar energy sales — main business)
-- AI Project Pro (AI consulting side business)
-
-COMMON EMAIL TYPES ROB RECEIVES:
-- New lead notifications from DSW ("Hi Rob, [name] has been assigned to you")
-- Customer replies to quotes (questions, acceptance, rejection)
-- Supplier/installer comms (scheduling, parts, delivery)
-- Internal DSW emails (team updates, policy changes)
-- SolarQuotes lead assignments
-- Customer follow-up enquiries
+{businesses_list}
 
 EXTRACT actions as JSON:
 {{
@@ -436,11 +708,11 @@ EXTRACT actions as JSON:
             "description": "What needs to be done — include useful context like referral source, what they're waiting on, etc",
             "customer_name": "Customer FULL NAME (first + last)",
             "email_address": "Customer email if visible anywhere in the email headers, body, or signature, null if not",
-            "business": "Cloud Clean Energy or AI Project Pro",
+            "business": "{ctx['default_business']}",
             "priority": "low|medium|high|urgent",
             "due_date": "YYYY-MM-DD or null",
             "due_time": "HH:MM or null",
-            "category": "Remember to Callback|Quote Follow Up|CRM Update|New Lead|Research|General",
+            "category": "{categories_list}",
             "crm_notes": "If update_crm: the note text to add. null otherwise.",
             "calendar_details": "If create_calendar_event: details. null otherwise."
         }}
@@ -456,7 +728,7 @@ Rules:
 - If customer says yes/accepts → change_deal_status + create_task for next steps
 - If customer asks questions → create_task to respond, priority medium
 - Internal/admin emails → lower priority unless time-sensitive
-- Default business is "Cloud Clean Energy" unless email content clearly relates to AI Project Pro
+- Default business is "{ctx['default_business']}" unless email content clearly relates to another business
 - Today's date: {datetime.now().strftime('%Y-%m-%d')}
 - If no actions needed, return {{"summary": "...", "customer_name": null, "actions": []}}
 """
@@ -482,31 +754,36 @@ Rules:
     # ACTION EXECUTION (TIER 1 — AUTO)
     # =========================================================================
 
-    def execute_action(self, action):
+    def execute_action(self, action, user_context=None):
         """Execute a Tier 1 (auto) action"""
         action_type = action.get('action_type', '')
 
         try:
             if action_type in ['create_task', 'set_callback', 'set_reminder']:
-                self._create_task(action)
+                self._create_task(action, user_context=user_context)
             else:
                 print(f"  Unknown auto action type: {action_type}")
 
         except Exception as e:
             print(f"  Error executing action '{action.get('title', '')}': {e}")
 
-    def _create_task(self, action):
+    def _create_task(self, action, user_context=None):
         """Create a task in Supabase"""
-        business_id = self.businesses.get(
-            action.get('business', 'Cloud Clean Energy')
-        )
-
-        # Map category to Jottask categories
-        category = action.get('category', 'General')
+        if user_context:
+            business_id = user_context.businesses.get(
+                action.get('business', ''),
+                list(user_context.businesses.values())[0] if user_context.businesses else None
+            )
+            user_id = user_context.user_id
+        else:
+            business_id = self.businesses.get(
+                action.get('business', 'Cloud Clean Energy')
+            )
+            user_id = os.getenv('ROB_USER_ID', 'e515407e-dbd6-4331-a815-1878815c89bc')
 
         task_data = {
             'business_id': business_id,
-            'user_id': os.getenv('ROB_USER_ID', 'e515407e-dbd6-4331-a815-1878815c89bc'),
+            'user_id': user_id,
             'title': action['title'],
             'description': action.get('description', ''),
             'due_date': action.get('due_date'),
@@ -522,20 +799,52 @@ Rules:
             task = result.data[0]
             print(f"  [AUTO] Task created: {task['title']}")
 
-            # Send confirmation email
-            try:
-                self.tm.send_task_confirmation_email(task['id'])
-            except Exception:
-                pass  # Don't fail if confirmation email fails
+            # Increment usage meter
+            self._increment_task_count(user_id)
         else:
             print(f"  Failed to create task: {action['title']}")
+
+    def _increment_task_count(self, user_id):
+        """Increment tasks_this_month for usage metering"""
+        try:
+            current_month = datetime.now().strftime('%Y-%m')
+            # Fetch current counter
+            result = self.tm.supabase.table('users') \
+                .select('tasks_this_month, tasks_month_reset') \
+                .eq('id', user_id).execute()
+
+            if result.data:
+                row = result.data[0]
+                count = row.get('tasks_this_month') or 0
+                reset_month = row.get('tasks_month_reset') or ''
+
+                if reset_month != current_month:
+                    # New month — reset counter
+                    count = 0
+
+                self.tm.supabase.table('users').update({
+                    'tasks_this_month': count + 1,
+                    'tasks_month_reset': current_month,
+                }).eq('id', user_id).execute()
+        except Exception as e:
+            print(f"  Warning: Could not update task count: {e}")
 
     # =========================================================================
     # APPROVAL FLOW (TIER 2 — EMAIL APPROVAL)
     # =========================================================================
 
-    def send_approval_email(self, email_subject, email_sender, actions, context):
+    def send_approval_email(self, email_subject, email_sender, actions, context, user_context=None):
         """Send approval email with action buttons for Tier 2 actions"""
+
+        # Determine recipient and company name
+        if user_context:
+            recipient_email = user_context.email_address
+            company_name = user_context.company_name or 'Jottask'
+            user_name = user_context.full_name or 'User'
+        else:
+            recipient_email = os.getenv('ROB_EMAIL', 'rob@cloudcleanenergy.com.au')
+            company_name = 'Cloud Clean Energy'
+            user_name = 'Rob'
 
         # Generate approval tokens for each action
         action_items_html = ""
@@ -543,7 +852,7 @@ Rules:
             token = self._generate_action_token(action)
 
             # Store pending action in Supabase
-            self._store_pending_action(token, action)
+            self._store_pending_action(token, action, user_context=user_context)
 
             # Build approval URL
             base_url = os.getenv('APP_URL', 'https://www.jottask.app')
@@ -595,7 +904,7 @@ Rules:
                 {action_items_html}
 
                 <div style="font-size: 12px; color: #999; margin-top: 20px; text-align: center;">
-                    Rob's AI Task Manager &bull; Cloud Clean Energy
+                    {user_name}'s AI Task Manager &bull; {company_name}
                 </div>
             </div>
         </div>
@@ -605,13 +914,13 @@ Rules:
         try:
             params = {
                 "from": self.from_email,
-                "to": [os.getenv('ROB_EMAIL', 'rob@cloudcleanenergy.com.au')],
+                "to": [recipient_email],
                 "subject": f"Jottask Approval: {' '.join(email_subject.split())}",
                 "html": email_html
             }
             response = resend.Emails.send(params)
             print(f"  Resend response: {response}")
-            print(f"  Approval email sent for {len(actions)} action(s)")
+            print(f"  Approval email sent to {recipient_email} for {len(actions)} action(s)")
         except Exception as e:
             print(f"  Error sending approval email: {e}")
 
@@ -645,26 +954,30 @@ Rules:
         raw = f"{action.get('title', '')}-{datetime.now().isoformat()}-{uuid.uuid4()}"
         return hashlib.sha256(raw.encode()).hexdigest()[:32]
 
-    def _store_pending_action(self, token, action):
+    def _store_pending_action(self, token, action, user_context=None):
         """Store a pending action in Supabase for later approval/execution"""
         try:
-            self.tm.supabase.table('pending_actions').insert({
+            data = {
                 'token': token,
                 'action_type': action.get('action_type'),
                 'action_data': json.dumps(action),
                 'status': 'pending',
                 'created_at': datetime.now().isoformat(),
                 'expires_at': (datetime.now() + timedelta(days=7)).isoformat(),
-            }).execute()
+            }
+            if user_context:
+                data['user_id'] = user_context.user_id
+
+            self.tm.supabase.table('pending_actions').insert(data).execute()
         except Exception as e:
             print(f"  Error storing pending action: {e}")
 
     # =========================================================================
-    # APPROVAL EXECUTION (called when Rob clicks Approve)
+    # APPROVAL EXECUTION (called when user clicks Approve)
     # =========================================================================
 
     def execute_approved_action(self, token):
-        """Execute an action that Rob has approved via email button"""
+        """Execute an action that has been approved via email button"""
         try:
             # Fetch pending action
             result = self.tm.supabase.table('pending_actions').select('*').eq('token', token).eq('status', 'pending').execute()
@@ -676,25 +989,28 @@ Rules:
             action = json.loads(pending['action_data'])
             action_type = action.get('action_type', '')
 
+            # Build user_context from pending action's user_id if available
+            user_context = self._user_context_from_pending(pending)
+
             # Execute based on type
             success = False
             message = ''
 
             if action_type == 'update_crm':
-                success, message = self._execute_crm_update(action)
+                success, message = self._execute_crm_update(action, user_context=user_context)
 
             elif action_type == 'send_email':
-                success, message = self._execute_send_email(action)
+                success, message = self._execute_send_email(action, user_context=user_context)
 
             elif action_type == 'create_calendar_event':
-                success, message = self._execute_calendar_event(action)
+                success, message = self._execute_calendar_event(action, user_context=user_context)
 
             elif action_type == 'change_deal_status':
-                success, message = self._execute_deal_status_change(action)
+                success, message = self._execute_deal_status_change(action, user_context=user_context)
 
             else:
                 # Fallback: create as a task
-                self._create_task(action)
+                self._create_task(action, user_context=user_context)
                 success = True
                 message = f"Created task: {action.get('title', '')}"
 
@@ -709,8 +1025,40 @@ Rules:
         except Exception as e:
             return {'success': False, 'message': str(e)}
 
+    def _user_context_from_pending(self, pending_row):
+        """Build a minimal UserContext from a pending_actions row (for approval execution)"""
+        pending_user_id = pending_row.get('user_id')
+        if not pending_user_id:
+            return None
+
+        try:
+            result = self.tm.supabase.table('users') \
+                .select('id, email, full_name, company_name, timezone, ai_context') \
+                .eq('id', pending_user_id).execute()
+
+            if result.data:
+                user = result.data[0]
+                ai_ctx = user.get('ai_context') or {}
+                businesses = ai_ctx.get('businesses', {})
+                if not businesses:
+                    businesses = self.businesses.copy()
+
+                return UserContext(
+                    user_id=str(user['id']),
+                    email_address=user.get('email', ''),
+                    company_name=user.get('company_name', ''),
+                    full_name=user.get('full_name', ''),
+                    timezone=user.get('timezone', 'Australia/Brisbane'),
+                    businesses=businesses,
+                    ai_context=ai_ctx,
+                )
+        except Exception as e:
+            print(f"  Warning: Could not load user context for pending action: {e}")
+
+        return None
+
     def reject_action(self, token):
-        """Mark an action as rejected (Rob clicked Skip)"""
+        """Mark an action as rejected (user clicked Skip)"""
         try:
             self.tm.supabase.table('pending_actions').update({
                 'status': 'rejected',
@@ -724,71 +1072,83 @@ Rules:
     # TIER 2 ACTION EXECUTORS
     # =========================================================================
 
-    def _execute_crm_update(self, action):
-        """Update PipeReply CRM with notes"""
-        # TODO: Implement PipeReply API integration
-        # For now, create a task to remind Rob to update CRM manually
+    def _execute_crm_update(self, action, user_context=None):
+        """Update CRM with notes (creates reminder task for now)"""
         customer = action.get('customer_name', 'Unknown')
         notes = action.get('crm_notes', '')
+
+        default_business = 'Cloud Clean Energy'
+        if user_context and user_context.ai_context:
+            default_business = user_context.ai_context.get('default_business', default_business)
 
         self._create_task({
             'title': f"CRM Update: {customer}",
             'description': f"Add to CRM notes:\n{notes}",
-            'business': 'Cloud Clean Energy',
+            'business': default_business,
             'priority': 'high',
             'due_date': datetime.now().strftime('%Y-%m-%d'),
             'category': 'CRM Update',
-        })
+        }, user_context=user_context)
 
         return True, f"CRM update task created for {customer}"
 
-    def _execute_send_email(self, action):
-        """Draft an email (creates task — actual sending done by Rob via Apple Mail)"""
+    def _execute_send_email(self, action, user_context=None):
+        """Draft an email (creates task — actual sending done by user)"""
         customer = action.get('customer_name', 'Unknown')
+
+        default_business = 'Cloud Clean Energy'
+        if user_context and user_context.ai_context:
+            default_business = user_context.ai_context.get('default_business', default_business)
 
         self._create_task({
             'title': f"Send email to {customer}",
             'description': action.get('description', ''),
-            'business': 'Cloud Clean Energy',
+            'business': default_business,
             'priority': 'high',
             'due_date': datetime.now().strftime('%Y-%m-%d'),
             'category': 'Quote Follow Up',
-        })
+        }, user_context=user_context)
 
         return True, f"Email task created for {customer}"
 
-    def _execute_calendar_event(self, action):
-        """Create a calendar event"""
-        # TODO: Implement Google Calendar API integration
-        # For now, create a task with the calendar details
+    def _execute_calendar_event(self, action, user_context=None):
+        """Create a calendar event (creates task for now)"""
         customer = action.get('customer_name', 'Unknown')
         details = action.get('calendar_details', '')
+
+        default_business = 'Cloud Clean Energy'
+        if user_context and user_context.ai_context:
+            default_business = user_context.ai_context.get('default_business', default_business)
 
         self._create_task({
             'title': f"Calendar: {action.get('title', '')}",
             'description': f"Customer: {customer}\nDetails: {details}",
-            'business': 'Cloud Clean Energy',
+            'business': default_business,
             'priority': 'high',
             'due_date': action.get('due_date'),
             'due_time': action.get('due_time'),
             'category': 'Site Visit',
             'action_type': 'create_calendar_event',
-        })
+        }, user_context=user_context)
 
         return True, f"Calendar event task created for {customer}"
 
-    def _execute_deal_status_change(self, action):
-        """Change deal status"""
+    def _execute_deal_status_change(self, action, user_context=None):
+        """Change deal status (creates task for now)"""
         customer = action.get('customer_name', 'Unknown')
+
+        default_business = 'Cloud Clean Energy'
+        if user_context and user_context.ai_context:
+            default_business = user_context.ai_context.get('default_business', default_business)
 
         self._create_task({
             'title': f"Deal Update: {customer}",
             'description': action.get('description', ''),
-            'business': 'Cloud Clean Energy',
+            'business': default_business,
             'priority': 'urgent',
             'due_date': datetime.now().strftime('%Y-%m-%d'),
             'category': 'General',
-        })
+        }, user_context=user_context)
 
         return True, f"Deal status task created for {customer}"
 
@@ -909,11 +1269,11 @@ def edit_action():
 if __name__ == "__main__":
     import time
     processor = AIEmailProcessor()
-    poll_interval = int(os.getenv('POLL_INTERVAL_SECONDS', '900'))  # Default 15 minutes
-    print(f"Starting email polling loop (every {poll_interval}s)...")
+    poll_interval = int(os.getenv('POLL_INTERVAL_SECONDS', '60'))  # 60s loop, per-connection frequency managed by last_sync_at
+    print(f"Starting multi-tenant email polling loop (every {poll_interval}s)...")
     while True:
         try:
-            processor.process_forwarded_emails()
+            processor.process_all_connections()
         except Exception as e:
             print(f"Error in polling cycle: {e}")
         print(f"Sleeping {poll_interval}s until next check...")

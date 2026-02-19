@@ -4157,6 +4157,30 @@ def admin_chat_reply(conversation_id):
 # V2 APPROVAL ROUTES (Tiered Action System)
 # ============================================
 
+def _resolve_user_for_action(sb, pending_row):
+    """Resolve user_id and business_id from a pending_actions row.
+    Uses the row's user_id when present, falls back to env vars for legacy actions."""
+    action_user_id = pending_row.get('user_id')
+    fallback_user_id = os.getenv('ROB_USER_ID', 'e515407e-dbd6-4331-a815-1878815c89bc')
+    fallback_business_id = os.getenv('BUSINESS_ID_CCE', 'feb14276-5c3d-4fcf-af06-9a8f54cf7159')
+
+    if not action_user_id:
+        return fallback_user_id, fallback_business_id
+
+    try:
+        user_result = sb.table('users').select('id, ai_context').eq('id', action_user_id).execute()
+        if user_result.data:
+            user = user_result.data[0]
+            ai_ctx = user.get('ai_context') or {}
+            businesses = ai_ctx.get('businesses', {})
+            default_biz = ai_ctx.get('default_business', '')
+            business_id = businesses.get(default_biz, fallback_business_id)
+            return str(user['id']), business_id
+    except Exception:
+        pass
+
+    return str(action_user_id), fallback_business_id
+
 @app.route('/action/approve')
 def approve_action():
     """Approve a pending Tier 2 action via email button click"""
@@ -4183,14 +4207,15 @@ def approve_action():
         action_type = action.get('action_type', '')
         action_title = action.get('title', 'Unknown action')
         today_str = datetime.now(pytz.timezone('Australia/Brisbane')).strftime('%Y-%m-%d')
+        resolved_user_id, resolved_business_id = _resolve_user_for_action(sb, action_data)
         task_data = {
             'title': action_title,
             'description': action.get('description', action.get('crm_notes', '')),
             'status': 'pending',
             'created_at': datetime.now(pytz.UTC).isoformat(),
             'due_date': action.get('due_date') or today_str,
-            'business_id': os.getenv('BUSINESS_ID_CCE', 'feb14276-5c3d-4fcf-af06-9a8f54cf7159'),
-            'user_id': os.getenv('ROB_USER_ID', 'e515407e-dbd6-4331-a815-1878815c89bc'),
+            'business_id': resolved_business_id,
+            'user_id': resolved_user_id,
             'client_name': action.get('customer_name', ''),
             'priority': 'medium',
         }
@@ -4423,14 +4448,15 @@ def save_action():
             is_complete = (submit_action == 'save_complete')
             action_type = existing_action.get('action_type', '')
             today_str = datetime.now(pytz.timezone('Australia/Brisbane')).strftime('%Y-%m-%d')
+            resolved_user_id, resolved_business_id = _resolve_user_for_action(sb, action_row)
             task_data = {
                 'title': existing_action.get('title', 'Unknown action'),
                 'description': existing_action.get('description', existing_action.get('crm_notes', '')),
                 'status': 'completed' if is_complete else 'pending',
                 'created_at': datetime.now(pytz.UTC).isoformat(),
                 'due_date': existing_action.get('due_date') or today_str,
-                'business_id': os.getenv('BUSINESS_ID_CCE', 'feb14276-5c3d-4fcf-af06-9a8f54cf7159'),
-                'user_id': os.getenv('ROB_USER_ID', 'e515407e-dbd6-4331-a815-1878815c89bc'),
+                'business_id': resolved_business_id,
+                'user_id': resolved_user_id,
                 'client_name': existing_action.get('customer_name', ''),
                 'priority': existing_action.get('priority', 'medium'),
             }
