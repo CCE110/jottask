@@ -5,23 +5,15 @@ Daily summary emails, task reminders, and scheduled tasks
 
 import os
 import time
-import smtplib
 from datetime import datetime, timedelta
-from email.mime.text import MIMEText
-from email.mime.multipart import MIMEMultipart
 import pytz
 from supabase import create_client, Client
+from email_utils import send_email
 
 # Initialize Supabase
 SUPABASE_URL = os.getenv('SUPABASE_URL')
 SUPABASE_KEY = os.getenv('SUPABASE_KEY')
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
-
-# Email configuration
-SMTP_SERVER = os.getenv('SMTP_SERVER', 'mail.privateemail.com')
-SMTP_PORT = int(os.getenv('SMTP_PORT', 587))
-SMTP_USER = os.getenv('JOTTASK_EMAIL', 'jottask@flowquote.ai')
-SMTP_PASSWORD = os.getenv('JOTTASK_EMAIL_PASSWORD')
 
 
 def get_users_needing_summary():
@@ -328,28 +320,16 @@ def send_daily_summary(user):
     )
 
     # Send email
-    try:
-        msg = MIMEMultipart('alternative')
-        msg['Subject'] = f"Your Daily Summary - {datetime.now(pytz.timezone(user_timezone)).strftime('%b %d')}"
-        msg['From'] = f"Jottask <{SMTP_USER}>"
-        msg['To'] = user_email
+    subject = f"Your Daily Summary - {datetime.now(pytz.timezone(user_timezone)).strftime('%b %d')}"
+    success, error = send_email(user_email, subject, html_content)
 
-        msg.attach(MIMEText(html_content, 'html'))
-
-        with smtplib.SMTP(SMTP_SERVER, SMTP_PORT) as server:
-            server.starttls()
-            server.login(SMTP_USER, SMTP_PASSWORD)
-            server.send_message(msg)
-
-        print(f"    ✅ Summary sent to {user_email}")
-
+    if success:
         # Update last_summary_sent_at
         supabase.table('users').update({
             'last_summary_sent_at': datetime.now(pytz.UTC).isoformat()
         }).eq('id', user_id).execute()
-
-    except Exception as e:
-        print(f"    ❌ Failed to send summary: {e}")
+    else:
+        print(f"    Failed to send summary to {user_email}: {error}")
 
 
 ACTION_URL = os.getenv('TASK_ACTION_URL', 'https://www.jottask.app/action')
@@ -500,16 +480,12 @@ def check_and_send_reminders():
                         task, display_time, user.get('full_name', '')
                     )
 
-                    msg = MIMEMultipart('alternative')
-                    msg['Subject'] = f"Reminder: {task['title'][:50]} - due {display_time}"
-                    msg['From'] = f"Jottask <{SMTP_USER}>"
-                    msg['To'] = user['email']
-                    msg.attach(MIMEText(html_content, 'html'))
+                    subject = f"Reminder: {task['title'][:50]} - due {display_time}"
+                    success, error = send_email(user['email'], subject, html_content)
 
-                    with smtplib.SMTP(SMTP_SERVER, SMTP_PORT) as server:
-                        server.starttls()
-                        server.login(SMTP_USER, SMTP_PASSWORD)
-                        server.send_message(msg)
+                    if not success:
+                        print(f"   Failed to send reminder: {error}")
+                        continue
 
                     # Mark reminder as sent
                     supabase.table('tasks').update({
@@ -537,7 +513,7 @@ def check_and_send_reminders():
 def run_scheduler():
     """Main scheduler loop"""
     print("🚀 Starting Jottask Scheduler (Summaries + Reminders)")
-    print(f"📧 Sending from: {SMTP_USER}")
+    print(f"📧 Sending via Resend API")
     print(f"🔔 Task reminders: every 1 minute check")
     print(f"📊 Daily summaries: at user-configured time")
     print("=" * 50)

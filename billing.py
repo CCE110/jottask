@@ -6,8 +6,8 @@ Stripe integration for subscriptions
 import os
 import stripe
 from flask import Blueprint, request, redirect, url_for, session, jsonify
-from functools import wraps
 from supabase import create_client, Client
+from auth import login_required
 
 billing_bp = Blueprint('billing', __name__, url_prefix='/billing')
 
@@ -30,15 +30,6 @@ PRICE_IDS = {
 }
 
 APP_URL = os.getenv('APP_URL', 'http://localhost:5000')
-
-
-def login_required(f):
-    @wraps(f)
-    def decorated_function(*args, **kwargs):
-        if 'user_id' not in session:
-            return redirect(url_for('login'))
-        return f(*args, **kwargs)
-    return decorated_function
 
 
 def get_or_create_stripe_customer(user_id, email):

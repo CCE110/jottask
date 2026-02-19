@@ -1,0 +1,399 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Email Setup - Jottask</title>
+    <style>
+        :root {
+            --primary: #6366F1;
+            --primary-dark: #4F46E5;
+            --success: #10B981;
+            --warning: #F59E0B;
+            --danger: #EF4444;
+            --gray-50: #F9FAFB;
+            --gray-100: #F3F4F6;
+            --gray-200: #E5E7EB;
+            --gray-500: #6B7280;
+            --gray-700: #374151;
+            --gray-900: #111827;
+        }
+
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: var(--gray-50);
+            color: var(--gray-900);
+            line-height: 1.5;
+        }
+
+        .nav {
+            background: white;
+            border-bottom: 1px solid var(--gray-200);
+            padding: 0 24px;
+            display: flex;
+            align-items: center;
+            height: 64px;
+        }
+
+        .nav a {
+            color: var(--primary);
+            text-decoration: none;
+            font-weight: 600;
+        }
+
+        .main {
+            max-width: 800px;
+            margin: 40px auto;
+            padding: 0 24px;
+        }
+
+        .card {
+            background: white;
+            border-radius: 12px;
+            border: 1px solid var(--gray-200);
+            margin-bottom: 24px;
+        }
+
+        .card-header {
+            padding: 20px;
+            border-bottom: 1px solid var(--gray-200);
+        }
+
+        .card-body {
+            padding: 20px;
+        }
+
+        .card-title {
+            font-size: 18px;
+            font-weight: 600;
+        }
+
+        .btn {
+            padding: 10px 20px;
+            border-radius: 8px;
+            font-weight: 600;
+            cursor: pointer;
+            border: none;
+            text-decoration: none;
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .btn-primary {
+            background: var(--primary);
+            color: white;
+        }
+
+        .btn-secondary {
+            background: var(--gray-100);
+            color: var(--gray-700);
+        }
+
+        .btn-danger {
+            background: var(--danger);
+            color: white;
+        }
+
+        .form-group {
+            margin-bottom: 16px;
+        }
+
+        .form-label {
+            display: block;
+            margin-bottom: 6px;
+            font-weight: 500;
+            color: var(--gray-700);
+        }
+
+        .form-input {
+            width: 100%;
+            padding: 10px 14px;
+            border: 1px solid var(--gray-300);
+            border-radius: 8px;
+            font-size: 14px;
+        }
+
+        .form-input:focus {
+            outline: none;
+            border-color: var(--primary);
+        }
+
+        .connection-item {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 16px;
+            border-bottom: 1px solid var(--gray-100);
+        }
+
+        .connection-item:last-child {
+            border-bottom: none;
+        }
+
+        .connection-info {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        .connection-icon {
+            width: 40px;
+            height: 40px;
+            border-radius: 8px;
+            background: var(--gray-100);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 20px;
+        }
+
+        .connection-status {
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-size: 12px;
+            font-weight: 500;
+        }
+
+        .status-active {
+            background: #D1FAE5;
+            color: #065F46;
+        }
+
+        .status-inactive {
+            background: #FEE2E2;
+            color: #991B1B;
+        }
+
+        .help-text {
+            font-size: 13px;
+            color: var(--gray-500);
+            margin-top: 8px;
+        }
+
+        .steps {
+            display: flex;
+            flex-direction: column;
+            gap: 16px;
+        }
+
+        .step {
+            display: flex;
+            gap: 16px;
+        }
+
+        .step-number {
+            width: 28px;
+            height: 28px;
+            background: var(--primary);
+            color: white;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: 600;
+            font-size: 14px;
+            flex-shrink: 0;
+        }
+
+        .step-content h4 {
+            margin-bottom: 4px;
+        }
+
+        .step-content p {
+            color: var(--gray-500);
+            font-size: 14px;
+        }
+
+        .code-box {
+            background: var(--gray-900);
+            color: #10B981;
+            padding: 12px 16px;
+            border-radius: 8px;
+            font-family: monospace;
+            margin-top: 8px;
+            font-size: 14px;
+        }
+
+        .alert {
+            padding: 12px 16px;
+            border-radius: 8px;
+            margin-bottom: 16px;
+        }
+
+        .alert-success {
+            background: #D1FAE5;
+            color: #065F46;
+        }
+
+        .alert-error {
+            background: #FEE2E2;
+            color: #991B1B;
+        }
+    </style>
+</head>
+<body>
+    <nav class="nav">
+        <a href="/dashboard">&larr; Back to Dashboard</a>
+    </nav>
+
+    <main class="main">
+        <h1 style="margin-bottom: 8px;">Email Connections</h1>
+        <p style="color: var(--gray-500); margin-bottom: 32px;">
+            Connect your email to automatically create tasks from incoming messages.
+        </p>
+
+        {% if message %}
+        <div class="alert alert-success">{{ message }}</div>
+        {% endif %}
+
+        {% if error %}
+        <div class="alert alert-error">{{ error }}</div>
+        {% endif %}
+
+        <!-- Existing Connections -->
+        {% if connections %}
+        <div class="card">
+            <div class="card-header">
+                <h2 class="card-title">Your Connections</h2>
+            </div>
+            <div class="card-body" style="padding: 0;">
+                {% for conn in connections %}
+                <div class="connection-item">
+                    <div class="connection-info">
+                        <div class="connection-icon">
+                            {% if conn.provider == 'gmail' %}&#x1F4E7;{% else %}&#x2709;{% endif %}
+                        </div>
+                        <div>
+                            <strong>{{ conn.email_address }}</strong>
+                            <div style="font-size: 13px; color: var(--gray-500);">
+                                {{ conn.provider|capitalize }} &bull;
+                                Last sync: {{ conn.last_sync_at[:16].replace('T', ' ') if conn.last_sync_at else 'Never' }}
+                            </div>
+                        </div>
+                    </div>
+                    <div style="display: flex; align-items: center; gap: 12px;">
+                        <span class="connection-status {% if conn.is_active %}status-active{% else %}status-inactive{% endif %}">
+                            {{ 'Active' if conn.is_active else 'Inactive' }}
+                        </span>
+                        <form method="POST" action="/email/{{ conn.id }}/delete" style="margin: 0;">
+                            <button type="submit" class="btn btn-danger" style="padding: 6px 12px; font-size: 13px;">Remove</button>
+                        </form>
+                    </div>
+                </div>
+                {% endfor %}
+            </div>
+        </div>
+        {% endif %}
+
+        <!-- Add New Connection -->
+        <div class="card">
+            <div class="card-header">
+                <h2 class="card-title">Add Email Connection</h2>
+            </div>
+            <div class="card-body">
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 24px;">
+                    <div class="card" style="cursor: pointer; border: 2px solid var(--gray-200);" onclick="showGmailSetup()">
+                        <div class="card-body" style="text-align: center; padding: 24px;">
+                            <div style="font-size: 40px; margin-bottom: 12px;">&#x1F4E7;</div>
+                            <h3>Gmail</h3>
+                            <p style="color: var(--gray-500); font-size: 14px;">Connect via App Password</p>
+                        </div>
+                    </div>
+                    <div class="card" style="cursor: pointer; border: 2px solid var(--gray-200); opacity: 0.5;">
+                        <div class="card-body" style="text-align: center; padding: 24px;">
+                            <div style="font-size: 40px; margin-bottom: 12px;">&#x1F4EC;</div>
+                            <h3>Forward Email</h3>
+                            <p style="color: var(--gray-500); font-size: 14px;">Coming soon</p>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Gmail Setup Form -->
+                <div id="gmail-setup" style="display: none;">
+                    <h3 style="margin-bottom: 16px;">Gmail Setup Instructions</h3>
+
+                    <div class="steps" style="margin-bottom: 24px;">
+                        <div class="step">
+                            <div class="step-number">1</div>
+                            <div class="step-content">
+                                <h4>Enable 2-Factor Authentication</h4>
+                                <p>Go to your Google Account &rarr; Security &rarr; 2-Step Verification</p>
+                            </div>
+                        </div>
+                        <div class="step">
+                            <div class="step-number">2</div>
+                            <div class="step-content">
+                                <h4>Create an App Password</h4>
+                                <p>Go to Google Account &rarr; Security &rarr; App passwords &rarr; Create new</p>
+                            </div>
+                        </div>
+                        <div class="step">
+                            <div class="step-number">3</div>
+                            <div class="step-content">
+                                <h4>Enter your credentials below</h4>
+                                <p>Use your Gmail address and the App Password you created</p>
+                            </div>
+                        </div>
+                    </div>
+
+                    <form method="POST" action="/email/add/gmail">
+                        <div class="form-group">
+                            <label class="form-label">Gmail Address</label>
+                            <input type="email" name="email_address" class="form-input" placeholder="you@gmail.com" required>
+                        </div>
+
+                        <div class="form-group">
+                            <label class="form-label">App Password</label>
+                            <input type="password" name="app_password" class="form-input" placeholder="xxxx xxxx xxxx xxxx" required>
+                            <p class="help-text">This is NOT your regular Gmail password. Generate one at myaccount.google.com/apppasswords</p>
+                        </div>
+
+                        <button type="submit" class="btn btn-primary">Connect Gmail</button>
+                    </form>
+                </div>
+            </div>
+        </div>
+
+        <!-- How it Works -->
+        <div class="card">
+            <div class="card-header">
+                <h2 class="card-title">How Email Processing Works</h2>
+            </div>
+            <div class="card-body">
+                <div class="steps">
+                    <div class="step">
+                        <div class="step-number">1</div>
+                        <div class="step-content">
+                            <h4>Emails are scanned automatically</h4>
+                            <p>We check your inbox every 15 minutes for new actionable emails.</p>
+                        </div>
+                    </div>
+                    <div class="step">
+                        <div class="step-number">2</div>
+                        <div class="step-content">
+                            <h4>AI extracts task information</h4>
+                            <p>Our AI identifies tasks, due dates, client info, and priority levels.</p>
+                        </div>
+                    </div>
+                    <div class="step">
+                        <div class="step-number">3</div>
+                        <div class="step-content">
+                            <h4>Tasks appear in your dashboard</h4>
+                            <p>New tasks are created automatically and you get notified.</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </main>
+
+    <script>
+        function showGmailSetup() {
+            document.getElementById('gmail-setup').style.display = 'block';
+        }
+    </script>
+</body>
+</html>

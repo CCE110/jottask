@@ -1,0 +1,290 @@
+{% extends "base.html" %}
+{% block content %}
+<nav class="nav">
+    <a href="{{ url_for('dashboard') }}" class="nav-brand">
+        <svg viewBox="0 0 512 512" width="32" height="32">
+            <defs>
+                <linearGradient id="grad3" x1="0%" y1="0%" x2="0%" y2="100%">
+                    <stop offset="0%" style="stop-color:#8B5CF6" />
+                    <stop offset="100%" style="stop-color:#6366F1" />
+                </linearGradient>
+            </defs>
+            <rect width="512" height="512" rx="96" fill="white"/>
+            <rect x="120" y="80" width="220" height="300" rx="24" fill="url(#grad3)"/>
+            <circle cx="310" cy="350" r="70" fill="#10B981"/>
+            <path d="M275 350 L300 375 L355 315" fill="none" stroke="white" stroke-width="18" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+        Jottask
+    </a>
+    <div class="nav-user">
+        <a href="{{ url_for('dashboard') }}" class="btn btn-secondary btn-sm">← Back to Tasks</a>
+    </div>
+</nav>
+
+<main class="main" style="max-width: 700px;">
+    <div class="card">
+        <div class="card-header">
+            <h2 class="card-title">Edit Task</h2>
+            {% if task.status == 'completed' %}
+            <span class="status-badge" style="background: var(--success); color: white;">Completed</span>
+            {% endif %}
+        </div>
+
+        <form method="POST" class="card-body">
+            <div class="form-group">
+                <label class="form-label">Title</label>
+                <input type="text" name="title" class="form-input" value="{{ task.title }}" required>
+            </div>
+
+            <div class="form-group">
+                <label class="form-label">Description</label>
+                <textarea name="description" class="form-input" rows="4" placeholder="Add details about this task...">{{ task.description or '' }}</textarea>
+            </div>
+
+            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px;">
+                <div class="form-group">
+                    <label class="form-label">Due Date</label>
+                    <input type="date" name="due_date" class="form-input" value="{{ task.due_date }}">
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Due Time</label>
+                    <input type="time" name="due_time" class="form-input" value="{{ task.due_time[:5] if task.due_time else '09:00' }}">
+                </div>
+            </div>
+
+            <div class="form-group">
+                <label class="form-label">Priority</label>
+                <select name="priority" class="form-input">
+                    <option value="low" {% if task.priority == 'low' %}selected{% endif %}>Low</option>
+                    <option value="medium" {% if task.priority == 'medium' %}selected{% endif %}>Medium</option>
+                    <option value="high" {% if task.priority == 'high' %}selected{% endif %}>High</option>
+                    <option value="urgent" {% if task.priority == 'urgent' %}selected{% endif %}>Urgent</option>
+                </select>
+            </div>
+
+            <div class="form-group">
+                <label class="form-label">Status</label>
+                <input type="hidden" name="status" id="status-input" value="{{ task.status }}">
+                <div style="display: flex; gap: 8px;">
+                    <button type="button" class="status-btn" data-status="pending" onclick="setStatus('pending')"
+                        style="flex: 1; padding: 10px 16px; border-radius: 8px; font-weight: 600; font-size: 14px; cursor: pointer; border: 2px solid {% if task.status == 'pending' %}#F59E0B{% else %}var(--gray-200){% endif %}; background: {% if task.status == 'pending' %}#FEF3C7{% else %}white{% endif %}; color: {% if task.status == 'pending' %}#92400E{% else %}var(--gray-500){% endif %};">
+                        Pending
+                    </button>
+                    <button type="button" class="status-btn" data-status="ongoing" onclick="setStatus('ongoing')"
+                        style="flex: 1; padding: 10px 16px; border-radius: 8px; font-weight: 600; font-size: 14px; cursor: pointer; border: 2px solid {% if task.status == 'ongoing' %}var(--primary){% else %}var(--gray-200){% endif %}; background: {% if task.status == 'ongoing' %}#E0E7FF{% else %}white{% endif %}; color: {% if task.status == 'ongoing' %}#3730A3{% else %}var(--gray-500){% endif %};">
+                        Ongoing
+                    </button>
+                    <button type="button" class="status-btn" data-status="completed" onclick="setStatus('completed')"
+                        style="flex: 1; padding: 10px 16px; border-radius: 8px; font-weight: 600; font-size: 14px; cursor: pointer; border: 2px solid {% if task.status == 'completed' %}var(--success){% else %}var(--gray-200){% endif %}; background: {% if task.status == 'completed' %}#D1FAE5{% else %}white{% endif %}; color: {% if task.status == 'completed' %}#065F46{% else %}var(--gray-500){% endif %};">
+                        Completed
+                    </button>
+                </div>
+            </div>
+
+            <hr style="margin: 24px 0; border: none; border-top: 1px solid var(--gray-200);">
+
+            <h3 style="font-size: 14px; color: var(--gray-500); margin-bottom: 16px;">CLIENT INFORMATION</h3>
+
+            <div class="form-group">
+                <label class="form-label">Client Name</label>
+                <input type="text" name="client_name" class="form-input" value="{{ task.client_name or '' }}" placeholder="John Smith">
+            </div>
+
+            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px;">
+                <div class="form-group">
+                    <label class="form-label">Client Email</label>
+                    <input type="email" name="client_email" class="form-input" value="{{ task.client_email or '' }}" placeholder="john@example.com">
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Client Phone</label>
+                    <input type="tel" name="client_phone" class="form-input" value="{{ task.client_phone or '' }}" placeholder="0400 000 000">
+                </div>
+            </div>
+
+            <div class="form-group">
+                <label class="form-label">Project Name</label>
+                <input type="text" name="project_name" class="form-input" value="{{ task.project_name or '' }}" placeholder="Website Redesign">
+            </div>
+
+            <hr style="margin: 24px 0; border: none; border-top: 1px solid var(--gray-200);">
+
+            <h3 style="font-size: 14px; color: var(--gray-500); margin-bottom: 16px;">QUICK RESCHEDULE</h3>
+
+            <div class="delay-buttons" style="margin-bottom: 24px;">
+                <button type="button" class="delay-btn" onclick="delayTask('{{ task.id }}', 1, 0)">+1 Hour</button>
+                <button type="button" class="delay-btn" onclick="delayTask('{{ task.id }}', 3, 0)">+3 Hours</button>
+                <button type="button" class="delay-btn" onclick="delayTask('{{ task.id }}', 0, 1)">+1 Day</button>
+                <button type="button" class="delay-btn" onclick="delayTask('{{ task.id }}', 0, 7)">+1 Week</button>
+            </div>
+
+            <div style="display: flex; gap: 12px;">
+                <button type="submit" class="btn btn-primary" style="flex: 1;">Save Changes</button>
+                <button type="button" class="btn btn-secondary" style="flex: 1;" onclick="followUp()">Follow Up (+1 Day)</button>
+                <a href="{{ url_for('task_detail', task_id=task.id) }}" class="btn btn-secondary">View Details</a>
+            </div>
+        </form>
+    </div>
+
+    <!-- Checklist Card -->
+    <div class="card" style="margin-top: 20px;">
+        <div class="card-header">
+            <h3 class="card-title">Checklist</h3>
+            <span style="color: var(--gray-500); font-size: 14px;" id="checklist-counter">
+                {{ checklist|selectattr('is_completed')|list|length }}/{{ checklist|length }}
+            </span>
+        </div>
+        <div class="card-body" style="padding: 12px 20px;">
+            {% if checklist %}
+            <div style="display: flex; flex-direction: column; gap: 4px; margin-bottom: 16px;">
+                {% for item in checklist %}
+                <label style="display: flex; align-items: center; gap: 12px; padding: 10px 12px; border-radius: 8px; cursor: pointer; transition: background 0.15s; {% if item.is_completed %}opacity: 0.6;{% endif %}"
+                       onmouseover="this.style.background='var(--gray-50)'" onmouseout="this.style.background='transparent'">
+                    <input type="checkbox" {% if item.is_completed %}checked{% endif %}
+                           onchange="toggleChecklistItem('{{ task.id }}', '{{ item.id }}', this.checked)"
+                           style="width: 20px; height: 20px; accent-color: var(--success); cursor: pointer;">
+                    <span style="font-size: 14px; {% if item.is_completed %}text-decoration: line-through; color: var(--gray-500);{% endif %}">{{ item.item_text }}</span>
+                </label>
+                {% endfor %}
+            </div>
+            {% else %}
+            <p style="color: var(--gray-500); text-align: center; padding: 16px 0; font-size: 14px;">No checklist items yet</p>
+            {% endif %}
+
+            <form method="POST" action="{{ url_for('add_checklist_item', task_id=task.id) }}" style="display: flex; gap: 8px;">
+                <input type="hidden" name="redirect_to" value="edit">
+                <input type="text" name="item_text" class="form-input" placeholder="Add a checklist item..." required style="flex: 1;">
+                <button type="submit" class="btn btn-primary btn-sm">Add</button>
+            </form>
+        </div>
+    </div>
+
+    {% if task.status == 'pending' %}
+    <div style="text-align: center; margin-top: 24px;">
+        <form method="POST" action="{{ url_for('delete_task', task_id=task.id) }}" onsubmit="return confirm('Are you sure you want to delete this task?');">
+            <button type="submit" class="btn btn-danger btn-sm">Delete Task</button>
+        </form>
+    </div>
+    {% endif %}
+</main>
+
+<script>
+async function delayTask(taskId, hours, days) {
+    try {
+        const response = await fetch(`/api/tasks/${taskId}/delay`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ hours, days })
+        });
+        if (response.ok) {
+            location.reload();
+        }
+    } catch (err) {
+        console.error('Failed to delay task:', err);
+    }
+}
+
+// Follow up: delay 1 day and go to dashboard
+async function followUp() {
+    const taskId = '{{ task.id }}';
+    // Update title: keep name prefix, replace action with "followup"
+    const titleInput = document.querySelector('input[name="title"]');
+    const currentTitle = titleInput.value;
+    const dashIndex = currentTitle.indexOf(' - ');
+    const newTitle = dashIndex !== -1
+        ? currentTitle.substring(0, dashIndex) + ' - followup'
+        : currentTitle + ' - followup';
+
+    try {
+        // Update title
+        await fetch(`/api/tasks/${taskId}/status`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ status: 'pending' })
+        });
+        // Delay 1 day and update title via form submit
+        const response = await fetch(`/api/tasks/${taskId}/delay`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ hours: 0, days: 1 })
+        });
+        if (response.ok) {
+            // Also update the title
+            await fetch(`/api/tasks/${taskId}/title`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ title: newTitle })
+            });
+            window.location.href = '{{ url_for("dashboard") }}';
+        }
+    } catch (err) {
+        console.error('Failed to set follow up:', err);
+    }
+}
+
+// Status button toggle
+async function setStatus(status) {
+    document.getElementById('status-input').value = status;
+
+    const styles = {
+        pending:   { border: '#F59E0B', bg: '#FEF3C7', color: '#92400E' },
+        ongoing:   { border: '#6366F1', bg: '#E0E7FF', color: '#3730A3' },
+        completed: { border: '#10B981', bg: '#D1FAE5', color: '#065F46' }
+    };
+
+    document.querySelectorAll('.status-btn').forEach(btn => {
+        const s = btn.dataset.status;
+        const active = s === status;
+        btn.style.borderColor = active ? styles[s].border : '#E5E7EB';
+        btn.style.background = active ? styles[s].bg : 'white';
+        btn.style.color = active ? styles[s].color : '#6B7280';
+    });
+
+    // If completed, save immediately and go to dashboard
+    if (status === 'completed') {
+        const taskId = '{{ task.id }}';
+        try {
+            const response = await fetch(`/api/tasks/${taskId}/status`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ status: 'completed' })
+            });
+            if (response.ok) {
+                window.location.href = '{{ url_for("dashboard") }}';
+            }
+        } catch (err) {
+            console.error('Failed to complete task:', err);
+        }
+    }
+}
+
+// Checklist toggle via API
+async function toggleChecklistItem(taskId, itemId, isChecked) {
+    try {
+        const response = await fetch(`/api/tasks/${taskId}/checklist/${itemId}/toggle`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ is_completed: isChecked })
+        });
+        if (response.ok) {
+            const label = event.target.closest('label');
+            const span = label.querySelector('span');
+            if (isChecked) {
+                label.style.opacity = '0.6';
+                span.style.textDecoration = 'line-through';
+                span.style.color = 'var(--gray-500)';
+            } else {
+                label.style.opacity = '1';
+                span.style.textDecoration = 'none';
+                span.style.color = '';
+            }
+            // Update counter
+            const checkboxes = document.querySelectorAll('.card-body input[type="checkbox"]');
+            const checked = [...checkboxes].filter(c => c.checked).length;
+            document.getElementById('checklist-counter').textContent = checked + '/' + checkboxes.length;
+        }
+    } catch (err) {
+        console.error('Failed to toggle checklist item:', err);
+    }
+}
+</script>
+{% endblock %}

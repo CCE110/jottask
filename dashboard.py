@@ -7,14 +7,16 @@ import os
 import json
 from flask import Flask, render_template_string, render_template, request, redirect, url_for, session, jsonify, flash
 from datetime import datetime, timedelta
-import pytz
 from functools import wraps
+import pytz
 from supabase import create_client, Client
 
 app = Flask(__name__)
 app.secret_key = os.getenv('FLASK_SECRET_KEY', os.urandom(24))
 
 # Register blueprints
+from auth import login_required
+from email_utils import send_email
 from billing import billing_bp
 from onboarding import onboarding_bp
 from email_setup import email_setup_bp
@@ -46,85 +48,10 @@ FROM_EMAIL = os.getenv('FROM_EMAIL', 'jottask@flowquote.ai')
 
 def send_admin_notification(subject, body_html):
     """Send notification email to admin using Resend"""
-    import requests
-
-    if not RESEND_API_KEY:
-        print("❌ RESEND_API_KEY not configured for admin notification")
-        return False
-
-    try:
-        response = requests.post(
-            'https://api.resend.com/emails',
-            headers={
-                'Authorization': f'Bearer {RESEND_API_KEY}',
-                'Content-Type': 'application/json',
-                'User-Agent': 'Jottask/1.0'
-            },
-            json={
-                'from': f'Jottask <{FROM_EMAIL}>',
-                'to': [ADMIN_EMAIL],
-                'subject': f'[Jottask Admin] {subject}',
-                'html': body_html
-            },
-            timeout=30
-        )
-        if response.status_code in [200, 201]:
-            print(f"✅ Admin notification sent: {subject}")
-            return True
-        else:
-            print(f"❌ Resend error ({response.status_code}): {response.text}")
-            return False
-    except Exception as e:
-        print(f"❌ Failed to send admin notification: {type(e).__name__}: {e}")
-        return False
-
-
-def send_email(to_email, subject, body_html):
-    """Send email using Resend API (using urllib for Railway compatibility)"""
-    import urllib.request
-    import urllib.error
-
-    if not RESEND_API_KEY:
-        print("❌ RESEND_API_KEY not configured")
-        return False, "RESEND_API_KEY not configured"
-
-    print(f"📧 Sending to {to_email} via Resend...")
-
-    try:
-        data = json.dumps({
-            'from': f'Jottask <{FROM_EMAIL}>',
-            'to': [to_email],
-            'subject': subject,
-            'html': body_html
-        }).encode('utf-8')
-
-        req = urllib.request.Request(
-            'https://api.resend.com/emails',
-            data=data,
-            headers={
-                'Authorization': f'Bearer {RESEND_API_KEY}',
-                'Content-Type': 'application/json',
-                'User-Agent': 'Jottask/1.0'
-            },
-            method='POST'
-        )
-
-        with urllib.request.urlopen(req, timeout=30) as response:
-            status = response.getcode()
-            print(f"📧 Resend response: {status}")
-            if status in [200, 201]:
-                print(f"✅ Email sent to {to_email}: {subject}")
-                return True, None
-            else:
-                return False, f"Status {status}"
-
-    except urllib.error.HTTPError as e:
-        error_msg = e.read().decode('utf-8', errors='ignore')
-        print(f"❌ Resend HTTP error ({e.code}): {error_msg}")
-        return False, error_msg
-    except Exception as e:
-        print(f"❌ Failed to send email: {type(e).__name__}: {e}")
-        return False, str(e)
+    success, error = send_email(ADMIN_EMAIL, f'[Jottask Admin] {subject}', body_html)
+    if not success:
+        print(f"Failed to send admin notification: {error}")
+    return success
 
 
 def send_task_confirmation_email(user_email, task_title, due_date, due_time, task_id, user_name=None):
@@ -188,14 +115,6 @@ def send_task_confirmation_email(user_email, task_title, due_date, due_time, tas
 # ============================================
 # AUTH HELPERS
 # ============================================
-
-def login_required(f):
-    @wraps(f)
-    def decorated_function(*args, **kwargs):
-        if 'user_id' not in session:
-            return redirect(url_for('login', next=request.url))
-        return f(*args, **kwargs)
-    return decorated_function
 
 def get_user_timezone():
     return pytz.timezone(session.get('timezone', 'Australia/Brisbane'))
@@ -873,279 +792,6 @@ BASE_TEMPLATE = """
             }
         }
     </script>
-</body>
-</html>
-"""
-
-# ============================================
-# AUTH PAGES
-# ============================================
-
-LOGIN_TEMPLATE = """
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Login - Jottask</title>
-    <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
-    <link rel="apple-touch-icon" href="/static/apple-touch-icon.png">
-    <meta name="theme-color" content="#6366F1">
-    <style>
-        :root {
-            --primary: #6366F1;
-            --primary-dark: #4F46E5;
-            --success: #10B981;
-            --gray-50: #F9FAFB;
-            --gray-100: #F3F4F6;
-            --gray-300: #D1D5DB;
-            --gray-500: #6B7280;
-            --gray-700: #374151;
-            --gray-900: #111827;
-        }
-        * { margin: 0; padding: 0; box-sizing: border-box; }
-        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; }
-        .auth-container {
-            min-height: 100vh;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            background: linear-gradient(135deg, #6366F1 0%, #8B5CF6 100%);
-            padding: 20px;
-        }
-        .auth-card {
-            background: white;
-            border-radius: 16px;
-            padding: 40px;
-            width: 100%;
-            max-width: 420px;
-            box-shadow: 0 20px 60px rgba(0,0,0,0.2);
-        }
-        .auth-logo { text-align: center; margin-bottom: 32px; }
-        .auth-logo svg { width: 48px; height: 48px; }
-        .auth-logo h1 { color: var(--primary); font-size: 24px; margin-top: 12px; }
-        .form-group { margin-bottom: 16px; }
-        .form-label { display: block; margin-bottom: 6px; font-weight: 500; font-size: 14px; color: var(--gray-700); }
-        .form-input {
-            width: 100%;
-            padding: 10px 14px;
-            border: 1px solid var(--gray-300);
-            border-radius: 8px;
-            font-size: 14px;
-        }
-        .form-input:focus { outline: none; border-color: var(--primary); box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.1); }
-        .btn {
-            padding: 10px 20px;
-            border-radius: 8px;
-            font-weight: 600;
-            font-size: 14px;
-            cursor: pointer;
-            border: none;
-            text-decoration: none;
-        }
-        .btn-primary { background: var(--primary); color: white; }
-        .btn-primary:hover { background: var(--primary-dark); }
-        .alert { padding: 12px 16px; border-radius: 8px; margin-bottom: 16px; font-size: 14px; }
-        .alert-error { background: #FEE2E2; color: #991B1B; }
-    </style>
-</head>
-<body>
-<div class="auth-container">
-    <div class="auth-card">
-        <div class="auth-logo">
-            <svg viewBox="0 0 512 512">
-                <defs>
-                    <linearGradient id="grad3" x1="0%" y1="0%" x2="0%" y2="100%">
-                        <stop offset="0%" style="stop-color:#8B5CF6" />
-                        <stop offset="100%" style="stop-color:#6366F1" />
-                    </linearGradient>
-                </defs>
-                <rect width="512" height="512" rx="96" fill="white"/>
-                <rect x="120" y="80" width="220" height="300" rx="24" fill="url(#grad3)"/>
-                <line x1="160" y1="150" x2="300" y2="150" stroke="white" stroke-width="12" stroke-linecap="round" opacity="0.5"/>
-                <line x1="160" y1="200" x2="300" y2="200" stroke="white" stroke-width="12" stroke-linecap="round" opacity="0.5"/>
-                <line x1="160" y1="250" x2="260" y2="250" stroke="white" stroke-width="12" stroke-linecap="round" opacity="0.5"/>
-                <circle cx="310" cy="350" r="70" fill="#10B981"/>
-                <path d="M275 350 L300 375 L355 315" fill="none" stroke="white" stroke-width="18" stroke-linecap="round" stroke-linejoin="round"/>
-            </svg>
-            <h1>Jottask</h1>
-        </div>
-
-        {% if error %}
-        <div class="alert alert-error">{{ error }}</div>
-        {% endif %}
-
-        <form method="POST">
-            <div class="form-group">
-                <label class="form-label">Email</label>
-                <input type="email" name="email" class="form-input" required autofocus>
-            </div>
-
-            <div class="form-group">
-                <label class="form-label">Password</label>
-                <input type="password" name="password" class="form-input" required>
-            </div>
-
-            <button type="submit" class="btn btn-primary" style="width: 100%; margin-top: 8px;">
-                Sign In
-            </button>
-        </form>
-
-        <p style="text-align: center; margin-top: 24px; color: var(--gray-500);">
-            Don't have an account? <a href="{{ url_for('signup') }}" style="color: var(--primary);">Sign up</a>
-        </p>
-    </div>
-</div>
-</body>
-</html>
-"""
-
-SIGNUP_TEMPLATE = """
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Sign Up - Jottask</title>
-    <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
-    <link rel="apple-touch-icon" href="/static/apple-touch-icon.png">
-    <meta name="theme-color" content="#6366F1">
-    <style>
-        :root {
-            --primary: #6366F1;
-            --primary-dark: #4F46E5;
-            --success: #10B981;
-            --gray-50: #F9FAFB;
-            --gray-100: #F3F4F6;
-            --gray-300: #D1D5DB;
-            --gray-500: #6B7280;
-            --gray-700: #374151;
-            --gray-900: #111827;
-        }
-        * { margin: 0; padding: 0; box-sizing: border-box; }
-        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; }
-        .auth-container {
-            min-height: 100vh;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            background: linear-gradient(135deg, #6366F1 0%, #8B5CF6 100%);
-            padding: 20px;
-        }
-        .auth-card {
-            background: white;
-            border-radius: 16px;
-            padding: 40px;
-            width: 100%;
-            max-width: 420px;
-            box-shadow: 0 20px 60px rgba(0,0,0,0.2);
-        }
-        .auth-logo { text-align: center; margin-bottom: 32px; }
-        .auth-logo svg { width: 48px; height: 48px; }
-        .auth-logo h1 { color: var(--primary); font-size: 24px; margin-top: 12px; }
-        .form-group { margin-bottom: 16px; }
-        .form-label { display: block; margin-bottom: 6px; font-weight: 500; font-size: 14px; color: var(--gray-700); }
-        .form-input {
-            width: 100%;
-            padding: 10px 14px;
-            border: 1px solid var(--gray-300);
-            border-radius: 8px;
-            font-size: 14px;
-        }
-        .form-input:focus { outline: none; border-color: var(--primary); box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.1); }
-        .btn {
-            padding: 10px 20px;
-            border-radius: 8px;
-            font-weight: 600;
-            font-size: 14px;
-            cursor: pointer;
-            border: none;
-            text-decoration: none;
-        }
-        .btn-primary { background: var(--primary); color: white; }
-        .btn-primary:hover { background: var(--primary-dark); }
-        .alert { padding: 12px 16px; border-radius: 8px; margin-bottom: 16px; font-size: 14px; }
-        .alert-error { background: #FEE2E2; color: #991B1B; }
-    </style>
-</head>
-<body>
-<div class="auth-container">
-    <div class="auth-card">
-        <div class="auth-logo">
-            <svg viewBox="0 0 512 512">
-                <defs>
-                    <linearGradient id="grad3" x1="0%" y1="0%" x2="0%" y2="100%">
-                        <stop offset="0%" style="stop-color:#8B5CF6" />
-                        <stop offset="100%" style="stop-color:#6366F1" />
-                    </linearGradient>
-                </defs>
-                <rect width="512" height="512" rx="96" fill="white"/>
-                <rect x="120" y="80" width="220" height="300" rx="24" fill="url(#grad3)"/>
-                <line x1="160" y1="150" x2="300" y2="150" stroke="white" stroke-width="12" stroke-linecap="round" opacity="0.5"/>
-                <line x1="160" y1="200" x2="300" y2="200" stroke="white" stroke-width="12" stroke-linecap="round" opacity="0.5"/>
-                <line x1="160" y1="250" x2="260" y2="250" stroke="white" stroke-width="12" stroke-linecap="round" opacity="0.5"/>
-                <circle cx="310" cy="350" r="70" fill="#10B981"/>
-                <path d="M275 350 L300 375 L355 315" fill="none" stroke="white" stroke-width="18" stroke-linecap="round" stroke-linejoin="round"/>
-            </svg>
-            <h1>Jottask</h1>
-        </div>
-
-        <p style="text-align: center; color: var(--gray-500); margin-bottom: 24px;">
-            Start your 14-day free trial
-        </p>
-
-        {% if referral_code %}
-        <div style="background: #ECFDF5; border: 1px solid #10B981; padding: 12px 16px; border-radius: 8px; margin-bottom: 16px; text-align: center;">
-            <span style="color: #059669; font-weight: 500;">🎁 You were referred! You'll both get $5 credit when you subscribe.</span>
-        </div>
-        {% endif %}
-
-        {% if error %}
-        <div class="alert alert-error">{{ error }}</div>
-        {% endif %}
-
-        <form method="POST">
-            <input type="hidden" name="referral_code" value="{{ referral_code or '' }}">
-
-            <div class="form-group">
-                <label class="form-label">Full Name</label>
-                <input type="text" name="full_name" class="form-input" required>
-            </div>
-
-            <div class="form-group">
-                <label class="form-label">Email</label>
-                <input type="email" name="email" class="form-input" required>
-            </div>
-
-            <div class="form-group">
-                <label class="form-label">Password</label>
-                <input type="password" name="password" class="form-input" required minlength="8">
-            </div>
-
-            <div class="form-group">
-                <label class="form-label">Timezone</label>
-                <select name="timezone" class="form-input">
-                    <option value="Australia/Brisbane">Australia/Brisbane (AEST)</option>
-                    <option value="Australia/Sydney">Australia/Sydney (AEST/AEDT)</option>
-                    <option value="Australia/Melbourne">Australia/Melbourne (AEST/AEDT)</option>
-                    <option value="Australia/Perth">Australia/Perth (AWST)</option>
-                    <option value="Pacific/Auckland">New Zealand (NZST)</option>
-                    <option value="America/New_York">US Eastern</option>
-                    <option value="America/Los_Angeles">US Pacific</option>
-                    <option value="Europe/London">UK (GMT/BST)</option>
-                </select>
-            </div>
-
-            <button type="submit" class="btn btn-primary" style="width: 100%; margin-top: 8px;">
-                Create Account
-            </button>
-        </form>
-
-        <p style="text-align: center; margin-top: 24px; color: var(--gray-500);">
-            Already have an account? <a href="{{ url_for('login') }}" style="color: var(--primary);">Sign in</a>
-        </p>
-    </div>
-</div>
 </body>
 </html>
 """
@@ -2070,13 +1716,11 @@ def index():
     if 'user_id' in session:
         return redirect(url_for('dashboard'))
     # Show landing page for non-logged in users
-    from templates import LANDING_TEMPLATE
-    return render_template_string(LANDING_TEMPLATE)
+    return render_template('landing.html')
 
 
 @app.route('/pricing')
 def pricing_page():
-    from templates import PRICING_TEMPLATE
     from billing import PLANS
 
     current_plan = 'starter'
@@ -2088,13 +1732,12 @@ def pricing_page():
             current_plan = user.data.get('subscription_tier', 'starter')
             subscription_status = user.data.get('subscription_status', 'none')
 
-    return render_template_string(
-        PRICING_TEMPLATE,
+    return render_template(
+        'pricing.html',
         title='Pricing',
         plans=PLANS,
         current_plan=current_plan,
-        subscription_status=subscription_status,
-        **{'base': BASE_TEMPLATE}
+        subscription_status=subscription_status
     )
 
 
@@ -2125,13 +1768,13 @@ def login():
 
                 return redirect(url_for('dashboard'))
             else:
-                return render_template_string(LOGIN_TEMPLATE, error='Invalid credentials')
+                return render_template('login.html', error='Invalid credentials')
 
         except Exception as e:
             error_msg = 'Invalid email or password'
-            return render_template_string(LOGIN_TEMPLATE, error=error_msg)
+            return render_template('login.html', error=error_msg)
 
-    return render_template_string(LOGIN_TEMPLATE, error=None)
+    return render_template('login.html', error=None)
 
 
 @app.route('/signup', methods=['GET', 'POST'])
@@ -2221,9 +1864,9 @@ def signup(referral_code=None):
             error_msg = str(e)
             if 'already registered' in error_msg.lower():
                 error_msg = 'Email already registered'
-            return render_template_string(SIGNUP_TEMPLATE, error=error_msg, referral_code=ref_code)
+            return render_template('signup.html', error=error_msg, referral_code=ref_code)
 
-    return render_template_string(SIGNUP_TEMPLATE, error=None, referral_code=ref_code)
+    return render_template('signup.html', error=None, referral_code=ref_code)
 
 
 @app.route('/logout')
@@ -2503,7 +2146,6 @@ def create_task():
 @app.route('/tasks/<task_id>/edit', methods=['GET', 'POST'])
 @login_required
 def edit_task(task_id):
-    from templates import TASK_EDIT_TEMPLATE
     user_id = session['user_id']
 
     # Verify ownership
@@ -2540,19 +2182,17 @@ def edit_task(task_id):
         .order('display_order')\
         .execute()
 
-    return render_template_string(
-        TASK_EDIT_TEMPLATE,
+    return render_template(
+        'task_edit.html',
         title='Edit Task',
         task=task.data,
-        checklist=checklist.data or [],
-        **{'base': BASE_TEMPLATE}
+        checklist=checklist.data or []
     )
 
 
 @app.route('/tasks/<task_id>')
 @login_required
 def task_detail(task_id):
-    from templates import TASK_DETAIL_TEMPLATE
     user_id = session['user_id']
 
     # Get task
@@ -2575,13 +2215,12 @@ def task_detail(task_id):
         .limit(20)\
         .execute()
 
-    return render_template_string(
-        TASK_DETAIL_TEMPLATE,
+    return render_template(
+        'task_detail.html',
         title=task.data['title'],
         task=task.data,
         checklist=checklist.data or [],
-        notes=notes.data or [],
-        **{'base': BASE_TEMPLATE}
+        notes=notes.data or []
     )
 
 
