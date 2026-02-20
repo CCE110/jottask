@@ -1,6 +1,7 @@
 """
 Jottask Onboarding Flow
 Guides new users through initial setup
+Steps: 1=Profile, 2=Email, 3=CRM, 4=First Task
 """
 
 import os
@@ -59,24 +60,65 @@ def step1():
 @onboarding_bp.route('/step2', methods=['POST'])
 @login_required
 def step2():
-    """Email setup (placeholder)"""
-    from datetime import date
+    """Email setup (placeholder) — advances to CRM step"""
     return render_template(
         'onboarding.html',
         step=3,
+        user_name=session.get('user_name'),
+    )
+
+
+@onboarding_bp.route('/step3', methods=['GET', 'POST'])
+@login_required
+def step3():
+    """CRM connection step"""
+    user_id = session['user_id']
+
+    if request.method == 'POST':
+        crm_provider = request.form.get('crm_provider', '')
+        api_key = request.form.get('api_key', '').strip()
+
+        if crm_provider == 'pipereply' and api_key:
+            # Test and save PipeReply connection
+            try:
+                from crm_manager import CRMManager
+                crm = CRMManager()
+                result = crm.test_connection_for_user(
+                    provider='pipereply',
+                    api_key=api_key,
+                    api_base_url=request.form.get('api_base_url', '').strip(),
+                )
+                if result.success:
+                    crm.save_connection(
+                        user_id=user_id,
+                        provider='pipereply',
+                        api_key=api_key,
+                        api_base_url=request.form.get('api_base_url', '').strip(),
+                        display_name='PipeReply CRM',
+                        connection_status='connected',
+                        is_active=True,
+                    )
+            except Exception as e:
+                print(f"Onboarding CRM setup error: {e}")
+
+    # Advance to step 4 (first task)
+    from datetime import date
+    return render_template(
+        'onboarding.html',
+        step=4,
         user_name=session.get('user_name'),
         today=date.today().isoformat()
     )
 
 
-@onboarding_bp.route('/step3')
+@onboarding_bp.route('/step4')
 @login_required
-def step3():
-    """Show step 3"""
+def step4():
+    """Show step 4 (first task)"""
     from datetime import date
     return render_template(
         'onboarding.html',
-        step=3,
+        step=4,
         user_name=session.get('user_name'),
         today=date.today().isoformat()
     )

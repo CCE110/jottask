@@ -1073,10 +1073,30 @@ Rules:
     # =========================================================================
 
     def _execute_crm_update(self, action, user_context=None):
-        """Update CRM with notes (creates reminder task for now)"""
+        """Update CRM with notes — tries CRM push first, falls back to task creation"""
         customer = action.get('customer_name', 'Unknown')
         notes = action.get('crm_notes', '')
 
+        # Try CRM connector push first
+        if user_context and user_context.user_id:
+            try:
+                from crm_manager import CRMManager
+                crm = CRMManager()
+                result = crm.execute_crm_update(
+                    user_id=user_context.user_id,
+                    customer_name=customer,
+                    crm_notes=notes,
+                    customer_email=action.get('customer_email', ''),
+                )
+                if result.success:
+                    print(f"  CRM sync success for {customer}: {result.message}")
+                    return True, f"CRM updated for {customer}: {result.message}"
+                else:
+                    print(f"  CRM sync unavailable for {customer}: {result.message} — falling back to task")
+            except Exception as e:
+                print(f"  CRM sync error for {customer}: {e} — falling back to task")
+
+        # Fallback: create reminder task (original behavior)
         default_business = 'Cloud Clean Energy'
         if user_context and user_context.ai_context:
             default_business = user_context.ai_context.get('default_business', default_business)

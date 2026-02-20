@@ -73,7 +73,7 @@
         .steps {
             display: flex;
             justify-content: center;
-            gap: 24px;
+            gap: 18px;
             margin-bottom: 40px;
         }
 
@@ -207,6 +207,41 @@
         .skip-link:hover {
             color: var(--primary);
         }
+
+        .crm-option {
+            padding: 16px;
+            border: 2px solid var(--gray-200);
+            border-radius: 12px;
+            cursor: pointer;
+            transition: border-color 0.2s;
+            text-align: center;
+        }
+
+        .crm-option:hover:not(.disabled) {
+            border-color: var(--primary);
+        }
+
+        .crm-option.disabled {
+            opacity: 0.5;
+            cursor: default;
+        }
+
+        .crm-option .feature-icon {
+            font-size: 32px;
+        }
+
+        .crm-setup-form {
+            display: none;
+            margin-top: 20px;
+            padding-top: 20px;
+            border-top: 1px solid var(--gray-200);
+        }
+
+        .help-text {
+            font-size: 13px;
+            color: var(--gray-500);
+            margin-top: 6px;
+        }
     </style>
 </head>
 <body>
@@ -247,6 +282,10 @@
             </div>
             <div class="step">
                 <div class="step-circle pending">3</div>
+                <span class="step-label">CRM</span>
+            </div>
+            <div class="step">
+                <div class="step-circle pending">4</div>
                 <span class="step-label">First Task</span>
             </div>
         </div>
@@ -296,6 +335,10 @@
             </div>
             <div class="step">
                 <div class="step-circle pending">3</div>
+                <span class="step-label">CRM</span>
+            </div>
+            <div class="step">
+                <div class="step-circle pending">4</div>
                 <span class="step-label">First Task</span>
             </div>
         </div>
@@ -331,6 +374,69 @@
 
         {% elif step == 3 %}
         <div class="welcome">
+            <h2>Connect Your CRM</h2>
+            <p>Sync contact notes and updates automatically</p>
+        </div>
+
+        <div class="steps">
+            <div class="step">
+                <div class="step-circle completed">&#10003;</div>
+                <span class="step-label">Profile</span>
+            </div>
+            <div class="step">
+                <div class="step-circle completed">&#10003;</div>
+                <span class="step-label">Email</span>
+            </div>
+            <div class="step">
+                <div class="step-circle active">3</div>
+                <span class="step-label">CRM</span>
+            </div>
+            <div class="step">
+                <div class="step-circle pending">4</div>
+                <span class="step-label">First Task</span>
+            </div>
+        </div>
+
+        <div class="features" style="grid-template-columns: 1fr 1fr;">
+            <div class="crm-option" onclick="showCRMSetup()">
+                <div class="feature-icon">&#x1F4CA;</div>
+                <h4>PipeReply</h4>
+                <p style="font-size: 12px; color: var(--gray-500);">Connect via API key</p>
+            </div>
+            <div class="crm-option disabled">
+                <div class="feature-icon">&#x1F7E0;</div>
+                <h4>HubSpot</h4>
+                <p style="font-size: 12px; color: var(--gray-500);">Coming soon</p>
+            </div>
+        </div>
+
+        <!-- PipeReply inline setup -->
+        <div id="crm-setup-form" class="crm-setup-form">
+            <form method="POST" action="/onboarding/step3">
+                <input type="hidden" name="crm_provider" value="pipereply">
+                <div class="form-group">
+                    <label class="form-label">PipeReply API Key</label>
+                    <input type="password" name="api_key" class="form-input" placeholder="Your PipeReply API key" required>
+                    <p class="help-text">Find this in PipeReply &rarr; Settings &rarr; API</p>
+                </div>
+                <div class="form-group">
+                    <label class="form-label">API Base URL (optional)</label>
+                    <input type="url" name="api_base_url" class="form-input" placeholder="https://app.pipereply.com">
+                    <p class="help-text">Leave blank to use the default</p>
+                </div>
+                <button type="submit" class="btn btn-primary">Test & Connect</button>
+            </form>
+        </div>
+
+        <!-- Skip CRM form (no API key) -->
+        <form method="POST" action="/onboarding/step3" style="margin-top: 16px;">
+            <button type="submit" class="btn btn-secondary">Skip CRM Setup</button>
+        </form>
+
+        <a href="/onboarding/step4" class="skip-link">Skip and create first task &#x2192;</a>
+
+        {% elif step == 4 %}
+        <div class="welcome">
             <h2>Create Your First Task</h2>
             <p>Let's add a task to get you started</p>
         </div>
@@ -345,7 +451,11 @@
                 <span class="step-label">Email</span>
             </div>
             <div class="step">
-                <div class="step-circle active">3</div>
+                <div class="step-circle completed">&#10003;</div>
+                <span class="step-label">CRM</span>
+            </div>
+            <div class="step">
+                <div class="step-circle active">4</div>
                 <span class="step-label">First Task</span>
             </div>
         </div>
@@ -367,5 +477,11 @@
         <a href="/dashboard" class="skip-link">Skip and go to dashboard &#x2192;</a>
         {% endif %}
     </div>
+
+    <script>
+        function showCRMSetup() {
+            document.getElementById('crm-setup-form').style.display = 'block';
+        }
+    </script>
 </body>
 </html>

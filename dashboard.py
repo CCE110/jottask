@@ -20,9 +20,11 @@ from email_utils import send_email
 from billing import billing_bp
 from onboarding import onboarding_bp
 from email_setup import email_setup_bp
+from crm_setup import crm_setup_bp
 app.register_blueprint(billing_bp)
 app.register_blueprint(onboarding_bp)
 app.register_blueprint(email_setup_bp)
+app.register_blueprint(crm_setup_bp)
 
 # Supabase client
 SUPABASE_URL = os.getenv('SUPABASE_URL')
@@ -2574,6 +2576,18 @@ def settings():
     referral_count = len(referrals.data) if referrals.data else 0
     converted_count = len([r for r in (referrals.data or []) if r.get('status') == 'converted'])
 
+    # Get active CRM connection (if any)
+    crm_connection = None
+    try:
+        from crm_manager import CRMManager
+        _crm = CRMManager()
+        crm_connections = _crm.get_user_connections(user_id)
+        crm_connection = next((c for c in crm_connections if c.get('is_active')), None)
+        if not crm_connection and crm_connections:
+            crm_connection = crm_connections[0]  # Show first connection even if inactive
+    except Exception:
+        pass
+
     return render_template(
         'settings.html',
         title='Settings',
@@ -2582,6 +2596,7 @@ def settings():
         referral_count=referral_count,
         converted_count=converted_count,
         referral_link=f"https://www.jottask.app/r/{sub.get('referral_code', '')}",
+        crm_connection=crm_connection,
         message=request.args.get('message')
     )
 
@@ -4228,6 +4243,37 @@ def approve_action():
             task_data['category'] = 'calendar'
         elif action_type == 'change_deal_status':
             task_data['category'] = 'deals'
+        # Try CRM push for update_crm actions before falling back to task creation
+        crm_synced = False
+        crm_message = ''
+        if action_type == 'update_crm':
+            try:
+                from crm_manager import CRMManager
+                _crm = CRMManager()
+                crm_result = _crm.execute_crm_update(
+                    user_id=resolved_user_id,
+                    customer_name=action.get('customer_name', ''),
+                    crm_notes=action.get('crm_notes', action.get('description', '')),
+                    customer_email=action.get('customer_email', ''),
+                )
+                if crm_result.success:
+                    crm_synced = True
+                    crm_message = crm_result.message
+                    print(f"CRM sync success: {crm_message}")
+                else:
+                    print(f"CRM sync skipped (falling back to task): {crm_result.message}")
+            except Exception as crm_err:
+                print(f"CRM sync error (falling back to task): {crm_err}")
+        if crm_synced:
+            # CRM push succeeded — mark synced, skip task creation
+            sb.table('pending_actions').update({
+                'status': 'approved',
+                'crm_synced': True,
+                'crm_synced_at': datetime.now(pytz.UTC).isoformat(),
+                'processed_at': datetime.now(pytz.UTC).isoformat()
+            }).eq('token', token).execute()
+            return f'<html><body style="font-family:-apple-system,sans-serif;max-width:500px;margin:50px auto;text-align:center"><div style="background:#dcfce7;border-radius:12px;padding:30px"><h2 style="color:#166534">CRM Updated</h2><p><strong>{_escape_html(action_title)}</strong></p><p>{_escape_html(crm_message)}</p><a href="https://www.jottask.app/dashboard" style="display:inline-block;margin-top:16px;padding:10px 24px;background:#22c55e;color:white;text-decoration:none;border-radius:8px;font-weight:bold">Dashboard</a></div></body></html>'
+        # Fallback: create task (original behavior)
         sb.table('tasks').insert(task_data).execute()
         sb.table('pending_actions').update({
             'status': 'approved',
@@ -4472,12 +4518,38 @@ def save_action():
             elif action_type == 'change_deal_status':
                 task_data['category'] = 'deals'
 
-            sb.table('tasks').insert(task_data).execute()
-            new_status = 'completed' if is_complete else 'approved'
-            sb.table('pending_actions').update({
-                'status': new_status,
-                'processed_at': datetime.now(pytz.UTC).isoformat()
-            }).eq('token', token).execute()
+            # Try CRM push for update_crm actions
+            crm_synced = False
+            if action_type == 'update_crm' and not is_complete:
+                try:
+                    from crm_manager import CRMManager
+                    _crm = CRMManager()
+                    crm_result = _crm.execute_crm_update(
+                        user_id=resolved_user_id,
+                        customer_name=existing_action.get('customer_name', ''),
+                        crm_notes=existing_action.get('crm_notes', existing_action.get('description', '')),
+                        customer_email=existing_action.get('customer_email', ''),
+                    )
+                    if crm_result.success:
+                        crm_synced = True
+                        print(f"CRM sync success (save_approve): {crm_result.message}")
+                except Exception as crm_err:
+                    print(f"CRM sync error in save_action (falling back to task): {crm_err}")
+
+            if crm_synced:
+                sb.table('pending_actions').update({
+                    'status': 'approved',
+                    'crm_synced': True,
+                    'crm_synced_at': datetime.now(pytz.UTC).isoformat(),
+                    'processed_at': datetime.now(pytz.UTC).isoformat()
+                }).eq('token', token).execute()
+            else:
+                sb.table('tasks').insert(task_data).execute()
+                new_status = 'completed' if is_complete else 'approved'
+                sb.table('pending_actions').update({
+                    'status': new_status,
+                    'processed_at': datetime.now(pytz.UTC).isoformat()
+                }).eq('token', token).execute()
 
             action_title = existing_action.get('title', 'Unknown action')
             if is_complete:
