@@ -370,7 +370,7 @@ def generate_reminder_email_html(task, due_time_str, user_name, is_overdue=False
         </div>
 
         <div style="background: white; padding: 32px; border-radius: 0 0 16px 16px; box-shadow: 0 4px 6px rgba(0,0,0,0.05);">
-            <h2 style="color: #111827; margin: 0 0 8px 0; font-size: 20px;">{title}</h2>
+            <a href="https://www.jottask.app/tasks/{task_id}/edit" style="color: #111827; text-decoration: none;"><h2 style="color: #111827; margin: 0 0 8px 0; font-size: 20px;">{title}</h2></a>
             {client_line}
 
             <div style="margin-top: 24px; display: flex; gap: 10px; flex-wrap: wrap;">
