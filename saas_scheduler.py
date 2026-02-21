@@ -274,7 +274,7 @@ def generate_summary_email_html(user_name, user_timezone, tasks_summary, project
             {projects_html}
 
             <div style="margin-top: 32px; text-align: center;">
-                <a href="https://jottask.flowquote.ai/dashboard" style="display: inline-block; background: #6366F1; color: white; padding: 14px 32px; border-radius: 8px; text-decoration: none; font-weight: 600;">Open Dashboard</a>
+                <a href="https://www.jottask.app/dashboard" style="display: inline-block; background: #6366F1; color: white; padding: 14px 32px; border-radius: 8px; text-decoration: none; font-weight: 600;">Open Dashboard</a>
             </div>
         </div>
 
@@ -335,7 +335,7 @@ def send_daily_summary(user):
 ACTION_URL = os.getenv('TASK_ACTION_URL', 'https://www.jottask.app/action')
 
 
-def generate_reminder_email_html(task, due_time_str, user_name):
+def generate_reminder_email_html(task, due_time_str, user_name, is_overdue=False):
     """Generate HTML for a task reminder email"""
     title = task.get('title', 'Untitled Task')
     client_name = task.get('client_name', '')
@@ -349,22 +349,29 @@ def generate_reminder_email_html(task, due_time_str, user_name):
         'low': '#6B7280',
     }
     color = priority_colors.get(priority, '#6366F1')
+    if is_overdue:
+        color = '#DC2626'  # Red for overdue
 
     client_line = f'<div style="font-size: 14px; color: #6B7280;">Client: {client_name}</div>' if client_name else ''
+
+    if is_overdue:
+        heading = 'Overdue Task'
+        subtext = f'Was due at {due_time_str}'
+    else:
+        heading = 'Task Reminder'
+        subtext = f'Due at {due_time_str}'
 
     html = f"""
     <html>
     <body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; background: #F9FAFB;">
         <div style="background: linear-gradient(135deg, {color} 0%, {color}CC 100%); padding: 24px 32px; border-radius: 16px 16px 0 0;">
-            <h1 style="color: white; margin: 0 0 4px 0; font-size: 22px;">Task Reminder</h1>
-            <p style="color: rgba(255,255,255,0.9); margin: 0; font-size: 14px;">Due at {due_time_str}</p>
+            <h1 style="color: white; margin: 0 0 4px 0; font-size: 22px;">{heading}</h1>
+            <p style="color: rgba(255,255,255,0.9); margin: 0; font-size: 14px;">{subtext}</p>
         </div>
 
         <div style="background: white; padding: 32px; border-radius: 0 0 16px 16px; box-shadow: 0 4px 6px rgba(0,0,0,0.05);">
             <h2 style="color: #111827; margin: 0 0 8px 0; font-size: 20px;">{title}</h2>
             {client_line}
-
-            <p style="color: #6b7280; font-size: 13px; margin-top: 16px;">You'll receive a reminder 5-20 minutes before this task is due.</p>
 
             <div style="margin-top: 24px; display: flex; gap: 10px; flex-wrap: wrap;">
                 <a href="{ACTION_URL}?action=complete&task_id={task_id}"
@@ -382,7 +389,7 @@ def generate_reminder_email_html(task, due_time_str, user_name):
             </div>
 
             <div style="margin-top: 24px; text-align: center;">
-                <a href="https://jottask.flowquote.ai/dashboard" style="color: #6366F1; font-size: 13px;">Open Dashboard</a>
+                <a href="https://www.jottask.app/dashboard" style="color: #6366F1; font-size: 13px;">Open Dashboard</a>
             </div>
         </div>
 
@@ -396,7 +403,14 @@ def generate_reminder_email_html(task, due_time_str, user_name):
 
 
 def check_and_send_reminders():
-    """Check for tasks due soon and send reminder emails"""
+    """Check for tasks due soon and send reminder emails.
+
+    Failsafe design — reminders are NEVER silently missed:
+    1. Upcoming: send 30 min before due time (normal reminder)
+    2. Catch-up: if due time passed today/yesterday and no reminder was sent,
+       send an overdue reminder on the next scheduler tick
+    3. Duplicate prevention: reminder_sent_at tracked per task per day
+    """
     print(f"\n🔔 Checking task reminders...")
 
     try:
@@ -410,8 +424,8 @@ def check_and_send_reminders():
             print("   No users found")
             return
 
-        # Get all pending tasks due today (across all users) that have a due_time
-        # We check per-user timezone, so get all pending tasks with due_time
+        # Get pending tasks with due_time set — includes today and yesterday
+        # for catch-up (yesterday's tasks that missed their reminder window)
         all_tasks = supabase.table('tasks')\
             .select('id, title, due_date, due_time, priority, status, client_name, user_id, reminder_sent_at')\
             .eq('status', 'pending')\
@@ -435,9 +449,16 @@ def check_and_send_reminders():
                 user_tz = pytz.timezone(user.get('timezone', 'Australia/Brisbane'))
                 now = datetime.now(user_tz)
                 today_str = now.date().isoformat()
+                yesterday_str = (now.date() - timedelta(days=1)).isoformat()
 
-                # Only process tasks due today in the user's timezone
-                if task.get('due_date') != today_str:
+                task_due_date = task.get('due_date')
+                if not task_due_date:
+                    continue
+
+                # Only process tasks due today or yesterday (catch-up window)
+                is_today = (task_due_date == today_str)
+                is_yesterday = (task_due_date == yesterday_str)
+                if not is_today and not is_yesterday:
                     continue
 
                 # Parse due time
@@ -446,54 +467,79 @@ def check_and_send_reminders():
                 hour, minute = int(parts[0]), int(parts[1])
                 second = int(float(parts[2])) if len(parts) > 2 else 0
 
-                task_due = now.replace(
-                    hour=hour,
-                    minute=minute,
-                    second=second,
-                    microsecond=0
-                )
+                # Build the full due datetime in user's timezone
+                if is_today:
+                    task_due = now.replace(hour=hour, minute=minute, second=second, microsecond=0)
+                else:
+                    # Yesterday's task
+                    yesterday_dt = now - timedelta(days=1)
+                    task_due = yesterday_dt.replace(hour=hour, minute=minute, second=second, microsecond=0)
 
-                # Calculate time difference in minutes
+                # Check if reminder already sent for this task's due date
+                if task.get('reminder_sent_at'):
+                    try:
+                        sent_at = datetime.fromisoformat(
+                            task['reminder_sent_at'].replace('Z', '+00:00')
+                        )
+                        sent_at_local = sent_at.astimezone(user_tz)
+                        if sent_at_local.date() >= task_due.date():
+                            continue  # Already sent for this due date
+                    except:
+                        pass
+
+                # Calculate time difference in minutes (positive = future, negative = past)
                 time_diff = (task_due - now).total_seconds() / 60
 
-                # Send reminder if within -5 to +20 minute window
-                if -5 <= time_diff <= 20:
-                    # Check if reminder already sent today
-                    if task.get('reminder_sent_at'):
-                        try:
-                            sent_at = datetime.fromisoformat(
-                                task['reminder_sent_at'].replace('Z', '+00:00')
-                            )
-                            sent_at_local = sent_at.astimezone(user_tz)
-                            if sent_at_local.date() == now.date():
-                                continue  # Already sent today
-                        except:
-                            pass
+                # Decide whether to send
+                is_overdue = False
+                should_send = False
 
-                    # Format due time for display
-                    display_time = task_due.strftime('%I:%M %p')
+                if 0 <= time_diff <= 30:
+                    # Normal reminder: task due within next 30 minutes
+                    should_send = True
+                elif time_diff < 0:
+                    # Overdue catch-up: task due time has passed, no reminder sent
+                    # Cap at 24 hours to avoid spamming ancient tasks
+                    if time_diff >= -1440:
+                        should_send = True
+                        is_overdue = True
 
+                if not should_send:
+                    continue
+
+                # Format due time for display
+                display_time = task_due.strftime('%I:%M %p')
+
+                if is_overdue:
+                    overdue_mins = abs(int(time_diff))
+                    if overdue_mins < 60:
+                        late_label = f"{overdue_mins}m ago"
+                    else:
+                        late_label = f"{overdue_mins // 60}h {overdue_mins % 60}m ago"
+                    print(f"   Sending OVERDUE reminder ({late_label}): {task['title'][:40]} -> {user['email']}")
+                    subject = f"Overdue: {task['title'][:50]} - was due {display_time}"
+                else:
                     print(f"   Sending reminder: {task['title'][:40]} -> {user['email']}")
-
-                    # Generate and send email
-                    html_content = generate_reminder_email_html(
-                        task, display_time, user.get('full_name', '')
-                    )
-
                     subject = f"Reminder: {task['title'][:50]} - due {display_time}"
-                    success, error = send_email(user['email'], subject, html_content)
 
-                    if not success:
-                        print(f"   Failed to send reminder: {error}")
-                        continue
+                # Generate and send email
+                html_content = generate_reminder_email_html(
+                    task, display_time, user.get('full_name', ''), is_overdue=is_overdue
+                )
 
-                    # Mark reminder as sent
-                    supabase.table('tasks').update({
-                        'reminder_sent_at': datetime.now(pytz.UTC).isoformat()
-                    }).eq('id', task['id']).execute()
+                success, error = send_email(user['email'], subject, html_content)
 
-                    sent_count += 1
-                    time.sleep(0.5)  # Rate limit
+                if not success:
+                    print(f"   Failed to send reminder: {error}")
+                    continue
+
+                # Mark reminder as sent
+                supabase.table('tasks').update({
+                    'reminder_sent_at': datetime.now(pytz.UTC).isoformat()
+                }).eq('id', task['id']).execute()
+
+                sent_count += 1
+                time.sleep(0.5)  # Rate limit
 
             except Exception as e:
                 print(f"   Error with task {task.get('id')}: {e}")
@@ -502,7 +548,7 @@ def check_and_send_reminders():
         if sent_count > 0:
             print(f"   Sent {sent_count} reminder(s)")
         else:
-            print("   No tasks in reminder window right now")
+            print("   No reminders needed right now")
 
     except Exception as e:
         print(f"Reminder error: {e}")
