@@ -4577,6 +4577,128 @@ def save_action():
         return f'<html><body style="font-family:-apple-system,sans-serif;max-width:500px;margin:50px auto;text-align:center"><div style="background:#fee2e2;border-radius:12px;padding:30px"><h2 style="color:#991b1b">Error</h2><p>{str(e)}</p></div></body></html>', 500
 
 
+@app.route('/debug/reminders')
+def debug_reminders():
+    """Diagnostic: show what the scheduler sees and optionally send missed reminders.
+    Add ?send=1 to actually send them. Protected by internal API key or logged-in admin."""
+    api_key = request.args.get('key', '')
+    internal_key = os.getenv('INTERNAL_API_KEY', '')
+    user_id = session.get('user_id')
+    if api_key != internal_key and not user_id:
+        return 'Unauthorized', 401
+
+    from email_utils import send_email as _send_email
+    should_send = request.args.get('send') == '1'
+
+    lines = []
+    lines.append(f"<h2>Reminder Diagnostics</h2>")
+    lines.append(f"<pre>")
+
+    try:
+        sb = create_client(SUPABASE_URL, SUPABASE_KEY)
+
+        # Users
+        users_result = sb.table('users').select('id, email, full_name, timezone').execute()
+        users = {u['id']: u for u in (users_result.data or [])}
+        lines.append(f"Users: {len(users)}")
+
+        # All pending tasks
+        all_tasks = sb.table('tasks') \
+            .select('id, title, due_date, due_time, status, client_name, user_id, reminder_sent_at, priority') \
+            .eq('status', 'pending') \
+            .execute()
+
+        raw = all_tasks.data or []
+        with_time = [t for t in raw if t.get('due_time')]
+        lines.append(f"Pending tasks total: {len(raw)}")
+        lines.append(f"Pending with due_time: {len(with_time)}")
+        lines.append(f"")
+
+        from datetime import timedelta as _td
+        sent_count = 0
+
+        for t in with_time:
+            uid = t.get('user_id')
+            user = users.get(uid)
+            if not user:
+                lines.append(f"TASK {t['id'][:8]}  '{t['title'][:40]}'  -> NO USER FOUND (uid={uid})")
+                continue
+
+            user_tz = pytz.timezone(user.get('timezone', 'Australia/Brisbane'))
+            now = datetime.now(user_tz)
+            today_str = now.date().isoformat()
+            yesterday_str = (now.date() - _td(days=1)).isoformat()
+
+            due_date = str(t.get('due_date', ''))[:10]
+            due_time = str(t.get('due_time', ''))
+            reminder_sent = t.get('reminder_sent_at')
+
+            is_today = (due_date == today_str)
+            is_yesterday = (due_date == yesterday_str)
+
+            if not is_today and not is_yesterday:
+                continue  # Not relevant
+
+            # Parse time
+            parts = due_time.split(':')
+            try:
+                hour, minute = int(parts[0]), int(parts[1])
+            except:
+                lines.append(f"TASK {t['id'][:8]}  BAD TIME FORMAT: '{due_time}'")
+                continue
+
+            if is_today:
+                task_due = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+            else:
+                task_due = (now - _td(days=1)).replace(hour=hour, minute=minute, second=0, microsecond=0)
+
+            diff = (task_due - now).total_seconds() / 60
+
+            # Check already sent
+            already_sent = False
+            if reminder_sent:
+                try:
+                    sent_at = datetime.fromisoformat(str(reminder_sent).replace('Z', '+00:00'))
+                    if sent_at.astimezone(user_tz).date() >= task_due.date():
+                        already_sent = True
+                except:
+                    pass
+
+            status_str = "ALREADY SENT" if already_sent else ("IN WINDOW" if diff <= 30 else f"not yet ({diff:.0f}m)")
+            if not already_sent and diff < 0:
+                status_str = f"OVERDUE {abs(diff):.0f}m - NEEDS SEND"
+
+            lines.append(f"TASK {t['id'][:8]}  '{t['title'][:40]}'  due={due_date} {due_time}  diff={diff:.0f}m  sent={reminder_sent}  -> {status_str}")
+
+            # Actually send if requested
+            if should_send and not already_sent and diff < 0 and diff >= -1440:
+                display_time = task_due.strftime('%I:%M %p')
+                from saas_scheduler import generate_reminder_email_html
+                html = generate_reminder_email_html(t, display_time, user.get('full_name', ''), is_overdue=True)
+                subject = f"Overdue: {t['title'][:50]} - was due {display_time}"
+                ok, err = _send_email(user['email'], subject, html)
+                if ok:
+                    sb.table('tasks').update({
+                        'reminder_sent_at': datetime.now(pytz.UTC).isoformat()
+                    }).eq('id', t['id']).execute()
+                    lines.append(f"   >>> SENT to {user['email']}")
+                    sent_count += 1
+                else:
+                    lines.append(f"   >>> SEND FAILED: {err}")
+
+        if should_send:
+            lines.append(f"\nSent {sent_count} reminder(s)")
+        else:
+            lines.append(f"\nAdd ?send=1 to actually send overdue reminders")
+
+    except Exception as e:
+        import traceback
+        lines.append(f"ERROR: {e}\n{traceback.format_exc()}")
+
+    lines.append("</pre>")
+    return f'<html><body style="font-family:monospace;padding:20px;">{"<br>".join(lines)}</body></html>'
+
+
 if __name__ == '__main__':
     port = int(os.getenv('PORT', 5000))
     app.run(host='0.0.0.0', port=port, debug=True)
