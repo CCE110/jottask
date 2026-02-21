@@ -424,15 +424,20 @@ def check_and_send_reminders():
             print("   No users found")
             return
 
-        # Get pending tasks with due_time set — includes today and yesterday
-        # for catch-up (yesterday's tasks that missed their reminder window)
+        print(f"   Found {len(users)} user(s)")
+
+        # Get ALL pending tasks — filter due_time in Python to avoid
+        # supabase client filter issues with null checks
         all_tasks = supabase.table('tasks')\
             .select('id, title, due_date, due_time, priority, status, client_name, user_id, reminder_sent_at')\
             .eq('status', 'pending')\
-            .not_.is_('due_time', 'null')\
             .execute()
 
-        tasks = all_tasks.data or []
+        raw_tasks = all_tasks.data or []
+        # Filter to tasks that have a due_time set (in Python — more reliable)
+        tasks = [t for t in raw_tasks if t.get('due_time')]
+
+        print(f"   {len(raw_tasks)} pending tasks total, {len(tasks)} with due_time")
         if not tasks:
             print("   No pending tasks with due times")
             return
@@ -455,17 +460,24 @@ def check_and_send_reminders():
                 if not task_due_date:
                     continue
 
+                # Normalize due_date — handle both "2026-02-21" and "2026-02-21T00:00:00" formats
+                task_due_date = str(task_due_date)[:10]
+
                 # Only process tasks due today or yesterday (catch-up window)
                 is_today = (task_due_date == today_str)
                 is_yesterday = (task_due_date == yesterday_str)
                 if not is_today and not is_yesterday:
                     continue
 
-                # Parse due time
-                due_time_str = task['due_time']
+                # Parse due time — handle "HH:MM", "HH:MM:SS", "HH:MM:SS.ffffff"
+                due_time_str = str(task['due_time'])
                 parts = due_time_str.split(':')
-                hour, minute = int(parts[0]), int(parts[1])
-                second = int(float(parts[2])) if len(parts) > 2 else 0
+                try:
+                    hour, minute = int(parts[0]), int(parts[1])
+                    second = int(float(parts[2])) if len(parts) > 2 else 0
+                except (ValueError, IndexError):
+                    print(f"   Skipping task {task['id']}: bad due_time format '{due_time_str}'")
+                    continue
 
                 # Build the full due datetime in user's timezone
                 if is_today:
@@ -475,20 +487,22 @@ def check_and_send_reminders():
                     yesterday_dt = now - timedelta(days=1)
                     task_due = yesterday_dt.replace(hour=hour, minute=minute, second=second, microsecond=0)
 
+                # Log candidate task for debugging
+                time_diff = (task_due - now).total_seconds() / 60
+                print(f"   Candidate: '{task['title'][:40]}' due={task_due_date} {due_time_str} diff={time_diff:.0f}m sent_at={task.get('reminder_sent_at')}")
+
                 # Check if reminder already sent for this task's due date
                 if task.get('reminder_sent_at'):
                     try:
                         sent_at = datetime.fromisoformat(
-                            task['reminder_sent_at'].replace('Z', '+00:00')
+                            str(task['reminder_sent_at']).replace('Z', '+00:00')
                         )
                         sent_at_local = sent_at.astimezone(user_tz)
                         if sent_at_local.date() >= task_due.date():
-                            continue  # Already sent for this due date
-                    except:
-                        pass
-
-                # Calculate time difference in minutes (positive = future, negative = past)
-                time_diff = (task_due - now).total_seconds() / 60
+                            print(f"   -> Skipped (already sent {sent_at_local.date()})")
+                            continue
+                    except Exception as parse_err:
+                        print(f"   -> Warning: could not parse reminder_sent_at: {parse_err}")
 
                 # Decide whether to send
                 is_overdue = False
@@ -505,6 +519,7 @@ def check_and_send_reminders():
                         is_overdue = True
 
                 if not should_send:
+                    print(f"   -> Skipped (not in window: {time_diff:.0f}m)")
                     continue
 
                 # Format due time for display
