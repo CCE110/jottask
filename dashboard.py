@@ -4685,6 +4685,8 @@ def debug_reminders():
                     sent_count += 1
                 else:
                     lines.append(f"   >>> SEND FAILED: {err}")
+                import time as _time
+                _time.sleep(1)  # Resend rate limit: 2 req/sec
 
         if should_send:
             lines.append(f"\nSent {sent_count} reminder(s)")
