@@ -211,7 +211,7 @@ class TaskManager:
             # Try email match first (most reliable)
             if client_email:
                 result = self.supabase.table('tasks')\
-                    .select('*, project_statuses!inner(name)')\
+                    .select('*')\
                     .eq('client_email', client_email.lower())\
                     .neq('status', 'completed')\
                     .order('created_at', desc=True)\

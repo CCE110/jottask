@@ -478,14 +478,28 @@ class AIEmailProcessor:
                 data['connection_id'] = connection_id
             if user_id:
                 data['user_id'] = user_id
-            if sender_email:
-                data['sender_email'] = sender_email.lower()
-            if sender_name:
-                data['sender_name'] = sender_name
-            if subject:
-                data['subject'] = subject[:500]  # Cap length
 
-            self.tm.supabase.table('processed_emails').insert(data).execute()
+            # Sender info columns — only include if migration 017 has been run.
+            # We try with them first; if the columns don't exist yet, retry without.
+            extra_data = {}
+            if sender_email:
+                extra_data['sender_email'] = sender_email.lower()
+            if sender_name:
+                extra_data['sender_name'] = sender_name
+            if subject:
+                extra_data['subject'] = subject[:500]
+
+            insert_data = {**data, **extra_data}
+
+            try:
+                self.tm.supabase.table('processed_emails').insert(insert_data).execute()
+            except Exception as col_err:
+                if 'column' in str(col_err).lower() or 'schema' in str(col_err).lower():
+                    # Migration 017 not run yet — retry without new columns
+                    self.tm.supabase.table('processed_emails').insert(data).execute()
+                else:
+                    raise col_err
+
             self.processed_emails.add(message_id)
             if uid_str:
                 self.processed_emails.add(uid_str)
@@ -964,13 +978,21 @@ Rules:
             'status': 'pending',
         }
 
-        # Add client info to the task record
+        # Add client info to the task record (columns may not exist pre-migration)
         if client_name:
             task_data['client_name'] = client_name
         if client_email:
             task_data['client_email'] = client_email.lower()
 
-        result = self.tm.supabase.table('tasks').insert(task_data).execute()
+        try:
+            result = self.tm.supabase.table('tasks').insert(task_data).execute()
+        except Exception as col_err:
+            if 'column' in str(col_err).lower() or 'schema' in str(col_err).lower():
+                # client_email column may not exist yet — retry without it
+                task_data.pop('client_email', None)
+                result = self.tm.supabase.table('tasks').insert(task_data).execute()
+            else:
+                raise col_err
 
         if result.data:
             task = result.data[0]
