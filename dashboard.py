@@ -148,7 +148,7 @@ def get_user_subscription(user_id):
     month_reset = data.get('tasks_month_reset')
 
     # Check if we need to reset monthly count
-    today = datetime.now().date()
+    today = datetime.now(pytz.timezone('Australia/Brisbane')).date()
     if month_reset:
         reset_date = datetime.fromisoformat(month_reset).date() if isinstance(month_reset, str) else month_reset
         if today.month != reset_date.month or today.year != reset_date.year:
@@ -1809,7 +1809,7 @@ def signup(referral_code=None):
             if auth_response.user:
                 # Create user profile with subscription info
                 import hashlib
-                new_ref_code = hashlib.md5(f"{auth_response.user.id}jottask{datetime.now().timestamp()}".encode()).hexdigest()[:8].upper()
+                new_ref_code = hashlib.md5(f"{auth_response.user.id}jottask{datetime.now(pytz.UTC).timestamp()}".encode()).hexdigest()[:8].upper()
 
                 user_data = {
                     'id': auth_response.user.id,
@@ -1821,7 +1821,7 @@ def signup(referral_code=None):
                     'trial_ends_at': (datetime.now(pytz.UTC) + timedelta(days=14)).isoformat(),
                     'referral_code': new_ref_code,
                     'tasks_this_month': 0,
-                    'tasks_month_reset': datetime.now().date().replace(day=1).isoformat()
+                    'tasks_month_reset': datetime.now(pytz.timezone('Australia/Brisbane')).date().replace(day=1).isoformat()
                 }
 
                 if referrer_id:
@@ -1854,7 +1854,7 @@ def signup(referral_code=None):
                     <p><strong>Email:</strong> {email}</p>
                     <p><strong>Timezone:</strong> {timezone}</p>
                     {referral_info}
-                    <p><strong>Time:</strong> {datetime.now().strftime('%Y-%m-%d %H:%M')}</p>
+                    <p><strong>Time:</strong> {datetime.now(pytz.timezone('Australia/Brisbane')).strftime('%Y-%m-%d %H:%M')} AEST</p>
                     <hr>
                     <p><a href="https://www.jottask.app/admin">View Admin Dashboard</a></p>
                     """
@@ -2757,7 +2757,7 @@ def handle_action():
                     due_date = datetime.fromisoformat(current_date)
                     new_date = (due_date + timedelta(days=1)).date().isoformat()
                 except:
-                    new_date = (datetime.now() + timedelta(days=1)).date().isoformat()
+                    new_date = (datetime.now(pytz.timezone('Australia/Brisbane')) + timedelta(days=1)).date().isoformat()
 
                 supabase.table('tasks').update({
                     'due_date': new_date,
@@ -2776,7 +2776,7 @@ def handle_action():
 
             elif action == 'delay_custom' or action == 'reschedule':
                 # Show reschedule form with full edit capability
-                current_date = task_data.get('due_date', datetime.now().date().isoformat())
+                current_date = task_data.get('due_date', datetime.now(pytz.timezone('Australia/Brisbane')).date().isoformat())
                 current_time = task_data.get('due_time', '09:00:00')[:5]
                 checklist = task_data.get('checklist', []) or []
 
@@ -3803,7 +3803,7 @@ def email_action(token):
             due_date = datetime.fromisoformat(current_date)
             new_date = (due_date + timedelta(days=1)).date().isoformat()
         except:
-            new_date = (datetime.now() + timedelta(days=1)).date().isoformat()
+            new_date = (datetime.now(pytz.timezone('Australia/Brisbane')) + timedelta(days=1)).date().isoformat()
 
         supabase.table('tasks').update({
             'due_date': new_date,
@@ -3885,7 +3885,7 @@ def chat_message():
             f"""
             <h2>Support Chat Escalated</h2>
             <p><strong>User:</strong> {user.data['full_name']} ({user.data['email']})</p>
-            <p><strong>Time:</strong> {datetime.now().strftime('%Y-%m-%d %H:%M')}</p>
+            <p><strong>Time:</strong> {datetime.now(pytz.timezone('Australia/Brisbane')).strftime('%Y-%m-%d %H:%M')} AEST</p>
             <hr>
             <h3>Conversation History:</h3>
             {history}
@@ -4593,6 +4593,13 @@ def debug_reminders():
     lines = []
     lines.append(f"<h2>Reminder Diagnostics</h2>")
     lines.append(f"<pre>")
+    _aest = pytz.timezone('Australia/Brisbane')
+    _now_utc = datetime.now(pytz.UTC)
+    _now_aest = datetime.now(_aest)
+    lines.append(f"Server UTC:  {_now_utc.strftime('%Y-%m-%d %H:%M:%S')}")
+    lines.append(f"AEST local:  {_now_aest.strftime('%Y-%m-%d %H:%M:%S')}")
+    lines.append(f"AEST date:   {_now_aest.date().isoformat()}")
+    lines.append(f"")
 
     try:
         sb = create_client(SUPABASE_URL, SUPABASE_KEY)

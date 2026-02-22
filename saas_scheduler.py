@@ -582,7 +582,8 @@ def run_scheduler():
     while True:
         try:
             now = datetime.now(pytz.UTC)
-            print(f"\n⏰ {now.strftime('%Y-%m-%d %H:%M:%S')} UTC - Scheduler tick")
+            now_aest = datetime.now(pytz.timezone('Australia/Brisbane'))
+            print(f"\n⏰ {now_aest.strftime('%Y-%m-%d %H:%M:%S')} AEST ({now.strftime('%H:%M')} UTC) - Scheduler tick")
 
             # Check task reminders every tick (every 1 minute)
             check_and_send_reminders()

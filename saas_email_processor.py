@@ -29,6 +29,18 @@ import pytz
 
 load_dotenv()
 
+AEST = pytz.timezone('Australia/Brisbane')
+
+def _now_local(user_context=None):
+    """Get current time in the user's timezone (defaults to AEST)."""
+    tz = AEST
+    if user_context and hasattr(user_context, 'timezone') and user_context.timezone:
+        try:
+            tz = pytz.timezone(user_context.timezone)
+        except:
+            pass
+    return datetime.now(tz)
+
 
 # =========================================================================
 # USER CONTEXT — per-tenant data passed through the processing pipeline
@@ -445,7 +457,7 @@ class AIEmailProcessor:
             data = {
                 'email_id': message_id,
                 'uid': uid_str,
-                'processed_at': datetime.now().isoformat(),
+                'processed_at': datetime.now(pytz.UTC).isoformat(),
             }
             if connection_id:
                 data['connection_id'] = connection_id
@@ -668,7 +680,7 @@ Rules:
 - "Going with option X" = deal won, needs both change_deal_status and update_crm
 - Default business is "{ctx['default_business']}" unless another business is mentioned
 - For callbacks without a specific date, default to next business day
-- For follow-ups, "in X days" means X calendar days from today ({datetime.now().strftime('%Y-%m-%d')})
+- For follow-ups, "in X days" means X calendar days from today ({_now_local(user_context).strftime('%Y-%m-%d')})
 """
 
     def _build_email_prompt(self, subject, sender, content, user_context=None):
@@ -729,7 +741,7 @@ Rules:
 - If customer asks questions → create_task to respond, priority medium
 - Internal/admin emails → lower priority unless time-sensitive
 - Default business is "{ctx['default_business']}" unless email content clearly relates to another business
-- Today's date: {datetime.now().strftime('%Y-%m-%d')}
+- Today's date: {_now_local(user_context).strftime('%Y-%m-%d')}
 - If no actions needed, return {{"summary": "...", "customer_name": null, "actions": []}}
 """
 
@@ -807,7 +819,7 @@ Rules:
     def _increment_task_count(self, user_id):
         """Increment tasks_this_month for usage metering"""
         try:
-            current_month = datetime.now().strftime('%Y-%m')
+            current_month = _now_local().strftime('%Y-%m')
             # Fetch current counter
             result = self.tm.supabase.table('users') \
                 .select('tasks_this_month, tasks_month_reset') \
@@ -951,7 +963,7 @@ Rules:
 
     def _generate_action_token(self, action):
         """Generate a unique token for an action approval"""
-        raw = f"{action.get('title', '')}-{datetime.now().isoformat()}-{uuid.uuid4()}"
+        raw = f"{action.get('title', '')}-{datetime.now(pytz.UTC).isoformat()}-{uuid.uuid4()}"
         return hashlib.sha256(raw.encode()).hexdigest()[:32]
 
     def _store_pending_action(self, token, action, user_context=None):
@@ -962,8 +974,8 @@ Rules:
                 'action_type': action.get('action_type'),
                 'action_data': json.dumps(action),
                 'status': 'pending',
-                'created_at': datetime.now().isoformat(),
-                'expires_at': (datetime.now() + timedelta(days=7)).isoformat(),
+                'created_at': datetime.now(pytz.UTC).isoformat(),
+                'expires_at': (datetime.now(pytz.UTC) + timedelta(days=7)).isoformat(),
             }
             if user_context:
                 data['user_id'] = user_context.user_id
@@ -1017,7 +1029,7 @@ Rules:
             # Mark as processed
             self.tm.supabase.table('pending_actions').update({
                 'status': 'approved' if success else 'failed',
-                'processed_at': datetime.now().isoformat(),
+                'processed_at': datetime.now(pytz.UTC).isoformat(),
             }).eq('token', token).execute()
 
             return {'success': success, 'message': message}
@@ -1062,7 +1074,7 @@ Rules:
         try:
             self.tm.supabase.table('pending_actions').update({
                 'status': 'rejected',
-                'processed_at': datetime.now().isoformat(),
+                'processed_at': datetime.now(pytz.UTC).isoformat(),
             }).eq('token', token).execute()
             return {'success': True, 'message': 'Action skipped'}
         except Exception as e:
@@ -1106,7 +1118,7 @@ Rules:
             'description': f"Add to CRM notes:\n{notes}",
             'business': default_business,
             'priority': 'high',
-            'due_date': datetime.now().strftime('%Y-%m-%d'),
+            'due_date': _now_local(user_context).strftime('%Y-%m-%d'),
             'category': 'CRM Update',
         }, user_context=user_context)
 
@@ -1125,7 +1137,7 @@ Rules:
             'description': action.get('description', ''),
             'business': default_business,
             'priority': 'high',
-            'due_date': datetime.now().strftime('%Y-%m-%d'),
+            'due_date': _now_local(user_context).strftime('%Y-%m-%d'),
             'category': 'Quote Follow Up',
         }, user_context=user_context)
 
@@ -1166,7 +1178,7 @@ Rules:
             'description': action.get('description', ''),
             'business': default_business,
             'priority': 'urgent',
-            'due_date': datetime.now().strftime('%Y-%m-%d'),
+            'due_date': _now_local(user_context).strftime('%Y-%m-%d'),
             'category': 'General',
         }, user_context=user_context)
 

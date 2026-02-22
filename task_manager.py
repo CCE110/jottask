@@ -531,10 +531,9 @@ class TaskManager:
     def complete_checklist_item(self, item_id):
         """Mark a checklist item as completed"""
         try:
-            from datetime import datetime
             result = self.supabase.table('task_checklist_items').update({
                 'is_completed': True,
-                'completed_at': datetime.now().isoformat()
+                'completed_at': datetime.now(pytz.UTC).isoformat()
             }).eq('id', item_id).execute()
             return bool(result.data)
         except Exception as e:
@@ -557,7 +556,7 @@ class TaskManager:
                     # Mark as completed
                     self.supabase.table('task_checklist_items').update({
                         'is_completed': True,
-                        'completed_at': datetime.now().isoformat()
+                        'completed_at': datetime.now(pytz.UTC).isoformat()
                     }).eq('id', item['id']).execute()
                 else:
                     # Mark as incomplete (in case it was unchecked)
