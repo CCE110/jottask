@@ -4636,8 +4636,19 @@ def debug_reminders():
             is_today = (due_date == today_str)
             is_yesterday = (due_date == yesterday_str)
 
-            if not is_today and not is_yesterday:
-                continue  # Not relevant
+            # For send mode, look back up to 7 days; for display, just today+yesterday
+            if should_send:
+                try:
+                    due_dt = datetime.strptime(due_date, '%Y-%m-%d').date()
+                    days_ago = (now.date() - due_dt).days
+                    if days_ago < 0 or days_ago > 7:
+                        continue
+                except:
+                    if not is_today and not is_yesterday:
+                        continue
+            else:
+                if not is_today and not is_yesterday:
+                    continue
 
             # Parse time
             parts = due_time.split(':')
@@ -4647,10 +4658,14 @@ def debug_reminders():
                 lines.append(f"TASK {t['id'][:8]}  BAD TIME FORMAT: '{due_time}'")
                 continue
 
-            if is_today:
-                task_due = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
-            else:
-                task_due = (now - _td(days=1)).replace(hour=hour, minute=minute, second=0, microsecond=0)
+            try:
+                due_dt = datetime.strptime(due_date, '%Y-%m-%d').date()
+                task_due = user_tz.localize(datetime(due_dt.year, due_dt.month, due_dt.day, hour, minute, 0))
+            except:
+                if is_today:
+                    task_due = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+                else:
+                    task_due = (now - _td(days=1)).replace(hour=hour, minute=minute, second=0, microsecond=0)
 
             diff = (task_due - now).total_seconds() / 60
 
@@ -4671,7 +4686,7 @@ def debug_reminders():
             lines.append(f"TASK {t['id'][:8]}  '{t['title'][:40]}'  due={due_date} {due_time}  diff={diff:.0f}m  sent={reminder_sent}  -> {status_str}")
 
             # Actually send if requested
-            if should_send and not already_sent and diff < 0 and diff >= -1440:
+            if should_send and not already_sent and diff < 0:
                 display_time = task_due.strftime('%I:%M %p')
                 from saas_scheduler import generate_reminder_email_html
                 html = generate_reminder_email_html(t, display_time, user.get('full_name', ''), is_overdue=True)
