@@ -321,7 +321,7 @@ def send_daily_summary(user):
 
     # Send email
     subject = f"Your Daily Summary - {datetime.now(pytz.timezone(user_timezone)).strftime('%b %d')}"
-    success, error = send_email(user_email, subject, html_content)
+    success, error = send_email(user_email, subject, html_content, category='summary', user_id=user_id)
 
     if success:
         # Update last_summary_sent_at
@@ -525,7 +525,8 @@ def check_and_send_reminders():
                     task, display_time, user.get('full_name', ''), is_overdue=is_overdue
                 )
 
-                success, error = send_email(user['email'], subject, html_content)
+                success, error = send_email(user['email'], subject, html_content,
+                                           category='reminder', user_id=user_id, task_id=task['id'])
 
                 if not success:
                     print(f"   ❌ Failed to send: {error}")
@@ -583,7 +584,8 @@ def check_and_send_reminders():
                     task, display_time, user.get('full_name', ''), is_overdue=is_overdue
                 )
 
-                success, error = send_email(user['email'], subject, html_content)
+                success, error = send_email(user['email'], subject, html_content,
+                                           category='reminder', user_id=user_id, task_id=task['id'])
 
                 if not success:
                     print(f"   ❌ Failed to send: {error}")

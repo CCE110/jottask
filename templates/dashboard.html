@@ -33,6 +33,27 @@
 </nav>
 
 <main class="main" style="max-width: 1400px;">
+    {% if system_health and system_health.worker_status != 'healthy' %}
+    <!-- System Health Banner -->
+    <div style="background: {% if system_health.worker_status == 'down' %}#FEE2E2{% else %}#FEF3C7{% endif %}; border: 1px solid {% if system_health.worker_status == 'down' %}#FECACA{% else %}#FDE68A{% endif %}; border-radius: 12px; padding: 16px 20px; margin-bottom: 16px; display: flex; align-items: center; gap: 12px;">
+        <div style="font-size: 20px;">{% if system_health.worker_status == 'down' %}&#x26A0;{% else %}&#x23F3;{% endif %}</div>
+        <div style="flex: 1;">
+            <div style="font-weight: 600; color: {% if system_health.worker_status == 'down' %}#991B1B{% else %}#92400E{% endif %};">
+                Worker {{ system_health.worker_status | upper }}
+                {% if system_health.heartbeat_age_minutes %}
+                    — last heartbeat {{ system_health.heartbeat_age_minutes | round(0) | int }}m ago
+                {% else %}
+                    — no heartbeat recorded
+                {% endif %}
+            </div>
+            <div style="font-size: 13px; color: #6B7280; margin-top: 4px;">
+                24h: {{ system_health.emails_sent_24h }} sent, {{ system_health.emails_failed_24h }} failed, {{ system_health.errors_24h }} errors
+            </div>
+        </div>
+        <a href="/api/system/health" style="color: #6366F1; font-size: 13px; white-space: nowrap;">View Details</a>
+    </div>
+    {% endif %}
+
     <!-- Stats -->
     <div class="stats-grid">
         <div class="stat-card">

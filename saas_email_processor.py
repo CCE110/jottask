@@ -1488,25 +1488,41 @@ def edit_action():
 if __name__ == "__main__":
     import time
     from saas_scheduler import check_and_send_reminders, get_users_needing_summary, send_daily_summary
+    from monitoring import log_heartbeat, log_error, send_self_alert, cleanup_old_events
 
     processor = AIEmailProcessor()
     poll_interval = int(os.getenv('POLL_INTERVAL_SECONDS', '60'))
     print(f"Starting worker (email processor + scheduler) every {poll_interval}s...")
     print(f"  Email processing: every cycle")
     print(f"  Reminders + daily summaries: every cycle")
+    print(f"  Monitoring: heartbeat every cycle, cleanup daily")
+
+    tick = 0
+    consecutive_failures = 0
+    last_cleanup_date = None
 
     while True:
+        tick += 1
+        tick_errors = 0
+        emails_processed = 0
+        reminders_sent = 0
+        summaries_sent = 0
+
         try:
             # 1. Process emails
             processor.process_all_connections()
         except Exception as e:
             print(f"Error in email processing: {e}")
+            log_error('email_processing', e, category='email')
+            tick_errors += 1
 
         try:
             # 2. Check and send task reminders
             check_and_send_reminders()
         except Exception as e:
             print(f"Error in reminders: {e}")
+            log_error('reminders', e, category='reminder')
+            tick_errors += 1
 
         try:
             # 3. Check and send daily summaries
@@ -1515,8 +1531,34 @@ if __name__ == "__main__":
                 print(f"📬 Found {len(users)} user(s) needing daily summary")
                 for user in users:
                     send_daily_summary(user)
+                    summaries_sent += 1
         except Exception as e:
             print(f"Error in daily summaries: {e}")
+            log_error('daily_summaries', e, category='summary')
+            tick_errors += 1
 
-        print(f"Sleeping {poll_interval}s until next check...")
+        # Track consecutive failures for self-alerting
+        if tick_errors > 0:
+            consecutive_failures += 1
+            if consecutive_failures >= 3:
+                send_self_alert(
+                    f"Worker has {consecutive_failures} consecutive failed ticks",
+                    f"Tick #{tick}: {tick_errors} error(s) this cycle. "
+                    f"Check Railway logs for details."
+                )
+        else:
+            consecutive_failures = 0
+
+        # Log heartbeat every cycle
+        log_heartbeat(tick, emails_processed=emails_processed, reminders_sent=reminders_sent,
+                       summaries_sent=summaries_sent, errors=tick_errors)
+
+        # Daily cleanup of old monitoring events
+        from datetime import date as _date
+        today = _date.today()
+        if last_cleanup_date != today:
+            cleanup_old_events(days=30)
+            last_cleanup_date = today
+
+        print(f"Sleeping {poll_interval}s until next check... (tick #{tick})")
         time.sleep(poll_interval)

@@ -2030,13 +2030,24 @@ def dashboard():
         'completed_this_week': len([t for t in (completed_tasks_result.data or []) if t.get('completed_at')])
     }
 
+    # System health for admin banner
+    system_health = None
+    admin_id = 'e515407e-dbd6-4331-a815-1878815c89bc'
+    if user_id == admin_id:
+        try:
+            from monitoring import get_system_health
+            system_health = get_system_health()
+        except Exception:
+            pass
+
     return render_template(
         'dashboard.html',
         title='Dashboard',
         tasks=all_tasks,
         stats=stats,
         today=today,
-        search_query=search_query
+        search_query=search_query,
+        system_health=system_health
     )
 
 
@@ -3914,6 +3925,32 @@ def chat_message():
     }).execute()
 
     return jsonify({'response': response, 'sender_type': 'bot'})
+
+
+# ============================================
+# SYSTEM HEALTH ENDPOINTS
+# ============================================
+
+@app.route('/health')
+def health_check():
+    """Public health endpoint for uptime monitors. No auth required.
+    Returns 200 if worker heartbeat < 5 min, 503 if stale/missing."""
+    from monitoring import get_system_health
+    health = get_system_health()
+    status_code = 200 if health['worker_status'] == 'healthy' else 503
+    return jsonify({
+        'status': health['worker_status'],
+        'last_heartbeat': health['last_heartbeat'],
+        'heartbeat_age_minutes': health['heartbeat_age_minutes'],
+    }), status_code
+
+
+@app.route('/api/system/health')
+@login_required
+def api_system_health():
+    """Authenticated endpoint with full health data."""
+    from monitoring import get_system_health
+    return jsonify(get_system_health())
 
 
 # ============================================
