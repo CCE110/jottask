@@ -97,7 +97,7 @@ class AIEmailProcessor:
             'set_reminder',
             'categorise_task',
             'snooze_task',
-            'update_task_notes',
+            'update_task_notes',  # AI-routed note to existing task
         ]
         self.approval_action_types = [
             'update_crm',           # Writing to PipeReply — hard to undo
@@ -258,12 +258,17 @@ class AIEmailProcessor:
                 if norm_subject:
                     seen_subjects.add(norm_subject)
 
+                sender_raw = email_body.get('From', '')
+                sender_addr = self._get_sender_email_address(sender_raw)
+
                 self.process_single_email_body(email_body, user_context=user_ctx)
                 processed_count += 1
 
                 self._mark_email_processed(
                     message_id, msg_id_str,
-                    connection_id=user_ctx.connection_id, user_id=user_ctx.user_id
+                    connection_id=user_ctx.connection_id, user_id=user_ctx.user_id,
+                    sender_email=sender_addr, sender_name=sender_raw,
+                    subject=raw_subject,
                 )
 
                 mail.uid('store', msg_id, '+FLAGS', '\\Seen')
@@ -406,12 +411,20 @@ class AIEmailProcessor:
                 if norm_subject:
                     seen_subjects.add(norm_subject)
 
+                # Extract sender info for history tracking
+                sender_raw = email_body.get('From', '')
+                sender_addr = self._get_sender_email_address(sender_raw)
+
                 # Process this email
                 self.process_single_email_body(email_body)
                 processed_count += 1
 
-                # Mark as processed in Supabase
-                self._mark_email_processed(message_id, msg_id_str)
+                # Mark as processed in Supabase with sender info
+                self._mark_email_processed(
+                    message_id, msg_id_str,
+                    sender_email=sender_addr, sender_name=sender_raw,
+                    subject=raw_subject,
+                )
 
                 # Also mark as read on the server
                 mail.uid('store', msg_id, '+FLAGS', '\\Seen')
@@ -451,8 +464,10 @@ class AIEmailProcessor:
             print(f"Warning: Could not load processed emails: {e}")
             return set()
 
-    def _mark_email_processed(self, message_id, uid_str='', connection_id=None, user_id=None):
-        """Mark an email as processed in Supabase"""
+    def _mark_email_processed(self, message_id, uid_str='', connection_id=None,
+                              user_id=None, sender_email=None, sender_name=None,
+                              subject=None):
+        """Mark an email as processed in Supabase, with optional sender info for history"""
         try:
             data = {
                 'email_id': message_id,
@@ -463,6 +478,12 @@ class AIEmailProcessor:
                 data['connection_id'] = connection_id
             if user_id:
                 data['user_id'] = user_id
+            if sender_email:
+                data['sender_email'] = sender_email.lower()
+            if sender_name:
+                data['sender_name'] = sender_name
+            if subject:
+                data['subject'] = subject[:500]  # Cap length
 
             self.tm.supabase.table('processed_emails').insert(data).execute()
             self.processed_emails.add(message_id)
@@ -581,13 +602,54 @@ class AIEmailProcessor:
             'extra_context': '',
         }
 
+    def _get_sender_email_address(self, sender_raw):
+        """Extract clean email address from a From header like 'John Smith <john@example.com>'"""
+        import re
+        match = re.search(r'<([^>]+)>', sender_raw)
+        if match:
+            return match.group(1).lower()
+        # Maybe it's just a bare email
+        if '@' in sender_raw:
+            return sender_raw.strip().lower()
+        return ''
+
+    def _get_existing_tasks_for_sender(self, sender_email, user_context=None):
+        """Query open tasks that match this sender's email or name."""
+        if not sender_email:
+            return []
+        try:
+            query = self.tm.supabase.table('tasks')\
+                .select('id, title, due_date, status, client_name, client_email, created_at')\
+                .eq('status', 'pending')\
+                .eq('client_email', sender_email)\
+                .order('created_at', desc=True)\
+                .limit(5)
+
+            if user_context:
+                query = query.eq('user_id', user_context.user_id)
+
+            result = query.execute()
+            return result.data or []
+        except Exception as e:
+            print(f"  Warning: could not query sender tasks: {e}")
+            return []
+
     def analyze_with_claude(self, subject, sender, content, email_type, user_context=None):
         """Use Claude to analyze email with solar-sales-aware prompt"""
+
+        # For regular emails, look up existing tasks for this sender
+        sender_tasks = []
+        sender_email = ''
+        if email_type != 'plaud_transcription':
+            sender_email = self._get_sender_email_address(sender)
+            if sender_email:
+                sender_tasks = self._get_existing_tasks_for_sender(sender_email, user_context)
 
         if email_type == 'plaud_transcription':
             prompt = self._build_plaud_prompt(subject, content, user_context=user_context)
         else:
-            prompt = self._build_email_prompt(subject, sender, content, user_context=user_context)
+            prompt = self._build_email_prompt(subject, sender, content, user_context=user_context,
+                                              sender_email=sender_email, sender_tasks=sender_tasks)
 
         try:
             response = self.claude.messages.create(
@@ -683,12 +745,31 @@ Rules:
 - For follow-ups, "in X days" means X calendar days from today ({_now_local(user_context).strftime('%Y-%m-%d')})
 """
 
-    def _build_email_prompt(self, subject, sender, content, user_context=None):
+    def _build_email_prompt(self, subject, sender, content, user_context=None,
+                            sender_email='', sender_tasks=None):
         """Build Claude prompt for regular forwarded emails"""
         ctx = self._build_user_prompt_context(user_context)
 
         businesses_list = '\n'.join(f'- {name}' for name in ctx['businesses'].keys())
         categories_list = '|'.join(ctx['categories'])
+
+        # Build sender context section if we have existing tasks
+        sender_context = ''
+        if sender_tasks:
+            task_lines = []
+            for t in sender_tasks:
+                task_lines.append(f'  - [{t["id"][:8]}] "{t["title"]}" (due: {t.get("due_date", "none")}, status: {t["status"]})')
+            sender_context = f"""
+EXISTING OPEN TASKS FOR THIS SENDER ({sender_email}):
+{chr(10).join(task_lines)}
+
+IMPORTANT: If this email is a reply/update related to one of the above tasks, set action_type to "update_task_notes" and include "existing_task_id" with the task ID. Only create a NEW task if this email is about a genuinely different topic or request.
+"""
+        elif sender_email:
+            sender_context = f"""
+SENDER EMAIL: {sender_email}
+No existing open tasks found for this sender — treat as a new enquiry if actionable.
+"""
 
         return f"""You are {ctx['user_name']}'s AI task assistant for their business.
 
@@ -698,7 +779,7 @@ EMAIL DETAILS:
 From: {sender}
 Subject: {subject}
 Content: {content}
-
+{sender_context}
 {ctx['user_name'].upper()}'S BUSINESS CONTEXT:
 - {ctx['user_name']} is {ctx['role_description']}
 - Workflow: {ctx['workflow']}
@@ -713,9 +794,11 @@ EXTRACT actions as JSON:
 {{
     "summary": "One-line summary of what this email is about",
     "customer_name": "Customer FULL NAME (first + last) if this relates to a customer, null if not",
+    "email_address": "{sender_email or 'null'}",
     "actions": [
         {{
-            "action_type": "create_task|update_crm|send_email|create_calendar_event|change_deal_status|set_callback",
+            "action_type": "create_task|update_task_notes|update_crm|send_email|create_calendar_event|change_deal_status|set_callback",
+            "existing_task_id": "If action_type is update_task_notes, the task ID to add notes to. null otherwise.",
             "title": "[Customer FULL NAME]- [concise status or action needed]",
             "description": "What needs to be done — include useful context like referral source, what they're waiting on, etc",
             "customer_name": "Customer FULL NAME (first + last)",
@@ -735,6 +818,7 @@ Rules:
 - CRITICAL: Task titles MUST use format "[Full Name]- [concise status/action]". Examples: "Graham Kildey- awaiting site photos and electricity bills", "Paul Thompson- follow up on battery quote", "Todd McHenry- site visit 8am Black Milk". NO space before the dash. Never use generic prefixes like "CRM Update:" or "New Lead:" — put the customer name first, then what's happening
 - If only a first name appears in the subject, look in the email body/content for the full name
 - Always scrape and capture email addresses — check the From header, email body, signatures, and any contact info in the content
+- If existing open tasks are listed above and this email is a follow-up, use action_type "update_task_notes" with the existing_task_id
 - New lead assignment emails → create_task with category "New Lead", priority "high", due today
 - Customer replies about quotes → create_task with category "Quote Follow Up"
 - If customer says yes/accepts → change_deal_status + create_task for next steps
@@ -757,7 +841,7 @@ Rules:
             return self.TIER_2_APPROVE
 
         # Default: auto-execute for known safe types, approve for unknown
-        if action_type in ['create_task', 'set_callback', 'set_reminder']:
+        if action_type in ['create_task', 'set_callback', 'set_reminder', 'update_task_notes']:
             return self.TIER_1_AUTO
 
         return self.TIER_2_APPROVE
@@ -771,7 +855,9 @@ Rules:
         action_type = action.get('action_type', '')
 
         try:
-            if action_type in ['create_task', 'set_callback', 'set_reminder']:
+            if action_type == 'update_task_notes':
+                self._update_existing_task(action, user_context=user_context)
+            elif action_type in ['create_task', 'set_callback', 'set_reminder']:
                 self._create_task(action, user_context=user_context)
             else:
                 print(f"  Unknown auto action type: {action_type}")
@@ -779,8 +865,41 @@ Rules:
         except Exception as e:
             print(f"  Error executing action '{action.get('title', '')}': {e}")
 
+    def _update_existing_task(self, action, user_context=None):
+        """Add a note to an existing task (AI-routed update, not a new task)"""
+        existing_task_id = action.get('existing_task_id', '')
+        if not existing_task_id:
+            # Fallback: create a new task if no ID provided
+            print(f"  Warning: update_task_notes without existing_task_id, creating new task")
+            self._create_task(action, user_context=user_context)
+            return
+
+        note_content = f"{action.get('title', 'Email update')}"
+        if action.get('description'):
+            note_content += f"\n{action['description']}"
+
+        self.tm.add_note(
+            task_id=existing_task_id,
+            content=note_content,
+            source='email',
+        )
+
+        # Update client email on the task if we now have it
+        client_email = action.get('email_address') or ''
+        if client_email:
+            try:
+                self.tm.update_task_client_info(
+                    existing_task_id,
+                    client_email=client_email,
+                )
+            except Exception:
+                pass
+
+        print(f"  [AUTO] Note added to task {existing_task_id[:8]}: {action.get('title', '')[:40]}")
+
     def _create_task(self, action, user_context=None):
-        """Create a task in Supabase"""
+        """Create a task in Supabase, or add a note to an existing task if the
+        same client already has an open task."""
         if user_context:
             business_id = user_context.businesses.get(
                 action.get('business', ''),
@@ -793,6 +912,46 @@ Rules:
             )
             user_id = os.getenv('ROB_USER_ID', 'e515407e-dbd6-4331-a815-1878815c89bc')
 
+        client_name = action.get('customer_name') or ''
+        client_email = action.get('email_address') or ''
+
+        # --- Smart routing: check for existing open task for this client ---
+        existing_task = None
+        if client_email or client_name:
+            try:
+                existing_task = self.tm.find_existing_task_by_client(
+                    client_email=client_email or None,
+                    client_name=client_name or None,
+                )
+            except Exception as e:
+                print(f"  Warning: client match lookup failed: {e}")
+
+        if existing_task:
+            # Add a note to the existing task instead of creating a duplicate
+            note_content = f"Email update: {action['title']}"
+            if action.get('description'):
+                note_content += f"\n{action['description']}"
+
+            self.tm.add_note(
+                task_id=existing_task['id'],
+                content=note_content,
+                source='email',
+            )
+
+            # Update client_email on the existing task if we now have it
+            if client_email and not existing_task.get('client_email'):
+                try:
+                    self.tm.update_task_client_info(
+                        existing_task['id'],
+                        client_email=client_email,
+                    )
+                except Exception:
+                    pass
+
+            print(f"  [AUTO] Note added to existing task '{existing_task['title'][:40]}' instead of creating duplicate")
+            return
+
+        # --- No existing task: create a new one ---
         task_data = {
             'business_id': business_id,
             'user_id': user_id,
@@ -804,6 +963,12 @@ Rules:
             'is_meeting': action.get('action_type') == 'create_calendar_event',
             'status': 'pending',
         }
+
+        # Add client info to the task record
+        if client_name:
+            task_data['client_name'] = client_name
+        if client_email:
+            task_data['client_email'] = client_email.lower()
 
         result = self.tm.supabase.table('tasks').insert(task_data).execute()
 

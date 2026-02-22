@@ -405,11 +405,11 @@ def generate_reminder_email_html(task, due_time_str, user_name, is_overdue=False
 def check_and_send_reminders():
     """Check for tasks due soon and send reminder emails.
 
-    Failsafe design — reminders are NEVER silently missed:
+    Simple, reliable design:
     1. Upcoming: send 30 min before due time (normal reminder)
-    2. Catch-up: if due time passed today/yesterday and no reminder was sent,
-       send an overdue reminder on the next scheduler tick
-    3. Duplicate prevention: reminder_sent_at tracked per task per day
+    2. Catch-up: if due time has passed and no reminder was ever sent,
+       send an overdue reminder (capped at 48h overdue)
+    3. Duplicate prevention: skip any task where reminder_sent_at is not null
     """
     print(f"\n🔔 Checking task reminders...")
 
@@ -426,20 +426,21 @@ def check_and_send_reminders():
 
         print(f"   Found {len(users)} user(s)")
 
-        # Get ALL pending tasks — filter due_time in Python to avoid
-        # supabase client filter issues with null checks
+        # Get pending tasks that have NOT yet received a reminder
+        # (reminder_sent_at is null) — this is the primary dedup mechanism
         all_tasks = supabase.table('tasks')\
             .select('id, title, due_date, due_time, priority, status, client_name, user_id, reminder_sent_at')\
             .eq('status', 'pending')\
+            .is_('reminder_sent_at', 'null')\
             .execute()
 
         raw_tasks = all_tasks.data or []
         # Filter to tasks that have a due_time set (in Python — more reliable)
         tasks = [t for t in raw_tasks if t.get('due_time')]
 
-        print(f"   {len(raw_tasks)} pending tasks total, {len(tasks)} with due_time")
+        print(f"   {len(raw_tasks)} pending tasks without reminder, {len(tasks)} with due_time")
         if not tasks:
-            print("   No pending tasks with due times")
+            print("   No pending tasks needing reminders")
             return
 
         sent_count = 0
@@ -453,9 +454,6 @@ def check_and_send_reminders():
                 user = users[user_id]
                 user_tz = pytz.timezone(user.get('timezone', 'Australia/Brisbane'))
                 now = datetime.now(user_tz)
-                today_str = now.date().isoformat()
-                day_before_str = (now.date() - timedelta(days=1)).isoformat()
-                two_days_ago_str = (now.date() - timedelta(days=2)).isoformat()
 
                 task_due_date = task.get('due_date')
                 if not task_due_date:
@@ -463,10 +461,6 @@ def check_and_send_reminders():
 
                 # Normalize due_date — handle both "2026-02-21" and "2026-02-21T00:00:00" formats
                 task_due_date = str(task_due_date)[:10]
-
-                # Process tasks due today or within last 2 days (48h catch-up window)
-                if task_due_date not in (today_str, day_before_str, two_days_ago_str):
-                    continue
 
                 # Parse due time — handle "HH:MM", "HH:MM:SS", "HH:MM:SS.ffffff"
                 due_time_str = str(task['due_time'])
@@ -485,39 +479,30 @@ def check_and_send_reminders():
                 except:
                     task_due = now.replace(hour=hour, minute=minute, second=second, microsecond=0)
 
-                # Log candidate task for debugging
+                # Calculate how far away (negative = overdue)
                 time_diff = (task_due - now).total_seconds() / 60
-                print(f"   Candidate: '{task['title'][:40]}' due={task_due_date} {due_time_str} diff={time_diff:.0f}m sent_at={task.get('reminder_sent_at')}")
 
-                # Check if reminder already sent for this task's due date
-                if task.get('reminder_sent_at'):
-                    try:
-                        sent_at = datetime.fromisoformat(
-                            str(task['reminder_sent_at']).replace('Z', '+00:00')
-                        )
-                        sent_at_local = sent_at.astimezone(user_tz)
-                        if sent_at_local.date() >= task_due.date():
-                            print(f"   -> Skipped (already sent {sent_at_local.date()})")
-                            continue
-                    except Exception as parse_err:
-                        print(f"   -> Warning: could not parse reminder_sent_at: {parse_err}")
+                # Skip tasks more than 48h overdue (2880 minutes)
+                if time_diff < -2880:
+                    continue
+
+                # Skip future tasks not yet in the 30-min window
+                if time_diff > 30:
+                    continue
+
+                # Log candidate task for debugging
+                print(f"   Candidate: '{task['title'][:40]}' due={task_due_date} {due_time_str} diff={time_diff:.0f}m")
 
                 # Decide whether to send
                 is_overdue = False
-                should_send = False
 
                 if 0 <= time_diff <= 30:
                     # Normal reminder: task due within next 30 minutes
-                    should_send = True
+                    pass
                 elif time_diff < 0:
-                    # Overdue catch-up: task due time has passed, no reminder sent
-                    # Cap at 48 hours to catch missed reminders from deploys/restarts
-                    if time_diff >= -2880:
-                        should_send = True
-                        is_overdue = True
-
-                if not should_send:
-                    print(f"   -> Skipped (not in window: {time_diff:.0f}m)")
+                    # Overdue: task due time has passed, no reminder sent yet
+                    is_overdue = True
+                else:
                     continue
 
                 # Format due time for display

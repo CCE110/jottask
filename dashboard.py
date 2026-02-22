@@ -4676,15 +4676,8 @@ def debug_reminders():
 
             diff = (task_due - now).total_seconds() / 60
 
-            # Check already sent
-            already_sent = False
-            if reminder_sent:
-                try:
-                    sent_at = datetime.fromisoformat(str(reminder_sent).replace('Z', '+00:00'))
-                    if sent_at.astimezone(user_tz).date() >= task_due.date():
-                        already_sent = True
-                except:
-                    pass
+            # Check already sent — simple: if reminder_sent_at is set, it's done
+            already_sent = bool(reminder_sent)
 
             status_str = "ALREADY SENT" if already_sent else ("IN WINDOW" if diff <= 30 else f"not yet ({diff:.0f}m)")
             if not already_sent and diff < 0:
