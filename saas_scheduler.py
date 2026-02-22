@@ -454,7 +454,8 @@ def check_and_send_reminders():
                 user_tz = pytz.timezone(user.get('timezone', 'Australia/Brisbane'))
                 now = datetime.now(user_tz)
                 today_str = now.date().isoformat()
-                yesterday_str = (now.date() - timedelta(days=1)).isoformat()
+                day_before_str = (now.date() - timedelta(days=1)).isoformat()
+                two_days_ago_str = (now.date() - timedelta(days=2)).isoformat()
 
                 task_due_date = task.get('due_date')
                 if not task_due_date:
@@ -463,10 +464,8 @@ def check_and_send_reminders():
                 # Normalize due_date — handle both "2026-02-21" and "2026-02-21T00:00:00" formats
                 task_due_date = str(task_due_date)[:10]
 
-                # Only process tasks due today or yesterday (catch-up window)
-                is_today = (task_due_date == today_str)
-                is_yesterday = (task_due_date == yesterday_str)
-                if not is_today and not is_yesterday:
+                # Process tasks due today or within last 2 days (48h catch-up window)
+                if task_due_date not in (today_str, day_before_str, two_days_ago_str):
                     continue
 
                 # Parse due time — handle "HH:MM", "HH:MM:SS", "HH:MM:SS.ffffff"
@@ -480,12 +479,11 @@ def check_and_send_reminders():
                     continue
 
                 # Build the full due datetime in user's timezone
-                if is_today:
+                try:
+                    due_dt = datetime.strptime(task_due_date, '%Y-%m-%d').date()
+                    task_due = user_tz.localize(datetime(due_dt.year, due_dt.month, due_dt.day, hour, minute, second))
+                except:
                     task_due = now.replace(hour=hour, minute=minute, second=second, microsecond=0)
-                else:
-                    # Yesterday's task
-                    yesterday_dt = now - timedelta(days=1)
-                    task_due = yesterday_dt.replace(hour=hour, minute=minute, second=second, microsecond=0)
 
                 # Log candidate task for debugging
                 time_diff = (task_due - now).total_seconds() / 60
@@ -513,8 +511,8 @@ def check_and_send_reminders():
                     should_send = True
                 elif time_diff < 0:
                     # Overdue catch-up: task due time has passed, no reminder sent
-                    # Cap at 24 hours to avoid spamming ancient tasks
-                    if time_diff >= -1440:
+                    # Cap at 48 hours to catch missed reminders from deploys/restarts
+                    if time_diff >= -2880:
                         should_send = True
                         is_overdue = True
 
