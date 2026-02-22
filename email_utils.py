@@ -6,7 +6,6 @@ Shared email sending via Resend API
 import os
 import resend
 
-RESEND_API_KEY = os.getenv('RESEND_API_KEY')
 FROM_EMAIL = os.getenv('FROM_EMAIL', 'jottask@flowquote.ai')
 
 
@@ -15,11 +14,13 @@ def send_email(to_email, subject, html_body):
     Send an email via Resend API.
     Returns: (success: bool, error: str or None)
     """
-    if not RESEND_API_KEY:
-        print("RESEND_API_KEY not configured")
+    # Read API key at call time (not import time) so env vars are always fresh
+    api_key = os.getenv('RESEND_API_KEY')
+    if not api_key:
+        print("RESEND_API_KEY not configured — cannot send email")
         return False, "RESEND_API_KEY not configured"
 
-    resend.api_key = RESEND_API_KEY
+    resend.api_key = api_key
 
     try:
         params = {

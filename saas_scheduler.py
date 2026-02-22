@@ -356,10 +356,17 @@ def generate_reminder_email_html(task, due_time_str, user_name, is_overdue=False
 
     if is_overdue:
         heading = 'Overdue Task'
-        subtext = f'Was due at {due_time_str}'
+        # Handle "today"/"yesterday" for date-only tasks vs time strings
+        if due_time_str in ('today', 'yesterday'):
+            subtext = f'Was due {due_time_str}'
+        else:
+            subtext = f'Was due at {due_time_str}'
     else:
         heading = 'Task Reminder'
-        subtext = f'Due at {due_time_str}'
+        if due_time_str in ('today', 'yesterday'):
+            subtext = f'Due {due_time_str}'
+        else:
+            subtext = f'Due at {due_time_str}'
 
     html = f"""
     <html>
@@ -405,18 +412,18 @@ def generate_reminder_email_html(task, due_time_str, user_name, is_overdue=False
 def check_and_send_reminders():
     """Check for tasks due soon and send reminder emails.
 
-    Simple, reliable design:
-    1. Upcoming: send 30 min before due time (normal reminder)
-    2. Catch-up: if due time has passed and no reminder was ever sent,
-       send an overdue reminder (capped at 48h overdue)
-    3. Duplicate prevention: skip any task where reminder_sent_at is not null
+    Design:
+    1. Tasks WITH due_time: send reminder N minutes before (user setting, default 30).
+       If overdue and no reminder was ever sent, send overdue notice (up to 7 days).
+    2. Tasks with due_date=today but NO due_time: send a morning reminder (8 AM).
+    3. Duplicate prevention: skip any task where reminder_sent_at is not null.
     """
     print(f"\n🔔 Checking task reminders...")
 
     try:
-        # Get all users (we need their timezones and emails)
+        # Get all users (we need their timezones, emails, and reminder settings)
         users_result = supabase.table('users').select(
-            'id, email, full_name, timezone'
+            'id, email, full_name, timezone, reminder_minutes_before'
         ).execute()
         users = {u['id']: u for u in (users_result.data or [])}
 
@@ -427,7 +434,6 @@ def check_and_send_reminders():
         print(f"   Found {len(users)} user(s)")
 
         # Get pending tasks that have NOT yet received a reminder
-        # (reminder_sent_at is null) — this is the primary dedup mechanism
         all_tasks = supabase.table('tasks')\
             .select('id, title, due_date, due_time, priority, status, client_name, user_id, reminder_sent_at')\
             .eq('status', 'pending')\
@@ -435,41 +441,45 @@ def check_and_send_reminders():
             .execute()
 
         raw_tasks = all_tasks.data or []
-        # Filter to tasks that have a due_time set (in Python — more reliable)
-        tasks = [t for t in raw_tasks if t.get('due_time')]
+        tasks_with_time = [t for t in raw_tasks if t.get('due_time')]
+        tasks_date_only = [t for t in raw_tasks if t.get('due_date') and not t.get('due_time')]
 
-        print(f"   {len(raw_tasks)} pending tasks without reminder, {len(tasks)} with due_time")
-        if not tasks:
-            print("   No pending tasks needing reminders")
-            return
+        print(f"   {len(raw_tasks)} pending tasks without reminder")
+        print(f"   {len(tasks_with_time)} with due_time, {len(tasks_date_only)} with due_date only")
 
         sent_count = 0
+        skip_reasons = {'too_far_future': 0, 'too_old': 0, 'no_user': 0, 'no_date': 0, 'bad_time': 0}
 
-        for task in tasks:
+        # ── Part 1: Tasks WITH due_time ──
+        for task in tasks_with_time:
             try:
                 user_id = task.get('user_id')
                 if not user_id or user_id not in users:
+                    skip_reasons['no_user'] += 1
                     continue
 
                 user = users[user_id]
                 user_tz = pytz.timezone(user.get('timezone', 'Australia/Brisbane'))
                 now = datetime.now(user_tz)
 
+                # Use the user's configured reminder window (default 30 minutes)
+                reminder_window = user.get('reminder_minutes_before') or 30
+
                 task_due_date = task.get('due_date')
                 if not task_due_date:
+                    skip_reasons['no_date'] += 1
                     continue
 
-                # Normalize due_date — handle both "2026-02-21" and "2026-02-21T00:00:00" formats
                 task_due_date = str(task_due_date)[:10]
 
-                # Parse due time — handle "HH:MM", "HH:MM:SS", "HH:MM:SS.ffffff"
+                # Parse due time
                 due_time_str = str(task['due_time'])
                 parts = due_time_str.split(':')
                 try:
                     hour, minute = int(parts[0]), int(parts[1])
                     second = int(float(parts[2])) if len(parts) > 2 else 0
                 except (ValueError, IndexError):
-                    print(f"   Skipping task {task['id']}: bad due_time format '{due_time_str}'")
+                    skip_reasons['bad_time'] += 1
                     continue
 
                 # Build the full due datetime in user's timezone
@@ -479,48 +489,38 @@ def check_and_send_reminders():
                 except:
                     task_due = now.replace(hour=hour, minute=minute, second=second, microsecond=0)
 
-                # Calculate how far away (negative = overdue)
                 time_diff = (task_due - now).total_seconds() / 60
 
-                # Skip tasks more than 48h overdue (2880 minutes)
-                if time_diff < -2880:
+                # Skip tasks more than 7 days overdue (10080 minutes)
+                if time_diff < -10080:
+                    skip_reasons['too_old'] += 1
                     continue
 
-                # Skip future tasks not yet in the 30-min window
-                if time_diff > 30:
+                # Skip future tasks not yet in the reminder window
+                if time_diff > reminder_window:
+                    skip_reasons['too_far_future'] += 1
                     continue
 
-                # Log candidate task for debugging
-                print(f"   Candidate: '{task['title'][:40]}' due={task_due_date} {due_time_str} diff={time_diff:.0f}m")
+                # This task needs a reminder
+                is_overdue = time_diff < 0
 
-                # Decide whether to send
-                is_overdue = False
-
-                if 0 <= time_diff <= 30:
-                    # Normal reminder: task due within next 30 minutes
-                    pass
-                elif time_diff < 0:
-                    # Overdue: task due time has passed, no reminder sent yet
-                    is_overdue = True
-                else:
-                    continue
-
-                # Format due time for display
                 display_time = task_due.strftime('%I:%M %p')
 
                 if is_overdue:
                     overdue_mins = abs(int(time_diff))
                     if overdue_mins < 60:
                         late_label = f"{overdue_mins}m ago"
-                    else:
+                    elif overdue_mins < 1440:
                         late_label = f"{overdue_mins // 60}h {overdue_mins % 60}m ago"
-                    print(f"   Sending OVERDUE reminder ({late_label}): {task['title'][:40]} -> {user['email']}")
+                    else:
+                        late_label = f"{overdue_mins // 1440}d ago"
+                    print(f"   📨 OVERDUE ({late_label}): '{task['title'][:40]}' -> {user['email']}")
                     subject = f"Overdue: {task['title'][:50]} - was due {display_time}"
                 else:
-                    print(f"   Sending reminder: {task['title'][:40]} -> {user['email']}")
+                    mins_away = int(time_diff)
+                    print(f"   📨 Reminder ({mins_away}m away): '{task['title'][:40]}' -> {user['email']}")
                     subject = f"Reminder: {task['title'][:50]} - due {display_time}"
 
-                # Generate and send email
                 html_content = generate_reminder_email_html(
                     task, display_time, user.get('full_name', ''), is_overdue=is_overdue
                 )
@@ -528,25 +528,96 @@ def check_and_send_reminders():
                 success, error = send_email(user['email'], subject, html_content)
 
                 if not success:
-                    print(f"   Failed to send reminder: {error}")
+                    print(f"   ❌ Failed to send: {error}")
                     continue
 
-                # Mark reminder as sent
                 supabase.table('tasks').update({
                     'reminder_sent_at': datetime.now(pytz.UTC).isoformat()
                 }).eq('id', task['id']).execute()
 
                 sent_count += 1
-                time.sleep(0.5)  # Rate limit
+                time.sleep(0.5)
 
             except Exception as e:
                 print(f"   Error with task {task.get('id')}: {e}")
                 continue
 
+        # ── Part 2: Tasks with due_date=today but NO due_time ──
+        # Send a morning reminder at 8 AM for tasks due today that have no specific time
+        for task in tasks_date_only:
+            try:
+                user_id = task.get('user_id')
+                if not user_id or user_id not in users:
+                    continue
+
+                user = users[user_id]
+                user_tz = pytz.timezone(user.get('timezone', 'Australia/Brisbane'))
+                now = datetime.now(user_tz)
+                today_str = now.date().isoformat()
+
+                task_due_date = str(task.get('due_date', ''))[:10]
+
+                # Only send for tasks due today or yesterday (catch-up)
+                if task_due_date != today_str:
+                    yesterday_str = (now.date() - timedelta(days=1)).isoformat()
+                    if task_due_date != yesterday_str:
+                        continue
+                    # Yesterday's task - send overdue reminder anytime
+                    is_overdue = True
+                else:
+                    # Today's task - only send after 8 AM
+                    if now.hour < 8:
+                        continue
+                    is_overdue = False
+
+                display_time = "today" if task_due_date == today_str else "yesterday"
+
+                if is_overdue:
+                    print(f"   📨 OVERDUE (due {display_time}): '{task['title'][:40]}' -> {user['email']}")
+                    subject = f"Overdue: {task['title'][:50]} - was due {display_time}"
+                else:
+                    print(f"   📨 Due today: '{task['title'][:40]}' -> {user['email']}")
+                    subject = f"Due today: {task['title'][:50]}"
+
+                html_content = generate_reminder_email_html(
+                    task, display_time, user.get('full_name', ''), is_overdue=is_overdue
+                )
+
+                success, error = send_email(user['email'], subject, html_content)
+
+                if not success:
+                    print(f"   ❌ Failed to send: {error}")
+                    continue
+
+                supabase.table('tasks').update({
+                    'reminder_sent_at': datetime.now(pytz.UTC).isoformat()
+                }).eq('id', task['id']).execute()
+
+                sent_count += 1
+                time.sleep(0.5)
+
+            except Exception as e:
+                print(f"   Error with date-only task {task.get('id')}: {e}")
+                continue
+
+        # ── Summary ──
         if sent_count > 0:
-            print(f"   Sent {sent_count} reminder(s)")
+            print(f"   ✅ Sent {sent_count} reminder(s)")
         else:
-            print("   No reminders needed right now")
+            # Show diagnostic breakdown so we can see WHY nothing was sent
+            reasons = []
+            if skip_reasons['too_far_future'] > 0:
+                reasons.append(f"{skip_reasons['too_far_future']} not yet in window")
+            if skip_reasons['too_old'] > 0:
+                reasons.append(f"{skip_reasons['too_old']} too old (>7d)")
+            if skip_reasons['no_user'] > 0:
+                reasons.append(f"{skip_reasons['no_user']} no user match")
+            if skip_reasons['no_date'] > 0:
+                reasons.append(f"{skip_reasons['no_date']} no due_date")
+            if skip_reasons['bad_time'] > 0:
+                reasons.append(f"{skip_reasons['bad_time']} bad time format")
+            reason_str = '; '.join(reasons) if reasons else "no tasks qualify"
+            print(f"   No reminders needed ({reason_str})")
 
     except Exception as e:
         print(f"Reminder error: {e}")
