@@ -1487,13 +1487,36 @@ def edit_action():
 
 if __name__ == "__main__":
     import time
+    from saas_scheduler import check_and_send_reminders, get_users_needing_summary, send_daily_summary
+
     processor = AIEmailProcessor()
-    poll_interval = int(os.getenv('POLL_INTERVAL_SECONDS', '60'))  # 60s loop, per-connection frequency managed by last_sync_at
-    print(f"Starting multi-tenant email polling loop (every {poll_interval}s)...")
+    poll_interval = int(os.getenv('POLL_INTERVAL_SECONDS', '60'))
+    print(f"Starting worker (email processor + scheduler) every {poll_interval}s...")
+    print(f"  Email processing: every cycle")
+    print(f"  Reminders + daily summaries: every cycle")
+
     while True:
         try:
+            # 1. Process emails
             processor.process_all_connections()
         except Exception as e:
-            print(f"Error in polling cycle: {e}")
+            print(f"Error in email processing: {e}")
+
+        try:
+            # 2. Check and send task reminders
+            check_and_send_reminders()
+        except Exception as e:
+            print(f"Error in reminders: {e}")
+
+        try:
+            # 3. Check and send daily summaries
+            users = get_users_needing_summary()
+            if users:
+                print(f"📬 Found {len(users)} user(s) needing daily summary")
+                for user in users:
+                    send_daily_summary(user)
+        except Exception as e:
+            print(f"Error in daily summaries: {e}")
+
         print(f"Sleeping {poll_interval}s until next check...")
         time.sleep(poll_interval)
