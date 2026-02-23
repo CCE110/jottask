@@ -621,10 +621,13 @@ def check_and_send_reminders():
             reason_str = '; '.join(reasons) if reasons else "no tasks qualify"
             print(f"   No reminders needed ({reason_str})")
 
+        return sent_count
+
     except Exception as e:
         print(f"Reminder error: {e}")
         import traceback
         traceback.print_exc()
+        return 0
 
 
 def run_scheduler():

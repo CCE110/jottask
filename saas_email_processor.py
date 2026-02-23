@@ -1518,7 +1518,7 @@ if __name__ == "__main__":
 
         try:
             # 2. Check and send task reminders
-            check_and_send_reminders()
+            reminders_sent = check_and_send_reminders() or 0
         except Exception as e:
             print(f"Error in reminders: {e}")
             log_error('reminders', e, category='reminder')
