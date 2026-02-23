@@ -15,7 +15,7 @@ app = Flask(__name__)
 app.secret_key = os.getenv('FLASK_SECRET_KEY', os.urandom(24))
 
 # Register blueprints
-from auth import login_required
+from auth import login_required, admin_required
 from email_utils import send_email
 from billing import billing_bp
 from onboarding import onboarding_bp
@@ -1765,9 +1765,12 @@ def login():
                 if user.data:
                     session['user_name'] = user.data.get('full_name', email.split('@')[0])
                     session['timezone'] = user.data.get('timezone', 'Australia/Brisbane')
+                    session['user_role'] = user.data.get('role', 'user')
+                    session['organization_id'] = user.data.get('organization_id')
                 else:
                     session['user_name'] = email.split('@')[0]
                     session['timezone'] = 'Australia/Brisbane'
+                    session['user_role'] = 'user'
 
                 return redirect(url_for('dashboard'))
             else:
@@ -1883,9 +1886,9 @@ def logout():
 
 
 @app.route('/debug-tasks')
-@login_required
+@admin_required
 def debug_tasks():
-    """Temporary debug endpoint to check task user_id mapping (requires login)"""
+    """Debug endpoint to check task user_id mapping (admin only)"""
     user_id = session['user_id']
     user_email = session.get('user_email')
 
@@ -1902,8 +1905,7 @@ def debug_tasks():
     <h2>Debug Task Info</h2>
     <p><strong>Session user_id:</strong> {user_id}</p>
     <p><strong>Session email:</strong> {user_email}</p>
-    <p><strong>Expected user_id:</strong> e515407e-dbd6-4331-a815-1878815c89bc</p>
-    <p><strong>Match:</strong> {'YES' if str(user_id) == 'e515407e-dbd6-4331-a815-1878815c89bc' else 'NO - MISMATCH!'}</p>
+    <p><strong>Role:</strong> {session.get('user_role', 'unknown')}</p>
     <hr>
     <h3>Tasks for your user_id ({len(user_tasks.data) if user_tasks.data else 0} found):</h3>
     <ul>
@@ -1922,9 +1924,10 @@ def debug_tasks():
 
 
 @app.route('/debug-db')
+@admin_required
 def debug_db():
-    """Public debug endpoint to check database state (REMOVE IN PRODUCTION)"""
-    expected_user_id = 'e515407e-dbd6-4331-a815-1878815c89bc'
+    """Debug endpoint to check database state (admin only)"""
+    expected_user_id = session['user_id']
 
     # Get status distribution
     all_statuses = supabase.table('tasks').select('status').limit(500).execute()
@@ -2033,8 +2036,7 @@ def dashboard():
 
     # System health for admin banner
     system_health = None
-    admin_id = 'e515407e-dbd6-4331-a815-1878815c89bc'
-    if user_id == admin_id:
+    if session.get('user_role') == 'global_admin':
         try:
             from monitoring import get_system_health
             system_health = get_system_health()
@@ -3962,20 +3964,6 @@ def api_system_health():
 # ADMIN DASHBOARD
 # ============================================
 
-def admin_required(f):
-    """Decorator to require admin access"""
-    @wraps(f)
-    def decorated_function(*args, **kwargs):
-        if 'user_id' not in session:
-            return redirect(url_for('login'))
-        # Check if user is admin (your user ID)
-        admin_id = 'e515407e-dbd6-4331-a815-1878815c89bc'
-        if session['user_id'] != admin_id:
-            return "Access denied", 403
-        return f(*args, **kwargs)
-    return decorated_function
-
-
 @app.route('/admin')
 @admin_required
 def admin_dashboard():
@@ -4216,13 +4204,17 @@ def admin_chat_reply(conversation_id):
 
 def _resolve_user_for_action(sb, pending_row):
     """Resolve user_id and business_id from a pending_actions row.
-    Uses the row's user_id when present, falls back to env vars for legacy actions."""
+    Uses the row's user_id when present, falls back to env var for legacy actions."""
     action_user_id = pending_row.get('user_id')
-    fallback_user_id = os.getenv('ROB_USER_ID', 'e515407e-dbd6-4331-a815-1878815c89bc')
-    fallback_business_id = os.getenv('BUSINESS_ID_CCE', 'feb14276-5c3d-4fcf-af06-9a8f54cf7159')
+    fallback_admin_id = os.getenv('FALLBACK_ADMIN_ID', '')
 
     if not action_user_id:
-        return fallback_user_id, fallback_business_id
+        if fallback_admin_id:
+            print(f"[WARNING] pending_action has no user_id, using FALLBACK_ADMIN_ID")
+            action_user_id = fallback_admin_id
+        else:
+            print(f"[WARNING] pending_action has no user_id and no FALLBACK_ADMIN_ID set")
+            return None, None
 
     try:
         user_result = sb.table('users').select('id, ai_context').eq('id', action_user_id).execute()
@@ -4231,12 +4223,12 @@ def _resolve_user_for_action(sb, pending_row):
             ai_ctx = user.get('ai_context') or {}
             businesses = ai_ctx.get('businesses', {})
             default_biz = ai_ctx.get('default_business', '')
-            business_id = businesses.get(default_biz, fallback_business_id)
+            business_id = businesses.get(default_biz, '')
             return str(user['id']), business_id
     except Exception:
         pass
 
-    return str(action_user_id), fallback_business_id
+    return str(action_user_id), ''
 
 @app.route('/action/approve')
 def approve_action():

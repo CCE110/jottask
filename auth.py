@@ -24,6 +24,43 @@ def login_required(f):
     return decorated_function
 
 
+def _ensure_role_in_session():
+    """Load role into session if not already cached."""
+    if 'user_role' not in session and 'user_id' in session:
+        try:
+            result = supabase.table('users').select('role, organization_id').eq('id', session['user_id']).single().execute()
+            if result.data:
+                session['user_role'] = result.data.get('role', 'user')
+                session['organization_id'] = result.data.get('organization_id')
+        except:
+            session['user_role'] = 'user'
+
+
+def role_required(*allowed_roles):
+    """Decorator: require one of the specified roles."""
+    def decorator(f):
+        @wraps(f)
+        def decorated_function(*args, **kwargs):
+            if 'user_id' not in session:
+                return redirect(url_for('login', next=request.url))
+            _ensure_role_in_session()
+            if session.get('user_role') not in allowed_roles:
+                return "Access denied", 403
+            return f(*args, **kwargs)
+        return decorated_function
+    return decorator
+
+
+def admin_required(f):
+    """Require global_admin role."""
+    return role_required('global_admin')(f)
+
+
+def company_admin_required(f):
+    """Require company_admin or global_admin role."""
+    return role_required('global_admin', 'company_admin')(f)
+
+
 def get_current_user():
     """Get the currently logged in user from session"""
     if 'user_id' not in session:
@@ -100,6 +137,8 @@ def login_user(email, password):
             if user.data:
                 session['user_name'] = user.data.get('full_name', email.split('@')[0])
                 session['timezone'] = user.data.get('timezone', 'Australia/Brisbane')
+                session['user_role'] = user.data.get('role', 'user')
+                session['organization_id'] = user.data.get('organization_id')
 
             return True, auth_response.user
         else:

@@ -74,11 +74,8 @@ class AIEmailProcessor:
         resend.api_key = os.getenv('RESEND_API_KEY')
         self.from_email = os.getenv('FROM_EMAIL', 'admin@flowquote.ai')
 
-        # Business IDs (env-var fallback for legacy single-tenant mode)
-        self.businesses = {
-            'Cloud Clean Energy': os.getenv('BUSINESS_ID_CCE', 'feb14276-5c3d-4fcf-af06-9a8f54cf7159'),
-            'AI Project Pro': os.getenv('BUSINESS_ID_AIPP', 'ec5d7aab-8d74-4ef2-9d92-01b143c68c82')
-        }
+        # Business IDs come from per-user ai_context (no hardcoded fallback)
+        self.businesses = {}
 
         # Plaud detection
         self.plaud_senders = ['no-reply@plaud.ai', 'noreply@plaud.ai']
@@ -309,9 +306,7 @@ class AIEmailProcessor:
                     import traceback
                     traceback.print_exc()
         else:
-            # Fallback: no connections in DB, use legacy env-var single-inbox
-            print("No active connections found, falling back to legacy single-inbox mode")
-            self.process_forwarded_emails()
+            print("No active email connections found. Nothing to process.")
 
     # =========================================================================
     # LEGACY SINGLE-INBOX PROCESSING (preserved as fallback)
@@ -921,10 +916,8 @@ Rules:
             )
             user_id = user_context.user_id
         else:
-            business_id = self.businesses.get(
-                action.get('business', 'Cloud Clean Energy')
-            )
-            user_id = os.getenv('ROB_USER_ID', 'e515407e-dbd6-4331-a815-1878815c89bc')
+            print("[WARNING] _create_task called without user_context — skipping")
+            return None
 
         client_name = action.get('customer_name') or ''
         client_email = action.get('email_address') or ''
@@ -1041,9 +1034,8 @@ Rules:
             company_name = user_context.company_name or 'Jottask'
             user_name = user_context.full_name or 'User'
         else:
-            recipient_email = os.getenv('ROB_EMAIL', 'rob@cloudcleanenergy.com.au')
-            company_name = 'Cloud Clean Energy'
-            user_name = 'Rob'
+            print("[WARNING] send_approval_email called without user_context — skipping")
+            return
 
         # Generate approval tokens for each action
         action_items_html = ""

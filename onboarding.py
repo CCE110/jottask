@@ -54,6 +54,28 @@ def step1():
     session['user_name'] = full_name
     session['timezone'] = timezone
 
+    # Create organization for new company if user doesn't have one
+    if company_name:
+        try:
+            user_check = supabase.table('users').select('organization_id').eq('id', user_id).single().execute()
+            if not (user_check.data and user_check.data.get('organization_id')):
+                slug = company_name.lower().replace(' ', '-').replace("'", '')[:50]
+                org_result = supabase.table('organizations').insert({
+                    'name': company_name,
+                    'slug': slug,
+                    'owner_id': user_id,
+                }).execute()
+                if org_result.data:
+                    org_id = org_result.data[0]['id']
+                    supabase.table('users').update({
+                        'organization_id': org_id,
+                        'role': 'company_admin',
+                    }).eq('id', user_id).execute()
+                    session['user_role'] = 'company_admin'
+                    session['organization_id'] = org_id
+        except Exception as e:
+            print(f"Onboarding org creation error: {e}")
+
     return render_template('onboarding.html', step=2, user_name=full_name)
 
 

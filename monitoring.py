@@ -162,36 +162,22 @@ def get_system_health():
 
 
 def send_self_alert(subject, detail):
-    """Email admin when the system is broken. Throttled: max 3/day, min 30 min apart."""
+    """Email all global admins when the system is broken. Throttled per admin: max 3/day, min 30 min apart."""
     try:
         from email_utils import send_email as _send
 
         sb = _get_supabase()
-        admin_id = 'e515407e-dbd6-4331-a815-1878815c89bc'
         now = datetime.now(pytz.UTC)
 
-        # Check throttle
-        user = sb.table('users').select('last_system_alert_at, system_alert_count_today').eq('id', admin_id).execute()
-        if user.data:
-            u = user.data[0]
-            last_alert = u.get('last_system_alert_at')
-            count_today = u.get('system_alert_count_today') or 0
+        # Get all global admins
+        admins = sb.table('users').select(
+            'id, email, last_system_alert_at, system_alert_count_today'
+        ).eq('role', 'global_admin').execute()
 
-            if last_alert:
-                last_dt = datetime.fromisoformat(last_alert.replace('Z', '+00:00'))
-                if (now - last_dt).total_seconds() < 1800:  # 30 min
-                    print(f"[monitoring] Alert throttled (too recent)")
-                    return
-                # Reset count if new day
-                if last_dt.date() != now.date():
-                    count_today = 0
+        if not admins.data:
+            print(f"[monitoring] No global_admin users found for alerting")
+            return
 
-            if count_today >= 3:
-                print(f"[monitoring] Alert throttled (3/day limit)")
-                return
-
-        # Send alert
-        admin_email = os.getenv('ADMIN_EMAIL', 'admin@flowquote.ai')
         html = f"""
         <div style="font-family: sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
             <div style="background: #DC2626; color: white; padding: 16px 24px; border-radius: 12px 12px 0 0;">
@@ -207,13 +193,28 @@ def send_self_alert(subject, detail):
             </div>
         </div>
         """
-        success, err = _send(admin_email, f"[ALERT] {subject}", html)
 
-        # Update throttle counters
-        sb.table('users').update({
-            'last_system_alert_at': now.isoformat(),
-            'system_alert_count_today': (count_today if user.data else 0) + 1,
-        }).eq('id', admin_id).execute()
+        for admin in admins.data:
+            # Per-admin throttle check
+            last_alert = admin.get('last_system_alert_at')
+            count_today = admin.get('system_alert_count_today') or 0
+
+            if last_alert:
+                last_dt = datetime.fromisoformat(last_alert.replace('Z', '+00:00'))
+                if (now - last_dt).total_seconds() < 1800:
+                    continue
+                if last_dt.date() != now.date():
+                    count_today = 0
+
+            if count_today >= 3:
+                continue
+
+            _send(admin['email'], f"[ALERT] {subject}", html)
+
+            sb.table('users').update({
+                'last_system_alert_at': now.isoformat(),
+                'system_alert_count_today': count_today + 1,
+            }).eq('id', admin['id']).execute()
 
         # Log the alert itself
         log_event('alert_sent', f"Self-alert: {subject}", status='warning', category='system')
