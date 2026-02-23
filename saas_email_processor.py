@@ -752,6 +752,8 @@ Rules:
 - Default business is "{ctx['default_business']}" unless another business is mentioned
 - For callbacks without a specific date, default to next business day
 - For follow-ups, "in X days" means X calendar days from today ({_now_local(user_context).strftime('%Y-%m-%d')})
+- ALWAYS set due_date — if no date mentioned, use today for urgent/high or next business day for medium/low
+- ALWAYS set due_time — if no time mentioned, use "09:00" for morning tasks, "14:00" for afternoon follow-ups. Never leave null
 """
 
     def _build_email_prompt(self, subject, sender, content, user_context=None,
@@ -835,6 +837,8 @@ Rules:
 - Internal/admin emails → lower priority unless time-sensitive
 - Default business is "{ctx['default_business']}" unless email content clearly relates to another business
 - Today's date: {_now_local(user_context).strftime('%Y-%m-%d')}
+- ALWAYS set due_date — if no date is mentioned, use today's date for urgent/high or next business day for medium/low
+- ALWAYS set due_time — if no time is mentioned, use "09:00" for morning tasks, "14:00" for afternoon follow-ups. Never leave due_time as null
 - If no actions needed, return {{"summary": "...", "customer_name": null, "actions": []}}
 """
 
@@ -959,13 +963,24 @@ Rules:
             return
 
         # --- No existing task: create a new one ---
+        # Default due_date to today and due_time to 09:00 if AI didn't extract them
+        # This ensures every task gets a reminder from the scheduler
+        due_date = action.get('due_date')
+        due_time = action.get('due_time')
+        if not due_date:
+            due_date = _now_local(user_context).strftime('%Y-%m-%d')
+        if not due_time:
+            due_time = '09:00:00'
+        elif len(due_time) == 5:  # "09:00" → "09:00:00"
+            due_time = due_time + ':00'
+
         task_data = {
             'business_id': business_id,
             'user_id': user_id,
             'title': action['title'],
             'description': action.get('description', ''),
-            'due_date': action.get('due_date'),
-            'due_time': action.get('due_time'),
+            'due_date': due_date,
+            'due_time': due_time,
             'priority': action.get('priority', 'medium'),
             'is_meeting': action.get('action_type') == 'create_calendar_event',
             'status': 'pending',
