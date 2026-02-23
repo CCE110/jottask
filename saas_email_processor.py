@@ -111,13 +111,17 @@ class AIEmailProcessor:
     def _get_active_connections(self):
         """Query email_connections for active connections due for sync"""
         try:
+            # Query connections separately from users to avoid RLS/JOIN issues
             result = self.tm.supabase.table('email_connections') \
-                .select('*, users(id, email, full_name, company_name, timezone, ai_context)') \
+                .select('*') \
                 .eq('is_active', True) \
                 .execute()
 
             if not result.data:
+                print("  _get_active_connections: no rows in email_connections with is_active=true")
                 return []
+
+            print(f"  _get_active_connections: found {len(result.data)} active connection(s)")
 
             now = datetime.now(pytz.UTC)
             due_connections = []
@@ -129,7 +133,23 @@ class AIEmailProcessor:
                     last_sync_dt = datetime.fromisoformat(last_sync.replace('Z', '+00:00'))
                     next_sync = last_sync_dt + timedelta(minutes=freq_minutes)
                     if now < next_sync:
+                        mins_left = (next_sync - now).total_seconds() / 60
+                        print(f"    Connection {conn.get('email_address')}: not due yet ({mins_left:.1f}m remaining)")
                         continue  # Not due yet
+
+                # Fetch user data separately (avoids JOIN/RLS issues)
+                user_id = conn.get('user_id')
+                if user_id:
+                    try:
+                        user_result = self.tm.supabase.table('users') \
+                            .select('id, email, full_name, company_name, timezone, ai_context') \
+                            .eq('id', user_id) \
+                            .single() \
+                            .execute()
+                        conn['users'] = user_result.data if user_result.data else {}
+                    except Exception as ue:
+                        print(f"    Warning: could not fetch user data for {user_id}: {ue}")
+                        conn['users'] = {}
 
                 due_connections.append(conn)
 
@@ -137,7 +157,43 @@ class AIEmailProcessor:
 
         except Exception as e:
             print(f"Error fetching active connections: {e}")
+            import traceback
+            traceback.print_exc()
             return []
+
+    def _ensure_legacy_context(self):
+        """Build a default UserContext for the legacy single-inbox fallback.
+        Finds the first global_admin (or any user with ai_context) to use as default."""
+        if getattr(self, '_legacy_context', None):
+            return  # Already set
+        try:
+            # Find the admin user with ai_context
+            result = self.tm.supabase.table('users') \
+                .select('id, email, full_name, company_name, timezone, ai_context') \
+                .eq('role', 'global_admin') \
+                .limit(1) \
+                .execute()
+            if result.data:
+                user = result.data[0]
+                ai_ctx = user.get('ai_context') or {}
+                businesses = ai_ctx.get('businesses', {})
+                self._legacy_context = UserContext(
+                    user_id=user['id'],
+                    email_address=user.get('email', ''),
+                    company_name=user.get('company_name', ''),
+                    full_name=user.get('full_name', ''),
+                    timezone=user.get('timezone', 'Australia/Brisbane'),
+                    businesses=businesses,
+                    ai_context=ai_ctx,
+                    connection_id=None,
+                )
+                print(f"  Legacy context: using admin {user.get('full_name')} ({user['id'][:8]}...)")
+            else:
+                print("  WARNING: No global_admin user found for legacy context")
+                self._legacy_context = None
+        except Exception as e:
+            print(f"  Error building legacy context: {e}")
+            self._legacy_context = None
 
     def _build_user_context(self, connection):
         """Build a UserContext from an email_connections row (with joined user data)"""
@@ -306,7 +362,14 @@ class AIEmailProcessor:
                     import traceback
                     traceback.print_exc()
         else:
-            print("No active email connections found. Nothing to process.")
+            # Fallback: if no DB connections found (or none due), try legacy single-inbox
+            # This keeps the system working even if email_connections table is empty
+            if self.email_password:
+                print("No DB connections due — falling back to legacy single-inbox mode")
+                self._ensure_legacy_context()
+                self.process_forwarded_emails()
+            else:
+                print("No active email connections found and no env credentials. Nothing to process.")
 
     # =========================================================================
     # LEGACY SINGLE-INBOX PROCESSING (preserved as fallback)
@@ -410,8 +473,8 @@ class AIEmailProcessor:
                 sender_raw = email_body.get('From', '')
                 sender_addr = self._get_sender_email_address(sender_raw)
 
-                # Process this email
-                self.process_single_email_body(email_body)
+                # Process this email (pass legacy context so tasks get a user_id)
+                self.process_single_email_body(email_body, user_context=getattr(self, '_legacy_context', None))
                 processed_count += 1
 
                 # Mark as processed in Supabase with sender info
