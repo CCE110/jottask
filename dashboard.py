@@ -104,7 +104,8 @@ def send_task_confirmation_email(user_email, task_title, due_date, due_time, tas
     </html>
     """
 
-    success, error = send_email(user_email, f"✅ Task Created: {task_title}", html_content)
+    success, error = send_email(user_email, f"Task Created: {task_title}", html_content,
+                               category='confirmation', task_id=task_id)
 
     if success:
         print(f"✅ Task confirmation email SENT successfully to {user_email}")
@@ -2152,6 +2153,10 @@ def create_task():
                 task_id=task.get('id'),
                 user_name=user_name
             )
+        else:
+            print(f"⚠️ No user_email in session — skipping task confirmation email")
+    else:
+        print(f"⚠️ No result.data from task insert — skipping confirmation email")
 
     return redirect(url_for('dashboard'))
 
