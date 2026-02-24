@@ -4,7 +4,7 @@ Follows the task_manager.py pattern: Supabase client, graceful degradation
 """
 
 import os
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import List, Optional
 from supabase import create_client, Client
 import pytz
@@ -130,11 +130,128 @@ class CRMManager:
             return False
 
     # ========================================
+    # OAUTH TOKEN MANAGEMENT
+    # ========================================
+
+    def refresh_token_if_needed(self, connection: dict) -> dict:
+        """Check if an OAuth token is expiring soon and refresh if needed.
+        Returns the connection dict (updated if refreshed).
+        """
+        token_expires_at = connection.get('token_expires_at')
+        refresh_token = connection.get('refresh_token')
+        if not token_expires_at or not refresh_token:
+            return connection
+
+        try:
+            if isinstance(token_expires_at, str):
+                expires = datetime.fromisoformat(token_expires_at.replace('Z', '+00:00'))
+            else:
+                expires = token_expires_at
+
+            now = datetime.now(pytz.UTC)
+            if expires - now > timedelta(minutes=5):
+                return connection  # Token still valid
+
+            # Token expiring soon — refresh it
+            provider = connection.get('provider', '')
+            print(f"CRM: Refreshing {provider} token for connection {connection['id']}")
+
+            connector = get_connector(
+                provider,
+                api_key=connection.get('api_key', ''),
+                api_base_url=connection.get('api_base_url', ''),
+                access_token=connection.get('access_token', ''),
+                settings=connection.get('settings') or {},
+            )
+
+            if not hasattr(connector, 'refresh_access_token'):
+                print(f"CRM: {provider} connector does not support token refresh")
+                return connection
+
+            result = connector.refresh_access_token(refresh_token)
+            if not result.success:
+                print(f"CRM: Token refresh failed: {result.message}")
+                self.update_connection_status(connection['id'], 'error', f'Token refresh failed: {result.message}')
+                return connection
+
+            # Update database with new tokens
+            update_data = {
+                'access_token': result.data.get('access_token'),
+                'token_expires_at': result.data.get('token_expires_at'),
+                'updated_at': datetime.now(pytz.UTC).isoformat(),
+            }
+            # Some providers return a new refresh token
+            if result.data.get('refresh_token'):
+                update_data['refresh_token'] = result.data['refresh_token']
+
+            self.supabase.table('crm_connections') \
+                .update(update_data) \
+                .eq('id', connection['id']) \
+                .execute()
+
+            # Update the in-memory connection dict
+            connection['access_token'] = update_data['access_token']
+            connection['token_expires_at'] = update_data['token_expires_at']
+            if 'refresh_token' in update_data:
+                connection['refresh_token'] = update_data['refresh_token']
+
+            print(f"CRM: Token refreshed successfully for {provider}")
+            return connection
+
+        except Exception as e:
+            print(f"CRM: Error refreshing token: {e}")
+            return connection
+
+    def save_oauth_connection(self, user_id: str, provider: str,
+                              access_token: str, refresh_token: str = '',
+                              token_expires_at: str = '',
+                              display_name: str = '', settings: dict = None) -> Optional[dict]:
+        """Save an OAuth-based CRM connection (from OAuth callback)."""
+        try:
+            data = {
+                'user_id': user_id,
+                'provider': provider,
+                'access_token': access_token,
+                'refresh_token': refresh_token,
+                'display_name': display_name or f'{provider.title()} CRM',
+                'connection_status': 'connected',
+                'is_active': True,
+                'updated_at': datetime.now(pytz.UTC).isoformat(),
+            }
+            if token_expires_at:
+                data['token_expires_at'] = token_expires_at
+            if settings:
+                data['settings'] = settings
+
+            # Check if exists
+            existing = self.supabase.table('crm_connections') \
+                .select('id') \
+                .eq('user_id', user_id) \
+                .eq('provider', provider) \
+                .execute()
+
+            if existing.data:
+                result = self.supabase.table('crm_connections') \
+                    .update(data) \
+                    .eq('id', existing.data[0]['id']) \
+                    .execute()
+            else:
+                result = self.supabase.table('crm_connections') \
+                    .insert(data) \
+                    .execute()
+
+            return result.data[0] if result.data else None
+        except Exception as e:
+            print(f"CRM: Error saving OAuth connection: {e}")
+            return None
+
+    # ========================================
     # CONNECTION TESTING
     # ========================================
 
-    def test_connection_for_user(self, provider: str, api_key: str,
-                                 api_base_url: str = '') -> CRMResult:
+    def test_connection_for_user(self, provider: str, api_key: str = '',
+                                 api_base_url: str = '', access_token: str = '',
+                                 settings: dict = None) -> CRMResult:
         """Instantiate a connector and test the connection.
         Does NOT save anything — just validates credentials.
         """
@@ -143,6 +260,8 @@ class CRMManager:
                 provider,
                 api_key=api_key,
                 api_base_url=api_base_url,
+                access_token=access_token,
+                settings=settings or {},
             )
             return connector.test_connection()
         except ValueError as e:
@@ -162,6 +281,9 @@ class CRMManager:
         connection = self.get_active_connection(user_id)
         if not connection:
             return CRMResult(success=False, message='No active CRM connection')
+
+        # Refresh OAuth token if needed
+        connection = self.refresh_token_if_needed(connection)
 
         try:
             connector = get_connector(

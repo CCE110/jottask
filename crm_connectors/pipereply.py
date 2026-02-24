@@ -31,10 +31,28 @@ class PipeReplyConnector(BaseCRMConnector):
     # Default base URL — user can override in settings
     DEFAULT_BASE_URL = 'https://app.pipereply.com'
 
+    # Alternative paths to try if defaults return 404
+    DISCOVERY_PATHS_ME = ['/api/v2/me', '/api/me', '/me', '/api/v1/users/me', '/api/v1/account']
+
     def __init__(self, api_key: str = '', api_base_url: str = '',
                  access_token: str = '', settings: dict = None):
         super().__init__(api_key, api_base_url, access_token, settings)
         self.base_url = (api_base_url or self.DEFAULT_BASE_URL).rstrip('/')
+
+        # Allow settings to override any default API path
+        api_paths = (settings or {}).get('api_paths', {})
+        if api_paths.get('me'):
+            self.PATH_ME = api_paths['me']
+        if api_paths.get('contacts'):
+            self.PATH_CONTACTS = api_paths['contacts']
+        if api_paths.get('contact'):
+            self.PATH_CONTACT = api_paths['contact']
+        if api_paths.get('notes'):
+            self.PATH_NOTES = api_paths['notes']
+        if api_paths.get('deals'):
+            self.PATH_DEALS = api_paths['deals']
+        if api_paths.get('deal'):
+            self.PATH_DEAL = api_paths['deal']
 
     def _headers(self) -> dict:
         return {
@@ -75,7 +93,9 @@ class PipeReplyConnector(BaseCRMConnector):
     # ======================================================
 
     def test_connection(self) -> CRMResult:
-        """Test API key by fetching current user / account info."""
+        """Test API key by fetching current user / account info.
+        If the default path returns 404, tries common alternatives and reports which works.
+        """
         try:
             resp = self._get(self.PATH_ME)
             if resp.status_code == 200:
@@ -87,6 +107,23 @@ class PipeReplyConnector(BaseCRMConnector):
                 )
             elif resp.status_code == 401:
                 return CRMResult(success=False, message='Invalid API key')
+            elif resp.status_code == 404:
+                # Diagnostic: try alternative paths to help the user configure
+                discovered = self._discover_endpoints()
+                if discovered:
+                    paths_str = ', '.join(discovered)
+                    return CRMResult(
+                        success=False,
+                        message=f'Default path {self.PATH_ME} returned 404. '
+                                f'These paths responded: {paths_str}. '
+                                f'Update your connection settings with the correct API paths.',
+                        data={'discovered_paths': discovered},
+                    )
+                return CRMResult(
+                    success=False,
+                    message=f'PipeReply returned 404 for {self.PATH_ME}. '
+                            f'No alternative paths found — check your base URL ({self.base_url}).',
+                )
             else:
                 return CRMResult(
                     success=False,
@@ -98,6 +135,18 @@ class PipeReplyConnector(BaseCRMConnector):
             return CRMResult(success=False, message='PipeReply request timed out')
         except Exception as e:
             return CRMResult(success=False, message=f'Connection error: {str(e)}')
+
+    def _discover_endpoints(self) -> list:
+        """Try alternative API paths and return any that don't 404."""
+        working = []
+        for path in self.DISCOVERY_PATHS_ME:
+            try:
+                resp = self._get(path)
+                if resp.status_code != 404:
+                    working.append(f'{path} (HTTP {resp.status_code})')
+            except Exception:
+                continue
+        return working
 
     def find_contact(self, name: str = '', email: str = '') -> CRMResult:
         """Search contacts by name or email."""

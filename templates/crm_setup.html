@@ -289,7 +289,7 @@
                 <div class="connection-item">
                     <div class="connection-info">
                         <div class="connection-icon">
-                            {% if conn.provider == 'pipereply' %}&#x1F4CA;{% elif conn.provider == 'hubspot' %}&#x1F7E0;{% else %}&#x1F4C1;{% endif %}
+                            {% if conn.provider == 'pipereply' %}&#x1F4CA;{% elif conn.provider == 'hubspot' %}&#x1F7E0;{% elif conn.provider == 'zoho' %}&#x1F535;{% else %}&#x1F4C1;{% endif %}
                         </div>
                         <div>
                             <strong>{{ conn.display_name or conn.provider|capitalize }}</strong>
@@ -327,7 +327,7 @@
                 <h2 class="card-title">Add CRM Connection</h2>
             </div>
             <div class="card-body">
-                <div class="provider-grid">
+                <div class="provider-grid" style="grid-template-columns: 1fr 1fr 1fr;">
                     <div class="provider-card" onclick="showSetup('pipereply')">
                         <div class="card-body">
                             <div class="provider-icon">&#x1F4CA;</div>
@@ -335,13 +335,20 @@
                             <p>Connect via API key</p>
                         </div>
                     </div>
-                    <div class="provider-card disabled">
+                    <a href="/crm/oauth/hubspot/start" class="provider-card" style="text-decoration: none; color: inherit;">
                         <div class="card-body">
                             <div class="provider-icon">&#x1F7E0;</div>
                             <h3>HubSpot</h3>
-                            <p>Coming soon</p>
+                            <p>Connect via OAuth</p>
                         </div>
-                    </div>
+                    </a>
+                    <a href="/crm/oauth/zoho/start" class="provider-card" style="text-decoration: none; color: inherit;">
+                        <div class="card-body">
+                            <div class="provider-icon">&#x1F535;</div>
+                            <h3>Zoho CRM</h3>
+                            <p>Connect via OAuth</p>
+                        </div>
+                    </a>
                 </div>
 
                 <!-- PipeReply Setup Form -->
