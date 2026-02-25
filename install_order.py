@@ -13,7 +13,6 @@ from dataclasses import dataclass, field
 from typing import Optional, List
 from datetime import datetime
 import pytz
-import resend
 
 
 # =========================================================================
@@ -381,24 +380,19 @@ def send_install_order_email(
         crm_context: CRM context
         user_name: User's display name
     """
-    resend.api_key = os.getenv('RESEND_API_KEY')
-    from_email = os.getenv('FROM_EMAIL', 'admin@flowquote.ai')
+    from email_utils import send_email
 
     html = build_install_order_email(notification, whatsapp_draft, crm_context, user_name)
 
     customer_display = crm_context.customer_name or notification.address
     subject = f"Install Order: {customer_display} — {notification.address}"
 
-    try:
-        params = {
-            "from": from_email,
-            "to": [recipient_email],
-            "subject": subject,
-            "html": html,
-        }
-        response = resend.Emails.send(params)
-        print(f"  [OPENSOLAR] Install order email sent to {recipient_email} (Resend: {response})")
-        return True
-    except Exception as e:
-        print(f"  [OPENSOLAR] Error sending install order email: {e}")
-        return False
+    success, error = send_email(
+        recipient_email, subject, html,
+        category='install_order',
+    )
+    if success:
+        print(f"  [OPENSOLAR] Install order email sent to {recipient_email}")
+    else:
+        print(f"  [OPENSOLAR] Error sending install order email: {error}")
+    return success

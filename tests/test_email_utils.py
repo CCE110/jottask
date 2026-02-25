@@ -27,7 +27,7 @@ def test_send_email_success(monkeypatch):
 
 def test_send_email_no_api_key(monkeypatch):
     """send_email should fail gracefully when no API key is set."""
-    monkeypatch.setattr('email_utils.RESEND_API_KEY', None)
+    monkeypatch.delenv('RESEND_API_KEY', raising=False)
 
     from email_utils import send_email
     success, error = send_email('user@example.com', 'Test', '<p>Hi</p>')

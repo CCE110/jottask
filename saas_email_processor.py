@@ -26,7 +26,6 @@ from dotenv import load_dotenv
 import os
 import uuid
 import hashlib
-import resend
 import pytz
 
 load_dotenv()
@@ -72,9 +71,7 @@ class AIEmailProcessor:
         self.email_password = os.getenv('JOTTASK_EMAIL_PASSWORD')
         self.imap_server = os.getenv('IMAP_SERVER', 'mail.privateemail.com')
 
-        # Resend for outbound emails (approval emails etc)
-        resend.api_key = os.getenv('RESEND_API_KEY')
-        self.from_email = os.getenv('FROM_EMAIL', 'admin@flowquote.ai')
+        # Outbound emails routed through email_utils.send_email() (retries + monitoring)
 
         # Business IDs come from per-user ai_context (no hardcoded fallback)
         self.businesses = {}
@@ -1352,19 +1349,18 @@ Rules:
         </div>
         """
 
-        # Send via Resend
-        try:
-            params = {
-                "from": self.from_email,
-                "to": [recipient_email],
-                "subject": f"Jottask Approval: {' '.join(email_subject.split())}",
-                "html": email_html
-            }
-            response = resend.Emails.send(params)
-            print(f"  Resend response: {response}")
+        # Send via email_utils (retries + monitoring)
+        from email_utils import send_email
+        subject = f"Jottask Approval: {' '.join(email_subject.split())}"
+        success, error = send_email(
+            recipient_email, subject, email_html,
+            category='approval',
+            user_id=user_context.user_id if user_context else None,
+        )
+        if success:
             print(f"  Approval email sent to {recipient_email} for {len(actions)} action(s)")
-        except Exception as e:
-            print(f"  Error sending approval email: {e}")
+        else:
+            print(f"  Error sending approval email: {error}")
 
     def _format_action_description(self, action):
         """Format a human-readable description for the approval email"""
