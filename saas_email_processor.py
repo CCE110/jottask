@@ -21,6 +21,11 @@ from datetime import datetime, date, timedelta
 from task_manager import TaskManager
 from anthropic import Anthropic
 from dotenv import load_dotenv
+from install_order import (
+    is_opensolar_accepted, parse_opensolar_email,
+    lookup_crm_by_address, format_install_order_draft,
+    send_install_order_email,
+)
 import os
 import uuid
 import hashlib
@@ -586,6 +591,12 @@ class AIEmailProcessor:
             sender = email_body['From']
             content = self.extract_email_content(email_body)
 
+            # --- OpenSolar "Customer Accepted" detection (before AI analysis) ---
+            if is_opensolar_accepted(sender, subject):
+                print(f"[OPENSOLAR] Detected: {subject}")
+                self._handle_opensolar_accepted(subject, content, user_context=user_context)
+                return
+
             # Detect email type
             is_plaud = self.is_plaud_transcription(sender)
             email_type = 'plaud_transcription' if is_plaud else 'forwarded_email'
@@ -640,6 +651,87 @@ class AIEmailProcessor:
         """Detect if email is a Plaud voice transcription"""
         sender_lower = sender.lower()
         return any(plaud in sender_lower for plaud in self.plaud_senders)
+
+    # =========================================================================
+    # OPENSOLAR — "Customer Accepted" install order automation
+    # =========================================================================
+
+    def _handle_opensolar_accepted(self, subject, content, user_context=None):
+        """Handle an OpenSolar 'Customer Accepted' email:
+        parse → CRM lookup → format WhatsApp draft → create task → send email"""
+        if not user_context:
+            print("  [OPENSOLAR] No user context — skipping")
+            return
+
+        # 1. Parse the email
+        notification = parse_opensolar_email(subject, content)
+        if not notification:
+            print(f"  [OPENSOLAR] Could not parse project details from email")
+            return
+
+        print(f"  [OPENSOLAR] Project {notification.project_id}: {notification.address}")
+
+        # 2. Look up CRM/task context by address
+        crm_context = lookup_crm_by_address(
+            user_id=user_context.user_id,
+            address=notification.address,
+            tm=self.tm,
+        )
+        if crm_context.customer_name:
+            print(f"  [OPENSOLAR] Found customer: {crm_context.customer_name}")
+        else:
+            print(f"  [OPENSOLAR] No customer name found — draft will have placeholder")
+
+        # 3. Format WhatsApp draft (equipment=None in Phase 1)
+        whatsapp_draft = format_install_order_draft(
+            notification=notification,
+            crm_context=crm_context,
+            equipment=None,
+        )
+
+        # 4. Create a task in the dashboard
+        customer_display = crm_context.customer_name or notification.address
+        task_title = f"Install Order - {customer_display}"
+
+        task_description = (
+            f"Customer accepted proposal on OpenSolar.\n"
+            f"Project: {notification.address}\n"
+            f"OpenSolar: {notification.project_link}\n"
+        )
+        if crm_context.customer_name:
+            task_description += f"Customer: {crm_context.customer_name}\n"
+
+        self._create_task({
+            'action_type': 'create_task',
+            'title': task_title,
+            'description': task_description,
+            'business': self._get_default_business(user_context),
+            'priority': 'high',
+            'due_date': _now_local(user_context).strftime('%Y-%m-%d'),
+            'due_time': '09:00',
+            'category': 'Install Order',
+            'customer_name': crm_context.customer_name,
+            'email_address': crm_context.client_email,
+        }, user_context=user_context)
+
+        # 5. Send install order email with WhatsApp draft
+        send_install_order_email(
+            recipient_email=user_context.email_address,
+            notification=notification,
+            whatsapp_draft=whatsapp_draft,
+            crm_context=crm_context,
+            user_name=user_context.full_name or 'User',
+        )
+
+        print(f"  [OPENSOLAR] Install order processed for {notification.address}")
+
+    def _get_default_business(self, user_context):
+        """Get the default business name from user context"""
+        if user_context and user_context.ai_context:
+            return user_context.ai_context.get('default_business', '')
+        if user_context and user_context.businesses:
+            return list(user_context.businesses.keys())[0]
+        return ''
 
     # =========================================================================
     # CLAUDE AI ANALYSIS — with per-user prompt context
