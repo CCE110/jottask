@@ -1170,6 +1170,14 @@ Rules:
             task = result.data[0]
             print(f"  [AUTO] Task created: {task['title']}")
 
+            # Send confirmation email to user
+            if user_context and user_context.email_address:
+                self._send_task_confirmation(
+                    user_email=user_context.email_address,
+                    user_name=user_context.full_name,
+                    task=task,
+                )
+
             # Increment usage meter
             self._increment_task_count(user_id)
         else:
@@ -1200,6 +1208,69 @@ Rules:
                 }).eq('id', user_id).execute()
         except Exception as e:
             print(f"  Warning: Could not update task count: {e}")
+
+    def _send_task_confirmation(self, user_email, user_name, task):
+        """Send confirmation email when worker auto-creates a task from email"""
+        try:
+            from email_utils import send_email
+
+            task_id = task['id']
+            task_title = task.get('title', 'Untitled')
+            due_date = task.get('due_date', '')
+            due_time = task.get('due_time', '')
+
+            action_base = os.getenv('TASK_ACTION_URL', 'https://www.jottask.app/action')
+            complete_url = f"{action_base}?action=complete&task_id={task_id}"
+            delay_1hour_url = f"{action_base}?action=delay_1hour&task_id={task_id}"
+            delay_1day_url = f"{action_base}?action=delay_1day&task_id={task_id}"
+
+            greeting = f"Hi {user_name}," if user_name else "Hi,"
+            due_display = f"{due_date} at {due_time[:5]}" if due_time else due_date
+
+            html = f"""
+            <html>
+            <body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
+                <div style="background: linear-gradient(135deg, #6366F1 0%, #8B5CF6 100%); padding: 24px; border-radius: 12px 12px 0 0;">
+                    <h1 style="color: white; margin: 0; font-size: 24px;">Task Created</h1>
+                </div>
+                <div style="background: #f9fafb; padding: 24px; border: 1px solid #e5e7eb; border-top: none; border-radius: 0 0 12px 12px;">
+                    <p style="color: #374151;">{greeting}</p>
+                    <p style="color: #374151;">A new task was created from your forwarded email:</p>
+                    <div style="background: white; border: 1px solid #e5e7eb; border-radius: 8px; padding: 16px; margin: 16px 0;">
+                        <a href="https://www.jottask.app/tasks/{task_id}/edit" style="color: #111827; text-decoration: none;">
+                            <h3 style="margin: 0 0 8px 0; color: #111827;">{task_title}</h3>
+                        </a>
+                        <p style="margin: 0; color: #6b7280; font-size: 14px;">Due: {due_display}</p>
+                    </div>
+                    <div style="margin-top: 16px; text-align: center;">
+                        <a href="{complete_url}" style="display: inline-block; background: #10B981; color: white; padding: 12px 20px; border-radius: 8px; text-decoration: none; margin: 4px; font-weight: 600;">Complete</a>
+                        <a href="{delay_1hour_url}" style="display: inline-block; background: #6b7280; color: white; padding: 12px 20px; border-radius: 8px; text-decoration: none; margin: 4px; font-weight: 600;">+1 Hour</a>
+                        <a href="{delay_1day_url}" style="display: inline-block; background: #6b7280; color: white; padding: 12px 20px; border-radius: 8px; text-decoration: none; margin: 4px; font-weight: 600;">+1 Day</a>
+                    </div>
+                    <p style="color: #6b7280; font-size: 13px; margin-top: 16px;">You'll get a reminder before this task is due.</p>
+                </div>
+                <p style="color: #9ca3af; font-size: 12px; text-align: center; margin-top: 24px;">
+                    Jottask - AI-Powered Task Management
+                </p>
+            </body>
+            </html>
+            """
+
+            success, error = send_email(
+                user_email,
+                f"Task Created: {task_title}",
+                html,
+                category='confirmation',
+                task_id=task_id,
+            )
+
+            if success:
+                print(f"  [AUTO] Confirmation email sent to {user_email}")
+            else:
+                print(f"  [AUTO] Confirmation email failed: {error}")
+
+        except Exception as e:
+            print(f"  Warning: Could not send confirmation email: {e}")
 
     # =========================================================================
     # APPROVAL FLOW (TIER 2 — EMAIL APPROVAL)
