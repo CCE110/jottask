@@ -10,10 +10,16 @@ import pytz
 from supabase import create_client, Client
 from email_utils import send_email
 
-# Initialize Supabase
-SUPABASE_URL = os.getenv('SUPABASE_URL')
-SUPABASE_KEY = os.getenv('SUPABASE_KEY')
-supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+# Lazy Supabase init — avoids crash if env vars aren't loaded at import time
+_supabase = None
+
+def _get_supabase():
+    global _supabase
+    if _supabase is None:
+        url = os.getenv('SUPABASE_URL')
+        key = os.getenv('SUPABASE_KEY')
+        _supabase = create_client(url, key)
+    return _supabase
 
 
 def get_users_needing_summary():
@@ -21,7 +27,7 @@ def get_users_needing_summary():
     users_to_notify = []
 
     # Get all users with daily summary enabled
-    result = supabase.table('users').select(
+    result = _get_supabase().table('users').select(
         'id, email, full_name, timezone, daily_summary_enabled, daily_summary_time, last_summary_sent_at'
     ).eq('daily_summary_enabled', True).execute()
 
@@ -68,7 +74,7 @@ def get_user_tasks_summary(user_id, user_timezone):
     today = now.date().isoformat()
 
     # Get all pending tasks
-    tasks = supabase.table('tasks')\
+    tasks = _get_supabase().table('tasks')\
         .select('id, title, due_date, due_time, priority, status, client_name')\
         .eq('user_id', user_id)\
         .eq('status', 'pending')\
@@ -108,7 +114,7 @@ def get_user_tasks_summary(user_id, user_timezone):
 def get_user_projects_summary(user_id):
     """Get project summary for a user"""
     # Get active projects
-    projects = supabase.table('saas_projects')\
+    projects = _get_supabase().table('saas_projects')\
         .select('id, name, color, status')\
         .eq('user_id', user_id)\
         .eq('status', 'active')\
@@ -121,7 +127,7 @@ def get_user_projects_summary(user_id):
 
     for project in (projects.data or []):
         # Get items for this project
-        items = supabase.table('saas_project_items')\
+        items = _get_supabase().table('saas_project_items')\
             .select('id, is_completed')\
             .eq('project_id', project['id'])\
             .execute()
@@ -306,7 +312,7 @@ def send_daily_summary(user):
     if tasks_summary['total_pending'] == 0 and projects_summary['active_count'] == 0:
         print(f"    ⏭️ No tasks or projects, skipping email")
         # Still update last_summary_sent_at
-        supabase.table('users').update({
+        _get_supabase().table('users').update({
             'last_summary_sent_at': datetime.now(pytz.UTC).isoformat()
         }).eq('id', user_id).execute()
         return
@@ -325,7 +331,7 @@ def send_daily_summary(user):
 
     if success:
         # Update last_summary_sent_at
-        supabase.table('users').update({
+        _get_supabase().table('users').update({
             'last_summary_sent_at': datetime.now(pytz.UTC).isoformat()
         }).eq('id', user_id).execute()
     else:
@@ -422,7 +428,7 @@ def check_and_send_reminders():
 
     try:
         # Get all users (we need their timezones, emails, and reminder settings)
-        users_result = supabase.table('users').select(
+        users_result = _get_supabase().table('users').select(
             'id, email, full_name, timezone, reminder_minutes_before'
         ).execute()
         users = {u['id']: u for u in (users_result.data or [])}
@@ -434,7 +440,7 @@ def check_and_send_reminders():
         print(f"   Found {len(users)} user(s)")
 
         # Get pending tasks that have NOT yet received a reminder
-        all_tasks = supabase.table('tasks')\
+        all_tasks = _get_supabase().table('tasks')\
             .select('id, title, due_date, due_time, priority, status, client_name, user_id, reminder_sent_at')\
             .eq('status', 'pending')\
             .is_('reminder_sent_at', 'null')\
@@ -532,7 +538,7 @@ def check_and_send_reminders():
                     print(f"   ❌ Failed to send: {error}")
                     continue
 
-                supabase.table('tasks').update({
+                _get_supabase().table('tasks').update({
                     'reminder_sent_at': datetime.now(pytz.UTC).isoformat()
                 }).eq('id', task['id']).execute()
 
@@ -591,7 +597,7 @@ def check_and_send_reminders():
                     print(f"   ❌ Failed to send: {error}")
                     continue
 
-                supabase.table('tasks').update({
+                _get_supabase().table('tasks').update({
                     'reminder_sent_at': datetime.now(pytz.UTC).isoformat()
                 }).eq('id', task['id']).execute()
 
@@ -602,24 +608,16 @@ def check_and_send_reminders():
                 print(f"   Error with date-only task {task.get('id')}: {e}")
                 continue
 
-        # ── Summary ──
-        if sent_count > 0:
-            print(f"   ✅ Sent {sent_count} reminder(s)")
-        else:
-            # Show diagnostic breakdown so we can see WHY nothing was sent
-            reasons = []
-            if skip_reasons['too_far_future'] > 0:
-                reasons.append(f"{skip_reasons['too_far_future']} not yet in window")
-            if skip_reasons['too_old'] > 0:
-                reasons.append(f"{skip_reasons['too_old']} too old (>7d)")
-            if skip_reasons['no_user'] > 0:
-                reasons.append(f"{skip_reasons['no_user']} no user match")
-            if skip_reasons['no_date'] > 0:
-                reasons.append(f"{skip_reasons['no_date']} no due_date")
-            if skip_reasons['bad_time'] > 0:
-                reasons.append(f"{skip_reasons['bad_time']} bad time format")
-            reason_str = '; '.join(reasons) if reasons else "no tasks qualify"
-            print(f"   No reminders needed ({reason_str})")
+        # ── Summary — always log a diagnostic line for Railway logs ──
+        total_pending = len(raw_tasks)
+        in_window = sent_count + sum(1 for r, c in skip_reasons.items() if r not in ('too_far_future', 'no_user', 'no_date', 'bad_time') for _ in range(c))
+        skip_parts = []
+        for reason, count in skip_reasons.items():
+            if count > 0:
+                labels = {'too_far_future': 'future', 'too_old': '>7d old', 'no_user': 'no user', 'no_date': 'no date', 'bad_time': 'bad time'}
+                skip_parts.append(f"{count} {labels.get(reason, reason)}")
+        skip_str = ', '.join(skip_parts) if skip_parts else 'none'
+        print(f"   Reminders: {total_pending} pending, {sent_count} sent, skipped: {skip_str}")
 
         return sent_count
 

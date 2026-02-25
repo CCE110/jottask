@@ -223,6 +223,60 @@ def send_self_alert(subject, detail):
         print(f"[monitoring] Failed to send self-alert: {e}")
 
 
+def check_reminder_health():
+    """Detect when reminders stop working silently.
+
+    Returns True if healthy, False if a problem was detected (and alert sent).
+    Logic:
+    - Count pending tasks that were due in the last 2 hours with reminder_sent_at IS NULL.
+    - If any exist AND the last successful reminder email was > 2 hours ago, fire an alert.
+    """
+    try:
+        sb = _get_supabase()
+        now = datetime.now(pytz.UTC)
+        two_hours_ago = (now - timedelta(hours=2)).isoformat()
+
+        # Count pending tasks due in last 2 hours that never got a reminder
+        missed = sb.table('tasks')\
+            .select('id', count='exact')\
+            .eq('status', 'pending')\
+            .is_('reminder_sent_at', 'null')\
+            .lte('due_date', now.strftime('%Y-%m-%d'))\
+            .gte('due_date', (now - timedelta(days=1)).strftime('%Y-%m-%d'))\
+            .execute()
+
+        missed_count = missed.count or 0
+        if missed_count == 0:
+            return True  # No tasks waiting — healthy
+
+        # Check when the last reminder email was actually sent
+        last_reminder = sb.table('system_events')\
+            .select('created_at')\
+            .eq('event_type', 'email_sent')\
+            .eq('category', 'reminder')\
+            .order('created_at', desc=True)\
+            .limit(1)\
+            .execute()
+
+        if last_reminder.data:
+            last_dt = datetime.fromisoformat(last_reminder.data[0]['created_at'].replace('Z', '+00:00'))
+            if (now - last_dt).total_seconds() < 7200:  # < 2 hours
+                return True  # Reminders sent recently — healthy
+
+        # Problem: tasks are waiting but no reminders sent in 2+ hours
+        send_self_alert(
+            "Reminders may be silently failing",
+            f"{missed_count} pending task(s) due in the last 2 hours still have no reminder.\n"
+            f"Last successful reminder email: {last_reminder.data[0]['created_at'] if last_reminder.data else 'NEVER'}.\n"
+            f"Check saas_scheduler.py and Railway logs."
+        )
+        return False
+
+    except Exception as e:
+        print(f"[monitoring] check_reminder_health error: {e}")
+        return True  # Don't raise false alarms if the check itself fails
+
+
 def cleanup_old_events(days=30):
     """Delete events older than N days."""
     try:

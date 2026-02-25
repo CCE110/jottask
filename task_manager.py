@@ -429,11 +429,12 @@ class TaskManager:
             # Add delay
             new_datetime = current_datetime + timedelta(hours=hours, days=days)
             
-            # Update task
+            # Update task (reset reminder_sent_at so delayed tasks get new reminders)
             result = self.supabase.table('tasks')\
                 .update({
                     'due_date': new_datetime.date().isoformat(),
-                    'due_time': new_datetime.strftime('%H:%M:%S')
+                    'due_time': new_datetime.strftime('%H:%M:%S'),
+                    'reminder_sent_at': None
                 })\
                 .eq('id', task_id)\
                 .execute()

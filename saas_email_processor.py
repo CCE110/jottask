@@ -21,11 +21,8 @@ from datetime import datetime, date, timedelta
 from task_manager import TaskManager
 from anthropic import Anthropic
 from dotenv import load_dotenv
-from install_order import (
-    is_opensolar_accepted, parse_opensolar_email,
-    lookup_crm_by_address, format_install_order_draft,
-    send_install_order_email,
-)
+# install_order imported lazily inside _handle_opensolar_accepted()
+# to isolate failures — a broken install_order.py won't kill reminders/email processing
 import os
 import uuid
 import hashlib
@@ -592,6 +589,13 @@ class AIEmailProcessor:
             content = self.extract_email_content(email_body)
 
             # --- OpenSolar "Customer Accepted" detection (before AI analysis) ---
+            # Lazy import: if install_order.py is broken, only this path fails
+            try:
+                from install_order import is_opensolar_accepted
+            except Exception as _io_err:
+                print(f"  [OPENSOLAR] install_order import failed: {_io_err}")
+                is_opensolar_accepted = lambda s, subj: False
+
             if is_opensolar_accepted(sender, subject):
                 print(f"[OPENSOLAR] Detected: {subject}")
                 self._handle_opensolar_accepted(subject, content, user_context=user_context)
@@ -659,6 +663,11 @@ class AIEmailProcessor:
     def _handle_opensolar_accepted(self, subject, content, user_context=None):
         """Handle an OpenSolar 'Customer Accepted' email:
         parse → CRM lookup → format WhatsApp draft → create task → send email"""
+        from install_order import (
+            parse_opensolar_email, lookup_crm_by_address,
+            format_install_order_draft, send_install_order_email,
+        )
+
         if not user_context:
             print("  [OPENSOLAR] No user context — skipping")
             return
@@ -1650,7 +1659,7 @@ def edit_action():
 if __name__ == "__main__":
     import time
     from saas_scheduler import check_and_send_reminders, get_users_needing_summary, send_daily_summary
-    from monitoring import log_heartbeat, log_error, send_self_alert, cleanup_old_events
+    from monitoring import log_heartbeat, log_error, send_self_alert, cleanup_old_events, check_reminder_health
 
     processor = AIEmailProcessor()
     poll_interval = int(os.getenv('POLL_INTERVAL_SECONDS', '60'))
@@ -1685,6 +1694,15 @@ if __name__ == "__main__":
             print(f"Error in reminders: {e}")
             log_error('reminders', e, category='reminder')
             tick_errors += 1
+
+        try:
+            # 2b. Functional reminder health check
+            if not check_reminder_health():
+                print("WARNING: Reminder health check detected a problem")
+                tick_errors += 1
+        except Exception as e:
+            print(f"Error in reminder health check: {e}")
+            log_error('reminder_health_check', e, category='reminder')
 
         try:
             # 3. Check and send daily summaries
