@@ -1178,7 +1178,8 @@ Rules:
     def _increment_task_count(self, user_id):
         """Increment tasks_this_month for usage metering"""
         try:
-            current_month = _now_local().strftime('%Y-%m')
+            current_month_str = _now_local().strftime('%Y-%m')
+            current_month_date = _now_local().strftime('%Y-%m-01')
             # Fetch current counter
             result = self.tm.supabase.table('users') \
                 .select('tasks_this_month, tasks_month_reset') \
@@ -1187,15 +1188,15 @@ Rules:
             if result.data:
                 row = result.data[0]
                 count = row.get('tasks_this_month') or 0
-                reset_month = row.get('tasks_month_reset') or ''
+                reset_month = str(row.get('tasks_month_reset') or '')[:7]
 
-                if reset_month != current_month:
+                if reset_month != current_month_str:
                     # New month — reset counter
                     count = 0
 
                 self.tm.supabase.table('users').update({
                     'tasks_this_month': count + 1,
-                    'tasks_month_reset': current_month,
+                    'tasks_month_reset': current_month_date,
                 }).eq('id', user_id).execute()
         except Exception as e:
             print(f"  Warning: Could not update task count: {e}")
