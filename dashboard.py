@@ -3941,14 +3941,21 @@ def chat_message():
 @app.route('/health')
 def health_check():
     """Public health endpoint for uptime monitors. No auth required.
-    Returns 200 if worker heartbeat < 5 min, 503 if stale/missing."""
-    from monitoring import get_system_health
+    Returns 200 if worker heartbeat < 5 min, 503 if stale/missing or canary failed."""
+    from monitoring import get_system_health, get_last_canary_status
     health = get_system_health()
-    status_code = 200 if health['worker_status'] == 'healthy' else 503
+    canary = get_last_canary_status()
+    # 503 if worker unhealthy OR canary explicitly failed (not 'missing' — avoids false alarm before first canary)
+    if health['worker_status'] != 'healthy' or canary['status'] == 'failed':
+        status_code = 503
+    else:
+        status_code = 200
     return jsonify({
         'status': health['worker_status'],
         'last_heartbeat': health['last_heartbeat'],
         'heartbeat_age_minutes': health['heartbeat_age_minutes'],
+        'canary_status': canary['status'],
+        'last_canary': canary['last_canary'],
     }), status_code
 
 

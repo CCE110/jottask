@@ -1727,7 +1727,7 @@ def edit_action():
 if __name__ == "__main__":
     import time
     from saas_scheduler import check_and_send_reminders, get_users_needing_summary, send_daily_summary
-    from monitoring import log_heartbeat, log_error, send_self_alert, cleanup_old_events, check_reminder_health
+    from monitoring import log_heartbeat, log_error, send_self_alert, cleanup_old_events, check_reminder_health, check_and_send_canary
 
     processor = AIEmailProcessor()
     poll_interval = int(os.getenv('POLL_INTERVAL_SECONDS', '60'))
@@ -1771,6 +1771,19 @@ if __name__ == "__main__":
         except Exception as e:
             print(f"Error in reminder health check: {e}")
             log_error('reminder_health_check', e, category='reminder')
+
+        try:
+            # 2c. Canary email delivery check (7 AM + 5 PM AEST)
+            canary_result = check_and_send_canary()
+            if canary_result == 'sent':
+                print("Canary email sent — email delivery verified")
+            elif canary_result == 'failed':
+                print("WARNING: Canary email FAILED — email delivery may be broken")
+                tick_errors += 1
+        except Exception as e:
+            print(f"Error in canary check: {e}")
+            log_error('canary_check', e, category='canary')
+            tick_errors += 1
 
         try:
             # 3. Check and send daily summaries

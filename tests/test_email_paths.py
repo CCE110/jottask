@@ -282,3 +282,94 @@ def test_delayed_task_resets_reminder(mock_supabase):
     assert "'reminder_sent_at': None" in source or '"reminder_sent_at": None' in source, (
         "dashboard.py should set reminder_sent_at to None when delaying a task"
     )
+
+
+# ---------------------------------------------------------------------------
+# 7. Canary email tests
+# ---------------------------------------------------------------------------
+
+@patch('monitoring.datetime')
+@patch('email_utils.send_email', return_value=(True, None))
+def test_canary_sends_at_7am(mock_send, mock_dt, mock_supabase):
+    """Canary email should send during the 7 AM AEST window."""
+    import monitoring
+    monitoring._supabase = mock_supabase
+
+    import pytz
+    aest = pytz.timezone('Australia/Brisbane')
+    fake_now_aest = aest.localize(datetime(2026, 2, 26, 7, 1, 0))
+    fake_now_utc = fake_now_aest.astimezone(pytz.UTC)
+
+    mock_dt.now = MagicMock(side_effect=lambda tz: fake_now_aest if str(tz) == 'Australia/Brisbane' else fake_now_utc)
+    mock_dt.fromisoformat = datetime.fromisoformat
+
+    # No existing canary today
+    mock_supabase.table.return_value.select.return_value.eq.return_value.eq.return_value.gte.return_value.execute.return_value = MagicMock(data=[])
+    # Admin user
+    mock_supabase.table.return_value.select.return_value.eq.return_value.limit.return_value.execute.return_value = MagicMock(
+        data=[{'id': 'admin-1', 'email': 'admin@example.com'}]
+    )
+
+    result = monitoring.check_and_send_canary()
+
+    assert result == 'sent'
+    assert mock_send.called
+    assert mock_send.call_args.kwargs.get('category') == 'canary'
+
+    monitoring._supabase = None
+
+
+@patch('monitoring.datetime')
+@patch('email_utils.send_email', return_value=(True, None))
+def test_canary_skips_outside_window(mock_send, mock_dt, mock_supabase):
+    """Canary should skip when outside the 7 AM / 5 PM windows."""
+    import monitoring
+    import pytz
+    aest = pytz.timezone('Australia/Brisbane')
+    fake_now = aest.localize(datetime(2026, 2, 26, 10, 0, 0))
+    mock_dt.now = MagicMock(return_value=fake_now)
+
+    result = monitoring.check_and_send_canary()
+
+    assert result == 'skipped'
+    assert not mock_send.called
+
+    monitoring._supabase = None
+
+
+@patch('monitoring.datetime')
+@patch('email_utils.send_email', return_value=(True, None))
+def test_canary_skips_if_already_sent(mock_send, mock_dt, mock_supabase):
+    """Canary should skip if one was already sent in this window."""
+    import monitoring
+    monitoring._supabase = mock_supabase
+
+    import pytz
+    aest = pytz.timezone('Australia/Brisbane')
+    fake_now_aest = aest.localize(datetime(2026, 2, 26, 7, 2, 0))
+    fake_now_utc = fake_now_aest.astimezone(pytz.UTC)
+
+    mock_dt.now = MagicMock(side_effect=lambda tz: fake_now_aest if str(tz) == 'Australia/Brisbane' else fake_now_utc)
+    mock_dt.fromisoformat = datetime.fromisoformat
+
+    # Existing canary found
+    mock_supabase.table.return_value.select.return_value.eq.return_value.eq.return_value.gte.return_value.execute.return_value = MagicMock(
+        data=[{'id': 'evt-1'}]
+    )
+
+    result = monitoring.check_and_send_canary()
+
+    assert result == 'skipped'
+    assert not mock_send.called
+
+    monitoring._supabase = None
+
+
+@patch('monitoring.get_last_canary_status', return_value={'status': 'failed', 'last_canary': '2026-02-26T07:01:00+00:00', 'error': 'API key expired'})
+@patch('monitoring.get_system_health', return_value={'worker_status': 'healthy', 'last_heartbeat': '2026-02-26T07:00:00Z', 'heartbeat_age_minutes': 2.0, 'emails_sent_24h': 5, 'emails_failed_24h': 0, 'errors_24h': 0})
+def test_health_returns_503_on_canary_failure(mock_health, mock_canary, client):
+    """/health should return 503 when canary status is 'failed'."""
+    resp = client.get('/health')
+    assert resp.status_code == 503
+    data = resp.get_json()
+    assert data['canary_status'] == 'failed'

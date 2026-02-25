@@ -277,6 +277,97 @@ def check_reminder_health():
         return True  # Don't raise false alarms if the check itself fails
 
 
+def check_and_send_canary():
+    """Send a canary email at 7 AM and 5 PM AEST to verify email delivery.
+
+    Returns 'sent', 'skipped', or 'failed'.
+    """
+    try:
+        aest = pytz.timezone('Australia/Brisbane')
+        now_aest = datetime.now(aest)
+        hour, minute = now_aest.hour, now_aest.minute
+
+        # Only run in the 7:00-7:04 or 17:00-17:04 windows
+        if not ((hour == 7 and minute < 5) or (hour == 17 and minute < 5)):
+            return 'skipped'
+
+        sb = _get_supabase()
+        now_utc = datetime.now(pytz.UTC)
+        today_start = now_aest.replace(hour=0, minute=0, second=0, microsecond=0).astimezone(pytz.UTC)
+
+        # Check if a canary was already sent today in this window
+        window_start = now_aest.replace(minute=0, second=0, microsecond=0).astimezone(pytz.UTC)
+        existing = sb.table('system_events')\
+            .select('id')\
+            .eq('category', 'canary')\
+            .eq('status', 'success')\
+            .gte('created_at', window_start.isoformat())\
+            .execute()
+
+        if existing.data:
+            return 'skipped'
+
+        # Find the first global_admin to send to
+        admins = sb.table('users').select('id, email').eq('role', 'global_admin').limit(1).execute()
+        if not admins.data:
+            print("[canary] No global_admin user found")
+            return 'skipped'
+
+        admin = admins.data[0]
+        from email_utils import send_email
+        success, error = send_email(
+            admin['email'],
+            'Jottask canary check — email delivery working',
+            f'<p>Canary email sent at {now_aest.strftime("%Y-%m-%d %H:%M AEST")}. Email delivery is working.</p>',
+            category='canary',
+            user_id=admin['id'],
+        )
+
+        if success:
+            log_event('canary', 'Canary email sent successfully', status='success', category='canary')
+            return 'sent'
+        else:
+            log_event('canary', f'Canary email failed: {error}', status='error', category='canary', error_detail=error)
+            return 'failed'
+
+    except Exception as e:
+        print(f"[canary] Error: {e}")
+        log_event('canary', f'Canary exception: {e}', status='error', category='canary', error_detail=str(e))
+        return 'failed'
+
+
+def get_last_canary_status():
+    """Check the most recent canary result within the last 14 hours.
+
+    Returns dict with 'status' ('ok', 'failed', or 'missing'), 'last_canary', and optionally 'error'.
+    """
+    try:
+        sb = _get_supabase()
+        now = datetime.now(pytz.UTC)
+        since = (now - timedelta(hours=14)).isoformat()
+
+        result = sb.table('system_events')\
+            .select('status, created_at, error_detail')\
+            .eq('category', 'canary')\
+            .gte('created_at', since)\
+            .order('created_at', desc=True)\
+            .limit(1)\
+            .execute()
+
+        if not result.data:
+            return {'status': 'missing', 'last_canary': None}
+
+        row = result.data[0]
+        if row['status'] == 'success':
+            return {'status': 'ok', 'last_canary': row['created_at']}
+        else:
+            return {'status': 'failed', 'last_canary': row['created_at'], 'error': row.get('error_detail')}
+
+    except Exception as e:
+        print(f"[monitoring] get_last_canary_status error: {e}")
+        return {'status': 'missing', 'last_canary': None}
+
+
 def cleanup_old_events(days=30):
     """Delete events older than N days."""
     try:
