@@ -313,7 +313,8 @@ class AIEmailProcessor:
                 sender_raw = email_body.get('From', '')
                 sender_addr = self._get_sender_email_address(sender_raw)
 
-                self.process_single_email_body(email_body, user_context=user_ctx)
+                result = self.process_single_email_body(email_body, user_context=user_ctx)
+                outcome, outcome_detail = result if result else ('error', 'No result returned')
                 processed_count += 1
 
                 self._mark_email_processed(
@@ -321,6 +322,7 @@ class AIEmailProcessor:
                     connection_id=user_ctx.connection_id, user_id=user_ctx.user_id,
                     sender_email=sender_addr, sender_name=sender_raw,
                     subject=raw_subject,
+                    outcome=outcome, outcome_detail=outcome_detail,
                 )
 
                 mail.uid('store', msg_id, '+FLAGS', '\\Seen')
@@ -473,14 +475,16 @@ class AIEmailProcessor:
                 sender_addr = self._get_sender_email_address(sender_raw)
 
                 # Process this email (pass legacy context so tasks get a user_id)
-                self.process_single_email_body(email_body, user_context=getattr(self, '_legacy_context', None))
+                result = self.process_single_email_body(email_body, user_context=getattr(self, '_legacy_context', None))
+                outcome, outcome_detail = result if result else ('error', 'No result returned')
                 processed_count += 1
 
-                # Mark as processed in Supabase with sender info
+                # Mark as processed in Supabase with sender info + outcome
                 self._mark_email_processed(
                     message_id, msg_id_str,
                     sender_email=sender_addr, sender_name=sender_raw,
                     subject=raw_subject,
+                    outcome=outcome, outcome_detail=outcome_detail,
                 )
 
                 # Also mark as read on the server
@@ -523,8 +527,8 @@ class AIEmailProcessor:
 
     def _mark_email_processed(self, message_id, uid_str='', connection_id=None,
                               user_id=None, sender_email=None, sender_name=None,
-                              subject=None):
-        """Mark an email as processed in Supabase, with optional sender info for history"""
+                              subject=None, outcome=None, outcome_detail=None):
+        """Mark an email as processed in Supabase, with optional sender info and outcome tracking"""
         try:
             data = {
                 'email_id': message_id,
@@ -536,7 +540,7 @@ class AIEmailProcessor:
             if user_id:
                 data['user_id'] = user_id
 
-            # Sender info columns — only include if migration 017 has been run.
+            # Sender info columns (migration 017) + outcome columns (migration 020)
             # We try with them first; if the columns don't exist yet, retry without.
             extra_data = {}
             if sender_email:
@@ -545,6 +549,10 @@ class AIEmailProcessor:
                 extra_data['sender_name'] = sender_name
             if subject:
                 extra_data['subject'] = subject[:500]
+            if outcome:
+                extra_data['outcome'] = outcome
+            if outcome_detail:
+                extra_data['outcome_detail'] = str(outcome_detail)[:500]
 
             insert_data = {**data, **extra_data}
 
@@ -552,7 +560,7 @@ class AIEmailProcessor:
                 self.tm.supabase.table('processed_emails').insert(insert_data).execute()
             except Exception as col_err:
                 if 'column' in str(col_err).lower() or 'schema' in str(col_err).lower():
-                    # Migration 017 not run yet — retry without new columns
+                    # Migration 017/020 not run yet — retry without new columns
                     self.tm.supabase.table('processed_emails').insert(data).execute()
                 else:
                     raise col_err
@@ -575,7 +583,16 @@ class AIEmailProcessor:
     # =========================================================================
 
     def process_single_email_body(self, email_body, user_context=None):
-        """Process one email from an already-fetched email body"""
+        """Process one email from an already-fetched email body.
+
+        Returns (outcome, detail) tuple:
+        - ('task_created', 'title...') — AI created task(s)
+        - ('note_added', 'Added note to existing task') — AI routed to existing task
+        - ('approval_queued', 'N actions queued') — Tier 2 actions sent for approval
+        - ('opensolar', 'Install order for ...') — OpenSolar detection path
+        - ('no_action', 'AI found no actionable items') — AI returned empty actions
+        - ('error', 'Error: ...') — exception during processing
+        """
         try:
 
             subject = decode_header(email_body['Subject'])[0][0]
@@ -596,7 +613,7 @@ class AIEmailProcessor:
             if is_opensolar_accepted(sender, subject):
                 print(f"[OPENSOLAR] Detected: {subject}")
                 self._handle_opensolar_accepted(subject, content, user_context=user_context)
-                return
+                return ('opensolar', f'Install order: {subject[:200]}')
 
             # Detect email type
             is_plaud = self.is_plaud_transcription(sender)
@@ -609,7 +626,8 @@ class AIEmailProcessor:
 
             if not analysis or not analysis.get('actions'):
                 print(f"  No actionable items found")
-                return
+                summary = (analysis or {}).get('summary', 'AI found no actionable items')
+                return ('no_action', summary[:500])
 
             # Process each action based on tier
             auto_actions = []
@@ -624,11 +642,19 @@ class AIEmailProcessor:
                 else:
                     approval_actions.append(action)
 
+            # Track what we did for outcome reporting
+            outcomes = []
+
             # Execute Tier 1 actions immediately
             if auto_actions:
                 print(f"  Auto-executing {len(auto_actions)} low-risk action(s)...")
                 for action in auto_actions:
                     self.execute_action(action, user_context=user_context)
+                    atype = action.get('action_type', '')
+                    if atype == 'update_task_notes':
+                        outcomes.append('note_added')
+                    else:
+                        outcomes.append('task_created')
 
             # Queue Tier 2 actions for email approval
             if approval_actions:
@@ -640,9 +666,22 @@ class AIEmailProcessor:
                     context=analysis.get('summary', ''),
                     user_context=user_context,
                 )
+                outcomes.append('approval_queued')
+
+            # Determine primary outcome
+            if 'task_created' in outcomes:
+                titles = ', '.join(a.get('title', '')[:60] for a in auto_actions if a.get('action_type') != 'update_task_notes')
+                return ('task_created', titles[:500] or 'Task created')
+            elif 'approval_queued' in outcomes:
+                return ('approval_queued', f'{len(approval_actions)} action(s) queued for approval')
+            elif 'note_added' in outcomes:
+                return ('note_added', f'Added note to existing task')
+            else:
+                return ('no_action', 'No actions executed')
 
         except Exception as e:
             print(f"Error processing email: {e}")
+            return ('error', f'Error: {str(e)[:480]}')
 
     # =========================================================================
     # PLAUD DETECTION
@@ -1727,7 +1766,7 @@ def edit_action():
 if __name__ == "__main__":
     import time
     from saas_scheduler import check_and_send_reminders, get_users_needing_summary, send_daily_summary
-    from monitoring import log_heartbeat, log_error, send_self_alert, cleanup_old_events, check_reminder_health, check_and_send_canary
+    from monitoring import log_heartbeat, log_error, send_self_alert, cleanup_old_events, check_reminder_health, check_and_send_canary, check_email_processing_health
 
     processor = AIEmailProcessor()
     poll_interval = int(os.getenv('POLL_INTERVAL_SECONDS', '60'))
@@ -1739,6 +1778,7 @@ if __name__ == "__main__":
     tick = 0
     consecutive_failures = 0
     last_cleanup_date = None
+    last_audit_time = None
 
     while True:
         tick += 1
@@ -1784,6 +1824,19 @@ if __name__ == "__main__":
             print(f"Error in canary check: {e}")
             log_error('canary_check', e, category='canary')
             tick_errors += 1
+
+        try:
+            # 2d. Email processing audit (every 30 minutes)
+            now_utc = datetime.now(pytz.UTC)
+            if last_audit_time is None or (now_utc - last_audit_time).total_seconds() >= 1800:
+                audit_result = check_email_processing_health()
+                if audit_result == 'warning':
+                    print("WARNING: Email processing audit detected silent failures")
+                    tick_errors += 1
+                last_audit_time = now_utc
+        except Exception as e:
+            print(f"Error in email processing audit: {e}")
+            log_error('email_audit', e, category='audit')
 
         try:
             # 3. Check and send daily summaries

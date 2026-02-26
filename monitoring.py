@@ -368,6 +368,79 @@ def get_last_canary_status():
         return {'status': 'missing', 'last_canary': None}
 
 
+def check_email_processing_health():
+    """Audit processed emails to detect silent failures.
+
+    Queries processed_emails from the last 2 hours and checks outcome distribution.
+    Alert condition: 3+ emails processed with 'no_action' or 'error' AND zero 'task_created'.
+
+    Returns 'healthy', 'warning', or 'no_data'.
+    """
+    try:
+        sb = _get_supabase()
+        now = datetime.now(pytz.UTC)
+        two_hours_ago = (now - timedelta(hours=2)).isoformat()
+
+        # Query recent processed emails with outcomes
+        result = sb.table('processed_emails')\
+            .select('outcome, outcome_detail, subject, sender_email, processed_at')\
+            .gte('processed_at', two_hours_ago)\
+            .execute()
+
+        if not result.data:
+            return 'no_data'
+
+        # Count outcomes
+        counts = {}
+        problem_emails = []
+        for row in result.data:
+            outcome = row.get('outcome')
+            if outcome is None:
+                outcome = 'unknown'  # Pre-migration rows
+            counts[outcome] = counts.get(outcome, 0) + 1
+            if outcome in ('no_action', 'error'):
+                problem_emails.append(row)
+
+        tasks_created = counts.get('task_created', 0)
+        notes_added = counts.get('note_added', 0)
+        approvals = counts.get('approval_queued', 0)
+        opensolar = counts.get('opensolar', 0)
+        no_action = counts.get('no_action', 0)
+        errors = counts.get('error', 0)
+        actioned = tasks_created + notes_added + approvals + opensolar
+
+        print(f"[audit] Email outcomes (last 2h): {len(result.data)} total — "
+              f"task_created={tasks_created}, note_added={notes_added}, "
+              f"approval_queued={approvals}, no_action={no_action}, error={errors}")
+
+        # Alert: 3+ unactioned AND zero actioned
+        if (no_action + errors) >= 3 and actioned == 0:
+            # Build detail for the alert
+            detail_lines = [f"Emails processed in last 2 hours: {len(result.data)}",
+                            f"Outcomes: {counts}", ""]
+            for pe in problem_emails[:10]:
+                subj = pe.get('subject', '(no subject)')[:80]
+                sender = pe.get('sender_email', '(unknown)')
+                detail = pe.get('outcome_detail', '')[:100]
+                detail_lines.append(f"  - [{pe.get('outcome')}] From: {sender} | Subject: {subj}")
+                if detail:
+                    detail_lines.append(f"    Detail: {detail}")
+
+            send_self_alert(
+                "Emails being processed but no tasks created",
+                '\n'.join(detail_lines)
+            )
+            log_event('email_audit', f'{no_action + errors} emails unactioned, 0 tasks created',
+                       status='warning', category='audit')
+            return 'warning'
+
+        return 'healthy'
+
+    except Exception as e:
+        print(f"[monitoring] check_email_processing_health error: {e}")
+        return 'healthy'  # Don't raise false alarms if the check itself fails
+
+
 def cleanup_old_events(days=30):
     """Delete events older than N days."""
     try:

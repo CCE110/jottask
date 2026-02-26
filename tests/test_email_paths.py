@@ -373,3 +373,110 @@ def test_health_returns_503_on_canary_failure(mock_health, mock_canary, client):
     assert resp.status_code == 503
     data = resp.get_json()
     assert data['canary_status'] == 'failed'
+
+
+# ---------------------------------------------------------------------------
+# 8. Email processing outcome tracking
+# ---------------------------------------------------------------------------
+
+@patch('email_utils.send_email', return_value=(True, None))
+def test_process_email_returns_task_created_outcome(mock_send, mock_supabase):
+    """process_single_email_body should return ('task_created', ...) when AI returns actions."""
+    from saas_email_processor import AIEmailProcessor, UserContext
+    from email.message import EmailMessage
+
+    processor = AIEmailProcessor()
+
+    # Mock AI response with a create_task action
+    ai_response = {
+        'summary': 'New lead from John',
+        'actions': [{
+            'action_type': 'create_task',
+            'title': 'John Smith- call back re solar quote',
+            'description': 'Follow up on enquiry',
+            'business': 'DSW',
+            'priority': 'high',
+            'due_date': '2026-02-27',
+            'due_time': '09:00',
+            'category': 'New Lead',
+        }],
+    }
+    processor.analyze_with_claude = MagicMock(return_value=ai_response)
+
+    # Mock task creation
+    fake_task = {'id': 'task-333', 'title': 'John Smith- call back re solar quote',
+                 'due_date': '2026-02-27', 'due_time': '09:00:00'}
+    mock_supabase.table.return_value.insert.return_value.execute.return_value = MagicMock(data=[fake_task])
+    processor.tm.find_existing_task_by_client = MagicMock(return_value=None)
+
+    user_ctx = UserContext(
+        user_id='user-1', email_address='rob@example.com',
+        full_name='Rob', businesses={'DSW': 'biz-1'},
+    )
+
+    # Build a simple email message
+    msg = EmailMessage()
+    msg['Subject'] = 'Fwd: Solar enquiry from John Smith'
+    msg['From'] = 'john@example.com'
+    msg.set_content('Hi, I want a quote for 10kW solar.')
+
+    outcome, detail = processor.process_single_email_body(msg, user_context=user_ctx)
+
+    assert outcome == 'task_created', f"Expected 'task_created', got '{outcome}'"
+    assert 'John Smith' in detail
+
+
+@patch('email_utils.send_email', return_value=(True, None))
+def test_process_email_returns_no_action_outcome(mock_send, mock_supabase):
+    """process_single_email_body should return ('no_action', ...) when AI returns empty actions."""
+    from saas_email_processor import AIEmailProcessor, UserContext
+    from email.message import EmailMessage
+
+    processor = AIEmailProcessor()
+
+    # Mock AI response with no actions
+    ai_response = {'summary': 'Newsletter from SolarQuotes', 'actions': []}
+    processor.analyze_with_claude = MagicMock(return_value=ai_response)
+
+    user_ctx = UserContext(
+        user_id='user-1', email_address='rob@example.com',
+        full_name='Rob', businesses={'DSW': 'biz-1'},
+    )
+
+    msg = EmailMessage()
+    msg['Subject'] = 'SolarQuotes Weekly Newsletter'
+    msg['From'] = 'newsletter@solarquotes.com.au'
+    msg.set_content('This week in solar news...')
+
+    outcome, detail = processor.process_single_email_body(msg, user_context=user_ctx)
+
+    assert outcome == 'no_action', f"Expected 'no_action', got '{outcome}'"
+    assert 'Newsletter' in detail or 'no actionable' in detail.lower()
+
+
+# ---------------------------------------------------------------------------
+# 9. Email processing audit alerts on silent failures
+# ---------------------------------------------------------------------------
+
+@patch('monitoring.send_self_alert')
+def test_audit_alerts_on_silent_failures(mock_alert, mock_supabase):
+    """check_email_processing_health should alert when 3+ emails processed with no tasks created."""
+    import monitoring
+    monitoring._supabase = mock_supabase
+
+    # Simulate 4 emails processed, all with 'no_action' outcome
+    mock_supabase.table.return_value.select.return_value.gte.return_value.execute.return_value = MagicMock(data=[
+        {'outcome': 'no_action', 'outcome_detail': 'AI found no actionable items', 'subject': 'Newsletter 1', 'sender_email': 'a@example.com', 'processed_at': '2026-02-26T06:00:00Z'},
+        {'outcome': 'no_action', 'outcome_detail': 'AI found no actionable items', 'subject': 'Newsletter 2', 'sender_email': 'b@example.com', 'processed_at': '2026-02-26T06:01:00Z'},
+        {'outcome': 'no_action', 'outcome_detail': 'AI found no actionable items', 'subject': 'Newsletter 3', 'sender_email': 'c@example.com', 'processed_at': '2026-02-26T06:02:00Z'},
+        {'outcome': 'error', 'outcome_detail': 'Error: API timeout', 'subject': 'Lead from Jane', 'sender_email': 'd@example.com', 'processed_at': '2026-02-26T06:03:00Z'},
+    ])
+
+    result = monitoring.check_email_processing_health()
+
+    assert result == 'warning', f"Expected 'warning', got '{result}'"
+    assert mock_alert.called, "send_self_alert should have been called"
+    alert_subject = mock_alert.call_args[0][0]
+    assert 'no tasks created' in alert_subject.lower()
+
+    monitoring._supabase = None
