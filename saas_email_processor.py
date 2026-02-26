@@ -982,15 +982,28 @@ SENDER EMAIL: {sender_email}
 No existing open tasks found for this sender — treat as a new enquiry if actionable.
 """
 
+        # Detect if this is an outgoing email CC'd to Jottask
+        user_email = ''
+        if user_context and user_context.email_address:
+            user_email = user_context.email_address.lower()
+
+        outgoing_note = ''
+        if user_email and user_email in sender_email:
+            outgoing_note = f"""
+CC'D OUTGOING EMAIL DETECTED:
+This email is FROM {ctx['user_name']} (the user) TO a customer. {ctx['user_name']} CC'd Jottask to track this outreach. This is NOT a forwarded email — it's {ctx['user_name']}'s own sent email.
+You MUST create a follow-up task so {ctx['user_name']} remembers to check if the customer replied.
+"""
+
         return f"""You are {ctx['user_name']}'s AI task assistant for their business.
 
-Analyze this forwarded email and extract any action items.
+Analyze this email and extract any action items.
 
 EMAIL DETAILS:
 From: {sender}
 Subject: {subject}
 Content: {content}
-{sender_context}
+{outgoing_note}{sender_context}
 {ctx['user_name'].upper()}'S BUSINESS CONTEXT:
 - {ctx['user_name']} is {ctx['role_description']}
 - Workflow: {ctx['workflow']}
@@ -1027,8 +1040,9 @@ EXTRACT actions as JSON:
 
 Rules:
 - CRITICAL: Task titles MUST use format "[Full Name]- [concise status/action]". Examples: "Graham Kildey- awaiting site photos and electricity bills", "Paul Thompson- follow up on battery quote", "Todd McHenry- site visit 8am Black Milk". NO space before the dash. Never use generic prefixes like "CRM Update:" or "New Lead:" — put the customer name first, then what's happening
+- CRITICAL: If the email is FROM {ctx['user_name']} (CC'd to Jottask), this is an OUTGOING email. ALWAYS create a follow-up task like "[Customer Name]- follow up if no reply" with category "Remember to Callback", due in 2 business days, priority medium. Extract the customer name from the To field or subject line. This is the most common way {ctx['user_name']} uses Jottask — NEVER return empty actions for CC'd outgoing emails.
 - If only a first name appears in the subject, look in the email body/content for the full name
-- Always scrape and capture email addresses — check the From header, email body, signatures, and any contact info in the content
+- Always scrape and capture email addresses — check the From header, To header, email body, signatures, and any contact info in the content
 - If existing open tasks are listed above and this email is a follow-up, use action_type "update_task_notes" with the existing_task_id
 - New lead assignment emails → create_task with category "New Lead", priority "high", due today
 - Customer replies about quotes → create_task with category "Quote Follow Up"
