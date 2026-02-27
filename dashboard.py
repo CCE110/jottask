@@ -21,10 +21,12 @@ from billing import billing_bp
 from onboarding import onboarding_bp
 from email_setup import email_setup_bp
 from crm_setup import crm_setup_bp
+from chat import chat_bp
 app.register_blueprint(billing_bp)
 app.register_blueprint(onboarding_bp)
 app.register_blueprint(email_setup_bp)
 app.register_blueprint(crm_setup_bp)
+app.register_blueprint(chat_bp)
 
 # Supabase client
 SUPABASE_URL = os.getenv('SUPABASE_URL')
