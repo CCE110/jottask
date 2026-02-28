@@ -132,7 +132,8 @@ def get_user_timezone():
 TIER_LIMITS = {
     'free_trial': {'tasks_per_month': 20, 'projects': True},
     'starter': {'tasks_per_month': 100, 'projects': True},
-    'pro': {'tasks_per_month': float('inf'), 'projects': True}
+    'pro': {'tasks_per_month': float('inf'), 'projects': True},
+    'business': {'tasks_per_month': float('inf'), 'projects': True},
 }
 
 def get_user_subscription(user_id):
@@ -1837,7 +1838,7 @@ def signup(referral_code=None):
                     'full_name': full_name,
                     'timezone': timezone,
                     'subscription_status': 'trial',
-                    'subscription_tier': 'free_trial',
+                    'subscription_tier': 'starter',
                     'trial_ends_at': (datetime.now(pytz.UTC) + timedelta(days=14)).isoformat(),
                     'referral_code': new_ref_code,
                     'tasks_this_month': 0,
@@ -1894,8 +1895,13 @@ def signup(referral_code=None):
 
         except Exception as e:
             error_msg = str(e)
-            if 'already registered' in error_msg.lower():
-                error_msg = 'Email already registered'
+            print(f"Signup error: {error_msg}")
+            if 'already registered' in error_msg.lower() or 'already been registered' in error_msg.lower():
+                error_msg = 'This email is already registered. Try logging in instead.'
+            elif 'password' in error_msg.lower() and ('short' in error_msg.lower() or 'least' in error_msg.lower()):
+                error_msg = 'Password must be at least 6 characters.'
+            else:
+                error_msg = 'Something went wrong. Please try again or contact support.'
             return render_template('signup.html', error=error_msg, referral_code=ref_code)
 
     return render_template('signup.html', error=None, referral_code=ref_code)
