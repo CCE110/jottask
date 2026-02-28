@@ -22,6 +22,7 @@
         <a href="{{ shopping_list_url }}" class="nav-link">Shopping List</a>
         <a href="{{ url_for('daily_report') }}" class="nav-link">Daily Report</a>
         <a href="{{ url_for('projects') }}" class="nav-link">Projects</a>
+        <a href="{{ url_for('chat.chat_page') }}" class="nav-link">Chat</a>
         <a href="{{ url_for('settings') }}" class="nav-link active">Settings</a>
     </div>
 
@@ -189,9 +190,9 @@
                     <div style="background: var(--gray-50); padding: 16px; border-radius: 8px; margin-bottom: 20px;">
                         <div style="display: flex; justify-content: space-between; margin-bottom: 8px;">
                             <span>Tasks this month</span>
-                            <strong>{{ subscription.tasks_used }} / {{ subscription.tasks_limit if subscription.tasks_limit != float('inf') else '∞' }}</strong>
+                            <strong>{{ subscription.tasks_used }} / {% if subscription.tasks_limit is number and subscription.tasks_limit > 99999 %}Unlimited{% else %}{{ subscription.tasks_limit }}{% endif %}</strong>
                         </div>
-                        {% if subscription.tasks_limit != float('inf') %}
+                        {% if subscription.tasks_limit is number and subscription.tasks_limit <= 99999 %}
                         <div style="background: var(--gray-200); height: 8px; border-radius: 4px; overflow: hidden;">
                             <div style="background: var(--primary); height: 100%; width: {{ (subscription.tasks_used / subscription.tasks_limit * 100)|int }}%; transition: width 0.3s;"></div>
                         </div>
