@@ -257,18 +257,37 @@
                         </div>
                     </div>
 
-                    <!-- Share Buttons -->
-                    <div style="margin-top: 20px; display: flex; gap: 8px; flex-wrap: wrap;">
-                        <a href="mailto:?subject=Try%20Jottask%20-%20AI%20Task%20Management&body=I've%20been%20using%20Jottask%20to%20manage%20my%20tasks%20via%20email.%20Check%20it%20out%3A%20{{ referral_link|urlencode }}" class="btn btn-secondary" style="flex: 1;">
-                            ✉️ Email
-                        </a>
-                        <a href="https://wa.me/?text=Check%20out%20Jottask%20for%20easy%20task%20management%3A%20{{ referral_link|urlencode }}" target="_blank" class="btn btn-secondary" style="flex: 1;">
-                            💬 WhatsApp
-                        </a>
-                        <a href="https://twitter.com/intent/tweet?text=Managing%20tasks%20via%20email%20with%20%40Jottask%20-%20super%20easy!&url={{ referral_link|urlencode }}" target="_blank" class="btn btn-secondary" style="flex: 1;">
-                            🐦 Twitter
-                        </a>
+                    <!-- Invite by Email -->
+                    <div style="margin-top: 20px; padding-top: 20px; border-top: 1px solid var(--gray-200);">
+                        <label class="form-label">Invite by Email</label>
+                        <form method="POST" action="{{ url_for('send_referral_invite') }}" style="display: flex; gap: 8px;">
+                            <input type="email" name="invited_email" class="form-input" placeholder="friend@company.com.au" required style="flex: 1;">
+                            <button type="submit" class="btn btn-primary" style="white-space: nowrap;">Send Invite</button>
+                        </form>
+                        <small style="color: var(--gray-500); display: block; margin-top: 6px;">We'll send them a branded invite email with your referral link.</small>
                     </div>
+
+                    <!-- Sent Invites -->
+                    {% if sent_invites %}
+                    <div style="margin-top: 20px; padding-top: 20px; border-top: 1px solid var(--gray-200);">
+                        <label class="form-label">Sent Invites</label>
+                        <div style="display: flex; flex-direction: column; gap: 8px;">
+                            {% for invite in sent_invites %}
+                            <div style="display: flex; align-items: center; justify-content: space-between; background: var(--gray-50); padding: 10px 14px; border-radius: 8px; font-size: 14px;">
+                                <span>{{ invite.invited_email }}</span>
+                                <span style="padding: 2px 8px; border-radius: 4px; font-size: 12px; font-weight: 500;
+                                    {% if invite.status == 'converted' %}background: #D1FAE5; color: #065F46;
+                                    {% elif invite.status == 'signed_up' %}background: #DBEAFE; color: #1E40AF;
+                                    {% else %}background: var(--gray-100); color: var(--gray-500);{% endif %}">
+                                    {% if invite.status == 'converted' %}Subscribed
+                                    {% elif invite.status == 'signed_up' %}Signed Up
+                                    {% else %}Pending{% endif %}
+                                </span>
+                            </div>
+                            {% endfor %}
+                        </div>
+                    </div>
+                    {% endif %}
                 </div>
             </div>
         </div>

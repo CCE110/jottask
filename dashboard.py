@@ -1858,6 +1858,16 @@ def signup(referral_code=None):
                         'status': 'trial'
                     }).execute()
 
+                # Update referral invite status if this email was invited
+                try:
+                    supabase.table('referral_invites') \
+                        .update({'status': 'signed_up', 'signed_up_at': datetime.now(pytz.UTC).isoformat()}) \
+                        .eq('invited_email', email) \
+                        .eq('status', 'sent') \
+                        .execute()
+                except Exception:
+                    pass  # Table may not exist yet
+
                 # Log them in
                 session['user_id'] = auth_response.user.id
                 session['user_email'] = email
@@ -2622,6 +2632,19 @@ def settings():
     except Exception:
         pass
 
+    # Get sent invites
+    sent_invites = []
+    try:
+        invites_result = supabase.table('referral_invites') \
+            .select('invited_email, status, sent_at') \
+            .eq('referrer_id', user_id) \
+            .order('sent_at', desc=True) \
+            .limit(20) \
+            .execute()
+        sent_invites = invites_result.data or []
+    except Exception:
+        pass
+
     return render_template(
         'settings.html',
         title='Settings',
@@ -2631,6 +2654,7 @@ def settings():
         converted_count=converted_count,
         referral_link=f"https://www.jottask.app/r/{sub.get('referral_code', '')}",
         crm_connection=crm_connection,
+        sent_invites=sent_invites,
         message=request.args.get('message')
     )
 
@@ -2677,6 +2701,75 @@ def update_summary_settings():
     supabase.table('users').update(update_data).eq('id', user_id).execute()
 
     return redirect(url_for('settings', message='Summary settings updated successfully'))
+
+
+@app.route('/settings/invite', methods=['POST'])
+@login_required
+def send_referral_invite():
+    user_id = session['user_id']
+    invited_email = request.form.get('invited_email', '').strip().lower()
+
+    if not invited_email or '@' not in invited_email:
+        return redirect(url_for('settings', message='Please enter a valid email'))
+
+    # Get referrer info
+    user = supabase.table('users').select('full_name, referral_code').eq('id', user_id).single().execute()
+    if not user.data or not user.data.get('referral_code'):
+        return redirect(url_for('settings', message='Referral code not found'))
+
+    referrer_name = user.data.get('full_name', 'A Jottask user')
+    referral_code = user.data['referral_code']
+    referral_link = f"https://www.jottask.app/r/{referral_code}"
+
+    # Check if already invited
+    existing = supabase.table('referral_invites') \
+        .select('id').eq('referrer_id', user_id).eq('invited_email', invited_email).execute()
+    if existing.data:
+        return redirect(url_for('settings', message=f'You already invited {invited_email}'))
+
+    # Save the invite
+    try:
+        supabase.table('referral_invites').insert({
+            'referrer_id': user_id,
+            'invited_email': invited_email,
+            'referral_code': referral_code,
+            'status': 'sent',
+        }).execute()
+    except Exception as e:
+        print(f"Error saving invite: {e}")
+        return redirect(url_for('settings', message='Failed to save invite'))
+
+    # Send the invite email
+    html_content = f"""
+    <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 560px; margin: 0 auto;">
+        <div style="background: linear-gradient(135deg, #6366F1, #8B5CF6); padding: 32px; border-radius: 12px 12px 0 0; text-align: center;">
+            <h1 style="color: white; margin: 0; font-size: 24px;">You're Invited to Jottask</h1>
+        </div>
+        <div style="background: white; padding: 32px; border: 1px solid #E5E7EB; border-top: none; border-radius: 0 0 12px 12px;">
+            <p style="font-size: 16px; color: #374151; margin-bottom: 16px;">
+                <strong>{referrer_name}</strong> thinks you'd love Jottask — an AI-powered task management platform built for solar sales teams.
+            </p>
+            <p style="font-size: 15px; color: #6B7280; margin-bottom: 24px;">
+                Forward your emails to Jottask and it does the rest — creates tasks, tracks follow-ups, sends reminders, and syncs your CRM.
+            </p>
+            <div style="text-align: center; margin-bottom: 24px;">
+                <a href="{referral_link}" style="display: inline-block; background: #6366F1; color: white; padding: 14px 32px; border-radius: 8px; text-decoration: none; font-weight: 600; font-size: 16px;">
+                    Start Free Trial
+                </a>
+            </div>
+            <p style="font-size: 13px; color: #9CA3AF; text-align: center;">
+                You'll both get <strong>$5 credit</strong> when you subscribe.
+            </p>
+        </div>
+    </div>
+    """
+
+    success, error = send_email(invited_email, f'{referrer_name} invited you to Jottask', html_content)
+    if success:
+        return redirect(url_for('settings', message=f'Invite sent to {invited_email}!'))
+    else:
+        print(f"Failed to send referral invite: {error}")
+        return redirect(url_for('settings', message=f'Invite saved but email failed to send'))
 
 
 @app.route('/billing')
