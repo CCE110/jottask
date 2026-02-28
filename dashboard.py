@@ -1785,6 +1785,20 @@ def login():
     return render_template('login.html', error=None)
 
 
+@app.route('/forgot-password', methods=['GET', 'POST'])
+def forgot_password():
+    if request.method == 'POST':
+        email = request.form.get('email', '').strip().lower()
+        if email:
+            try:
+                supabase.auth.reset_password_email(email)
+            except Exception:
+                pass  # Don't reveal whether email exists
+        # Always show success (security: don't reveal if email exists)
+        return render_template('forgot_password.html', sent=True, email=email)
+    return render_template('forgot_password.html', sent=False, email=None)
+
+
 @app.route('/signup', methods=['GET', 'POST'])
 @app.route('/r/<referral_code>', methods=['GET'])
 def signup(referral_code=None):
