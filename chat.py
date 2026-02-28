@@ -195,14 +195,71 @@ def build_system_prompt(user_id):
 
     company_line = f" at {company}" if company else ""
 
-    return f"""You are Jottask AI, a task management assistant for {user_name}{company_line}.
+    # Detect connected services dynamically
+    connected_services = []
+    try:
+        email_conns = supabase.table('email_connections') \
+            .select('provider, email_address, is_active') \
+            .eq('user_id', user_id).execute()
+        for ec in (email_conns.data or []):
+            status = "active" if ec.get('is_active') else "paused"
+            connected_services.append(f"Email: {ec['email_address']} ({ec['provider']}, {status})")
+    except Exception:
+        pass
+
+    try:
+        crm_conns = supabase.table('crm_connections') \
+            .select('provider, status') \
+            .eq('user_id', user_id).execute()
+        for cc in (crm_conns.data or []):
+            connected_services.append(f"CRM: {cc['provider']} ({cc.get('status', 'connected')})")
+    except Exception:
+        pass
+
+    # Count projects
+    project_count = 0
+    try:
+        proj = supabase.table('saas_projects').select('id', count='exact') \
+            .eq('user_id', user_id).eq('status', 'active').execute()
+        project_count = proj.count or 0
+    except Exception:
+        pass
+
+    services_block = ""
+    if connected_services:
+        services_block = "\n\nConnected services:\n" + "\n".join(f"- {s}" for s in connected_services)
+
+    # Build tool capabilities list dynamically from registered handlers
+    tool_names = list(TOOL_HANDLERS.keys())
+    tool_list = ", ".join(t.replace("_", " ") for t in tool_names)
+
+    return f"""You are Jottask AI, a smart task management assistant for {user_name}{company_line}.
 Today: {now.strftime('%A, %d %B %Y')}. Time: {now.strftime('%I:%M %p')} {timezone}.
 
-Current workload: {overdue_count} overdue, {today_count} due today, {pending_count} total pending.
+Current workload: {overdue_count} overdue, {today_count} due today, {pending_count} total pending, {project_count} active projects.
+{services_block}
 
-You help manage tasks through conversation. Be concise and helpful. When creating tasks, confirm what you created with the key details. For relative dates ("tomorrow", "next Monday"), calculate the actual date from today ({today.isoformat()}). If a request is ambiguous (multiple tasks match), ask which task they mean. Stay focused on task management.
+WHAT YOU CAN DO (use your tools):
+- {tool_list}
 
-When listing tasks, format them clearly. Use the tools provided — don't make up task data."""
+PLATFORM FEATURES (guide users to these when relevant):
+- Task management: create, edit, complete, delay, prioritise, add notes/checklists (/dashboard)
+- Email-to-task: forward emails to their connected inbox and Jottask auto-creates tasks
+- Task reminders: set due_time and get email reminders before tasks are due
+- Daily summary: configurable morning email with overdue + today's tasks (/settings)
+- Projects: group related items with progress tracking (/projects)
+- CRM integrations: PipeReply, HubSpot, Zoho — connect via /settings or /crm
+- Email connections: connect Gmail/IMAP for automatic email processing (/email)
+- Subscription & billing: starter/pro/business tiers (/billing)
+- Action buttons in emails: complete, delay, reschedule tasks from email
+
+RULES:
+- Be concise and helpful. Confirm key details when creating/modifying tasks.
+- For relative dates ("tomorrow", "next Monday"), calculate from today ({today.isoformat()}).
+- If a request is ambiguous (multiple tasks match), ask which task they mean.
+- Use tools — never make up task data.
+- When listing tasks, format them clearly with due dates and priorities.
+- If asked about a feature you can't do via tools, explain the feature and point them to the right page."""
 
 
 # ========================================
