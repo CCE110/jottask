@@ -74,10 +74,19 @@
 
                         <div class="form-group">
                             <label class="form-label">Alternate Emails</label>
-                            <input type="text" name="alternate_emails" class="form-input"
-                                   value="{{ user.alternate_emails|join(', ') if user.alternate_emails else '' }}"
-                                   placeholder="other@email.com, work@email.com">
-                            <small style="color: var(--gray-500);">Comma-separated. Emails you send FROM that should create tasks in your account.</small>
+                            <div id="alt-emails-container" style="display: flex; flex-direction: column; gap: 8px;">
+                                {% for email in (user.alternate_emails or []) %}
+                                <div class="alt-email-row" style="display: flex; gap: 8px; align-items: center;">
+                                    <input type="email" name="alternate_emails_list" class="form-input alt-email-input" value="{{ email }}" placeholder="email@company.com">
+                                    <button type="button" onclick="removeAltEmail(this)" style="background: none; border: none; color: var(--gray-400); cursor: pointer; font-size: 20px; padding: 4px 8px; border-radius: 4px;" title="Remove">&times;</button>
+                                </div>
+                                {% endfor %}
+                                <div class="alt-email-row" style="display: flex; gap: 8px; align-items: center;">
+                                    <input type="email" name="alternate_emails_list" class="form-input alt-email-input" value="" placeholder="Add another email...">
+                                    <button type="button" onclick="removeAltEmail(this)" style="background: none; border: none; color: var(--gray-400); cursor: pointer; font-size: 20px; padding: 4px 8px; border-radius: 4px; visibility: hidden;" title="Remove">&times;</button>
+                                </div>
+                            </div>
+                            <small style="color: var(--gray-500); margin-top: 4px; display: block;">Emails you send FROM that should create tasks in your account.</small>
                         </div>
 
                         <div class="form-group">
@@ -272,6 +281,29 @@ function copyReferralLink() {
     input.select();
     document.execCommand('copy');
     alert('Referral link copied!');
+}
+
+// Alternate emails: auto-add new row when typing in the last empty one
+document.getElementById('alt-emails-container').addEventListener('input', function(e) {
+    if (!e.target.classList.contains('alt-email-input')) return;
+    const rows = this.querySelectorAll('.alt-email-row');
+    const lastRow = rows[rows.length - 1];
+    const lastInput = lastRow.querySelector('.alt-email-input');
+    // If user typed in the last (empty) row, add a new empty row and show its remove button
+    if (e.target === lastInput && lastInput.value.trim()) {
+        lastRow.querySelector('button').style.visibility = 'visible';
+        const newRow = document.createElement('div');
+        newRow.className = 'alt-email-row';
+        newRow.style = 'display: flex; gap: 8px; align-items: center;';
+        newRow.innerHTML = '<input type="email" name="alternate_emails_list" class="form-input alt-email-input" value="" placeholder="Add another email...">' +
+            '<button type="button" onclick="removeAltEmail(this)" style="background: none; border: none; color: var(--gray-400); cursor: pointer; font-size: 20px; padding: 4px 8px; border-radius: 4px; visibility: hidden;" title="Remove">&times;</button>';
+        this.appendChild(newRow);
+    }
+});
+
+function removeAltEmail(btn) {
+    const row = btn.parentElement;
+    row.remove();
 }
 </script>
 {% endblock %}

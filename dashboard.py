@@ -2640,9 +2640,13 @@ def settings():
 def update_profile():
     user_id = session['user_id']
 
-    # Parse alternate emails from comma-separated string
-    alternate_emails_str = request.form.get('alternate_emails', '')
-    alternate_emails = [e.strip().lower() for e in alternate_emails_str.split(',') if e.strip()]
+    # Parse alternate emails from individual inputs (or legacy comma-separated)
+    email_list = request.form.getlist('alternate_emails_list')
+    if email_list:
+        alternate_emails = [e.strip().lower() for e in email_list if e.strip()]
+    else:
+        alternate_emails_str = request.form.get('alternate_emails', '')
+        alternate_emails = [e.strip().lower() for e in alternate_emails_str.split(',') if e.strip()]
 
     update_data = {
         'full_name': request.form.get('full_name'),
