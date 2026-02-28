@@ -1800,7 +1800,7 @@ def forgot_password():
 
 
 @app.route('/signup', methods=['GET', 'POST'])
-@app.route('/r/<referral_code>', methods=['GET'])
+@app.route('/r/<referral_code>', methods=['GET', 'POST'])
 def signup(referral_code=None):
     # Get referral code from URL or form
     ref_code = referral_code or request.args.get('ref') or request.form.get('referral_code')
