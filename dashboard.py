@@ -4351,19 +4351,22 @@ def admin_resend_reminders():
     """Resend reminders for ALL tasks due in the last 48 hours (whether or not they were already sent)."""
     from saas_scheduler import generate_reminder_email_html
 
+    today = datetime.now(pytz.UTC).strftime('%Y-%m-%d')
     cutoff = (datetime.now(pytz.UTC) - timedelta(hours=48)).strftime('%Y-%m-%d')
 
-    # Find ALL tasks due in the last 48h — pending or completed, regardless of reminder_sent_at
+    # Find ALL tasks due between cutoff and today (not future tasks)
     pending_result = supabase.table('tasks') \
         .select('id, title, due_date, due_time, priority, status, client_name, user_id') \
         .eq('status', 'pending') \
         .gte('due_date', cutoff) \
+        .lte('due_date', today) \
         .execute()
 
     completed_result = supabase.table('tasks') \
         .select('id, title, due_date, due_time, priority, status, client_name, user_id') \
         .eq('status', 'completed') \
         .gte('due_date', cutoff) \
+        .lte('due_date', today) \
         .execute()
 
     all_tasks = (pending_result.data or []) + (completed_result.data or [])
