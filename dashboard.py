@@ -4348,34 +4348,31 @@ def admin_chat_reply(conversation_id):
 @app.route('/admin/resend-reminders', methods=['POST'])
 @admin_required
 def admin_resend_reminders():
-    """Find tasks from last 48 hours that missed reminders and resend them."""
+    """Resend reminders for ALL tasks due in the last 48 hours (whether or not they were already sent)."""
     from saas_scheduler import generate_reminder_email_html
 
     cutoff = (datetime.now(pytz.UTC) - timedelta(hours=48)).strftime('%Y-%m-%d')
 
-    # Find pending tasks due in the last 48h that never got a reminder
-    tasks_result = supabase.table('tasks') \
-        .select('id, title, due_date, due_time, priority, status, client_name, user_id, reminder_sent_at') \
+    # Find ALL tasks due in the last 48h — pending or completed, regardless of reminder_sent_at
+    pending_result = supabase.table('tasks') \
+        .select('id, title, due_date, due_time, priority, status, client_name, user_id') \
         .eq('status', 'pending') \
-        .is_('reminder_sent_at', 'null') \
         .gte('due_date', cutoff) \
         .execute()
 
-    # Also find completed tasks that were due but never reminded
     completed_result = supabase.table('tasks') \
-        .select('id, title, due_date, due_time, priority, status, client_name, user_id, reminder_sent_at') \
+        .select('id, title, due_date, due_time, priority, status, client_name, user_id') \
         .eq('status', 'completed') \
-        .is_('reminder_sent_at', 'null') \
         .gte('due_date', cutoff) \
         .execute()
 
-    all_missed = (tasks_result.data or []) + (completed_result.data or [])
+    all_tasks = (pending_result.data or []) + (completed_result.data or [])
 
-    if not all_missed:
-        return jsonify({'message': 'No missed reminders in the last 48 hours', 'sent': 0})
+    if not all_tasks:
+        return jsonify({'message': 'No tasks due in the last 48 hours', 'sent': 0})
 
     # Get user details for each task
-    user_ids = list(set(t['user_id'] for t in all_missed if t.get('user_id')))
+    user_ids = list(set(t['user_id'] for t in all_tasks if t.get('user_id')))
     users = {}
     for uid in user_ids:
         u = supabase.table('users').select('id, email, full_name, timezone, alternate_emails').eq('id', uid).execute()
@@ -4384,15 +4381,17 @@ def admin_resend_reminders():
 
     sent_count = 0
     details = []
-    for task in all_missed:
+    for task in all_tasks:
         user_id = task.get('user_id')
         user = users.get(user_id)
         if not user:
             continue
 
         display_time = task.get('due_time', 'today')
-        subject = f"Missed reminder: {task['title'][:50]} - was due {task.get('due_date')} {display_time or ''}"
-        html_content = generate_reminder_email_html(task, display_time or 'today', user.get('full_name', ''), is_overdue=True)
+        is_overdue = task.get('status') == 'pending'
+        prefix = "Overdue" if is_overdue else "Reminder"
+        subject = f"{prefix}: {task['title'][:50]} - due {task.get('due_date')} {display_time or ''}"
+        html_content = generate_reminder_email_html(task, display_time or 'today', user.get('full_name', ''), is_overdue=is_overdue)
 
         # Send to primary + alternate emails
         recipients = [user['email']]
@@ -4405,15 +4404,17 @@ def admin_resend_reminders():
                                        category='reminder', user_id=user_id, task_id=task['id'])
             if success:
                 sent_count += 1
-                details.append(f"{task['title'][:40]} → {recipient}")
+                details.append(f"{task['title'][:40]} -> {recipient}")
+            else:
+                details.append(f"FAILED {task['title'][:40]} -> {recipient}: {error}")
 
-        # Mark reminder as sent so they don't get resent
+        # Mark reminder as sent
         supabase.table('tasks').update({
             'reminder_sent_at': datetime.now(pytz.UTC).isoformat()
         }).eq('id', task['id']).execute()
 
     return jsonify({
-        'message': f'Resent {sent_count} reminder(s) for {len(all_missed)} missed task(s)',
+        'message': f'Sent {sent_count} reminder(s) for {len(all_tasks)} task(s)',
         'sent': sent_count,
         'tasks': details
     })
