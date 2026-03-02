@@ -194,6 +194,60 @@ class AIEmailProcessor:
             print(f"  Error building legacy context: {e}")
             self._legacy_context = None
 
+    def _find_user_by_email(self, sender_email):
+        """Look up a registered user by their email or alternate_emails.
+        Returns a UserContext if found, None otherwise."""
+        if not sender_email:
+            return None
+        sender_lower = sender_email.lower()
+        try:
+            # Check primary email first
+            result = self.tm.supabase.table('users') \
+                .select('id, email, full_name, company_name, timezone, ai_context') \
+                .eq('email', sender_lower) \
+                .limit(1) \
+                .execute()
+            if result.data:
+                user = result.data[0]
+                ai_ctx = user.get('ai_context') or {}
+                businesses = ai_ctx.get('businesses', {})
+                print(f"  Sender match (primary): {sender_lower} → {user.get('full_name')} ({user['id'][:8]}...)")
+                return UserContext(
+                    user_id=user['id'],
+                    email_address=user.get('email', ''),
+                    company_name=user.get('company_name', ''),
+                    full_name=user.get('full_name', ''),
+                    timezone=user.get('timezone', 'Australia/Brisbane'),
+                    businesses=businesses,
+                    ai_context=ai_ctx,
+                    connection_id=None,
+                )
+
+            # Check alternate_emails (stored as JSONB array)
+            result = self.tm.supabase.table('users') \
+                .select('id, email, full_name, company_name, timezone, ai_context, alternate_emails') \
+                .not_.is_('alternate_emails', 'null') \
+                .execute()
+            for user in (result.data or []):
+                alt_emails = user.get('alternate_emails') or []
+                if sender_lower in [e.lower() for e in alt_emails]:
+                    ai_ctx = user.get('ai_context') or {}
+                    businesses = ai_ctx.get('businesses', {})
+                    print(f"  Sender match (alternate): {sender_lower} → {user.get('full_name')} ({user['id'][:8]}...)")
+                    return UserContext(
+                        user_id=user['id'],
+                        email_address=user.get('email', ''),
+                        company_name=user.get('company_name', ''),
+                        full_name=user.get('full_name', ''),
+                        timezone=user.get('timezone', 'Australia/Brisbane'),
+                        businesses=businesses,
+                        ai_context=ai_ctx,
+                        connection_id=None,
+                    )
+        except Exception as e:
+            print(f"  Error looking up sender {sender_email}: {e}")
+        return None
+
     def _build_user_context(self, connection):
         """Build a UserContext from an email_connections row (with joined user data)"""
         user_data = connection.get('users') or {}
@@ -474,8 +528,13 @@ class AIEmailProcessor:
                 sender_raw = email_body.get('From', '')
                 sender_addr = self._get_sender_email_address(sender_raw)
 
-                # Process this email (pass legacy context so tasks get a user_id)
-                result = self.process_single_email_body(email_body, user_context=getattr(self, '_legacy_context', None))
+                # Match sender to a registered user; fall back to admin context
+                matched_context = self._find_user_by_email(sender_addr)
+                if not matched_context:
+                    matched_context = getattr(self, '_legacy_context', None)
+
+                # Process this email with the matched user's context
+                result = self.process_single_email_body(email_body, user_context=matched_context)
                 outcome, outcome_detail = result if result else ('error', 'No result returned')
                 processed_count += 1
 
