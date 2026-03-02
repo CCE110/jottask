@@ -4169,28 +4169,39 @@ def admin_dashboard():
                 </div>
             </div>
 
-            <div class="card" style="padding: 20px; display: flex; align-items: center; justify-content: space-between;">
-                <div>
-                    <strong>Resend Missed Reminders</strong>
-                    <div style="color: #6B7280; font-size: 14px; margin-top: 2px;">Find tasks from last 48h that missed reminders and send them now</div>
+            <div class="card" style="padding: 20px;">
+                <div style="display: flex; align-items: center; justify-content: space-between;">
+                    <div>
+                        <strong>Resend Missed Reminders</strong>
+                        <div style="color: #6B7280; font-size: 14px; margin-top: 2px;">Find tasks due in last 48h and resend reminders to all emails</div>
+                    </div>
+                    <button id="resendBtn" onclick="resendReminders()" style="background: #6366F1; color: white; border: none; padding: 10px 20px; border-radius: 8px; font-weight: 600; cursor: pointer; white-space: nowrap;">Resend Reminders</button>
                 </div>
-                <button id="resendBtn" onclick="resendReminders()" style="background: #6366F1; color: white; border: none; padding: 10px 20px; border-radius: 8px; font-weight: 600; cursor: pointer; white-space: nowrap;">Resend Reminders</button>
+                <div id="resendResult" style="display: none; margin-top: 12px; padding: 12px; background: #F9FAFB; border-radius: 8px; font-size: 13px; font-family: monospace; white-space: pre-wrap; max-height: 300px; overflow-y: auto;"></div>
                 <script>
                 async function resendReminders() {{
                     const btn = document.getElementById('resendBtn');
+                    const result = document.getElementById('resendResult');
                     btn.disabled = true;
                     btn.textContent = 'Sending...';
                     btn.style.opacity = '0.6';
+                    result.style.display = 'block';
+                    result.textContent = 'Querying tasks...';
                     try {{
                         const res = await fetch('/admin/resend-reminders', {{ method: 'POST' }});
                         const data = await res.json();
-                        btn.textContent = data.sent > 0 ? `Sent ${{data.sent}} reminder(s)` : 'No missed reminders';
+                        btn.textContent = data.sent > 0 ? `Sent ${{data.sent}} reminder(s)` : 'No tasks found';
                         btn.style.background = data.sent > 0 ? '#10B981' : '#6B7280';
-                        setTimeout(() => {{ btn.textContent = 'Resend Reminders'; btn.style.background = '#6366F1'; btn.style.opacity = '1'; btn.disabled = false; }}, 4000);
+                        result.textContent = data.message + '\\n\\n' + (data.tasks || []).join('\\n');
+                        if (!data.tasks || data.tasks.length === 0) {{
+                            result.textContent += '\\nDebug: cutoff=' + (data.debug_cutoff || '?') + ' today=' + (data.debug_today || '?');
+                        }}
+                        setTimeout(() => {{ btn.textContent = 'Resend Reminders'; btn.style.background = '#6366F1'; btn.style.opacity = '1'; btn.disabled = false; }}, 8000);
                     }} catch(e) {{
                         btn.textContent = 'Error';
                         btn.style.background = '#EF4444';
-                        setTimeout(() => {{ btn.textContent = 'Resend Reminders'; btn.style.background = '#6366F1'; btn.style.opacity = '1'; btn.disabled = false; }}, 3000);
+                        result.textContent = 'Error: ' + e.message;
+                        setTimeout(() => {{ btn.textContent = 'Resend Reminders'; btn.style.background = '#6366F1'; btn.style.opacity = '1'; btn.disabled = false; }}, 5000);
                     }}
                 }}
                 </script>
@@ -4354,7 +4365,9 @@ def admin_resend_reminders():
     today = datetime.now(pytz.UTC).strftime('%Y-%m-%d')
     cutoff = (datetime.now(pytz.UTC) - timedelta(hours=48)).strftime('%Y-%m-%d')
 
-    # Find ALL tasks due between cutoff and today (not future tasks)
+    print(f"[resend-reminders] cutoff={cutoff} today={today}")
+
+    # Find ALL tasks due between cutoff and today — any status, ignore reminder_sent_at
     pending_result = supabase.table('tasks') \
         .select('id, title, due_date, due_time, priority, status, client_name, user_id') \
         .eq('status', 'pending') \
@@ -4370,9 +4383,15 @@ def admin_resend_reminders():
         .execute()
 
     all_tasks = (pending_result.data or []) + (completed_result.data or [])
+    print(f"[resend-reminders] found {len(pending_result.data or [])} pending + {len(completed_result.data or [])} completed = {len(all_tasks)} total")
 
     if not all_tasks:
-        return jsonify({'message': 'No tasks due in the last 48 hours', 'sent': 0})
+        return jsonify({
+            'message': 'No tasks due in the last 48 hours',
+            'sent': 0,
+            'debug_cutoff': cutoff,
+            'debug_today': today
+        })
 
     # Get user details for each task
     user_ids = list(set(t['user_id'] for t in all_tasks if t.get('user_id')))
