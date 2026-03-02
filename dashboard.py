@@ -4367,23 +4367,16 @@ def admin_resend_reminders():
 
     print(f"[resend-reminders] cutoff={cutoff} today={today}")
 
-    # Find ALL tasks due between cutoff and today — any status, ignore reminder_sent_at
-    pending_result = supabase.table('tasks') \
+    # Find PENDING tasks due between cutoff and today (skip completed — they don't need reminders)
+    result = supabase.table('tasks') \
         .select('id, title, due_date, due_time, priority, status, client_name, user_id') \
         .eq('status', 'pending') \
         .gte('due_date', cutoff) \
         .lte('due_date', today) \
         .execute()
 
-    completed_result = supabase.table('tasks') \
-        .select('id, title, due_date, due_time, priority, status, client_name, user_id') \
-        .eq('status', 'completed') \
-        .gte('due_date', cutoff) \
-        .lte('due_date', today) \
-        .execute()
-
-    all_tasks = (pending_result.data or []) + (completed_result.data or [])
-    print(f"[resend-reminders] found {len(pending_result.data or [])} pending + {len(completed_result.data or [])} completed = {len(all_tasks)} total")
+    all_tasks = result.data or []
+    print(f"[resend-reminders] found {len(all_tasks)} pending tasks due {cutoff} to {today}")
 
     if not all_tasks:
         return jsonify({
@@ -4410,25 +4403,17 @@ def admin_resend_reminders():
             continue
 
         display_time = task.get('due_time', 'today')
-        is_overdue = task.get('status') == 'pending'
-        prefix = "Overdue" if is_overdue else "Reminder"
-        subject = f"{prefix}: {task['title'][:50]} - due {task.get('due_date')} {display_time or ''}"
-        html_content = generate_reminder_email_html(task, display_time or 'today', user.get('full_name', ''), is_overdue=is_overdue)
+        subject = f"Overdue: {task['title'][:50]} - due {task.get('due_date')} {display_time or ''}"
+        html_content = generate_reminder_email_html(task, display_time or 'today', user.get('full_name', ''), is_overdue=True)
 
-        # Send to primary + alternate emails
-        recipients = [user['email']]
-        for alt in (user.get('alternate_emails') or []):
-            if alt and alt.lower() != user['email'].lower():
-                recipients.append(alt)
-
-        for recipient in recipients:
-            success, error = send_email(recipient, subject, html_content,
-                                       category='reminder', user_id=user_id, task_id=task['id'])
-            if success:
-                sent_count += 1
-                details.append(f"{task['title'][:40]} -> {recipient}")
-            else:
-                details.append(f"FAILED {task['title'][:40]} -> {recipient}: {error}")
+        # Send to primary email only
+        success, error = send_email(user['email'], subject, html_content,
+                                   category='reminder', user_id=user_id, task_id=task['id'])
+        if success:
+            sent_count += 1
+            details.append(f"{task['title'][:40]} -> {user['email']}")
+        else:
+            details.append(f"FAILED {task['title'][:40]} -> {user['email']}: {error}")
 
         # Mark reminder as sent
         supabase.table('tasks').update({

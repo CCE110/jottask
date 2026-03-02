@@ -325,22 +325,11 @@ def send_daily_summary(user):
         projects_summary
     )
 
-    # Send email to primary + alternate emails
+    # Send email to primary email only
     subject = f"Your Daily Summary - {datetime.now(pytz.timezone(user_timezone)).strftime('%b %d')}"
-    recipients = [user_email]
-    for alt in (user.get('alternate_emails') or []):
-        if alt and alt.lower() != user_email.lower():
-            recipients.append(alt)
+    success, error = send_email(user_email, subject, html_content, category='summary', user_id=user_id)
 
-    any_success = False
-    for recipient in recipients:
-        success, error = send_email(recipient, subject, html_content, category='summary', user_id=user_id)
-        if success:
-            any_success = True
-        else:
-            print(f"    Failed to send summary to {recipient}: {error}")
-
-    if any_success:
+    if success:
         # Update last_summary_sent_at
         _get_supabase().table('users').update({
             'last_summary_sent_at': datetime.now(pytz.UTC).isoformat()
@@ -540,22 +529,11 @@ def check_and_send_reminders():
                     task, display_time, user.get('full_name', ''), is_overdue=is_overdue
                 )
 
-                # Send to primary + alternate emails
-                recipients = [user['email']]
-                for alt in (user.get('alternate_emails') or []):
-                    if alt and alt.lower() != user['email'].lower():
-                        recipients.append(alt)
+                success, error = send_email(user['email'], subject, html_content,
+                                           category='reminder', user_id=user_id, task_id=task['id'])
 
-                any_success = False
-                for recipient in recipients:
-                    success, error = send_email(recipient, subject, html_content,
-                                               category='reminder', user_id=user_id, task_id=task['id'])
-                    if success:
-                        any_success = True
-                    else:
-                        print(f"   ❌ Failed to send to {recipient}: {error}")
-
-                if not any_success:
+                if not success:
+                    print(f"   ❌ Failed to send: {error}")
                     continue
 
                 _get_supabase().table('tasks').update({
@@ -610,22 +588,11 @@ def check_and_send_reminders():
                     task, display_time, user.get('full_name', ''), is_overdue=is_overdue
                 )
 
-                # Send to primary + alternate emails
-                recipients = [user['email']]
-                for alt in (user.get('alternate_emails') or []):
-                    if alt and alt.lower() != user['email'].lower():
-                        recipients.append(alt)
+                success, error = send_email(user['email'], subject, html_content,
+                                           category='reminder', user_id=user_id, task_id=task['id'])
 
-                any_success = False
-                for recipient in recipients:
-                    success, error = send_email(recipient, subject, html_content,
-                                               category='reminder', user_id=user_id, task_id=task['id'])
-                    if success:
-                        any_success = True
-                    else:
-                        print(f"   ❌ Failed to send to {recipient}: {error}")
-
-                if not any_success:
+                if not success:
+                    print(f"   ❌ Failed to send: {error}")
                     continue
 
                 _get_supabase().table('tasks').update({
