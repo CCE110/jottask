@@ -4169,6 +4169,33 @@ def admin_dashboard():
                 </div>
             </div>
 
+            <div class="card" style="padding: 20px; display: flex; align-items: center; justify-content: space-between;">
+                <div>
+                    <strong>Resend Missed Reminders</strong>
+                    <div style="color: #6B7280; font-size: 14px; margin-top: 2px;">Find tasks from last 48h that missed reminders and send them now</div>
+                </div>
+                <button id="resendBtn" onclick="resendReminders()" style="background: #6366F1; color: white; border: none; padding: 10px 20px; border-radius: 8px; font-weight: 600; cursor: pointer; white-space: nowrap;">Resend Reminders</button>
+                <script>
+                async function resendReminders() {{
+                    const btn = document.getElementById('resendBtn');
+                    btn.disabled = true;
+                    btn.textContent = 'Sending...';
+                    btn.style.opacity = '0.6';
+                    try {{
+                        const res = await fetch('/admin/resend-reminders', {{ method: 'POST' }});
+                        const data = await res.json();
+                        btn.textContent = data.sent > 0 ? `Sent ${{data.sent}} reminder(s)` : 'No missed reminders';
+                        btn.style.background = data.sent > 0 ? '#10B981' : '#6B7280';
+                        setTimeout(() => {{ btn.textContent = 'Resend Reminders'; btn.style.background = '#6366F1'; btn.style.opacity = '1'; btn.disabled = false; }}, 4000);
+                    }} catch(e) {{
+                        btn.textContent = 'Error';
+                        btn.style.background = '#EF4444';
+                        setTimeout(() => {{ btn.textContent = 'Resend Reminders'; btn.style.background = '#6366F1'; btn.style.opacity = '1'; btn.disabled = false; }}, 3000);
+                    }}
+                }}
+                </script>
+            </div>
+
             <div class="card">
                 <div class="card-header">Escalated Support Chats</div>
                 <table>
