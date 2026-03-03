@@ -438,19 +438,22 @@ def check_and_send_reminders():
         print(f"   Found {len(users)} user(s)")
 
         # Get pending tasks that need a reminder:
-        # 1) Never reminded (reminder_sent_at IS NULL)
-        # 2) Overdue and last reminded > 24h ago (daily re-reminder for overdue tasks)
+        # 1) Never reminded (reminder_sent_at IS NULL) — bounded to last 30 days
+        # 2) Overdue and last reminded > 24h ago (daily re-reminder, max 7 days old)
+        thirty_days_ago = (datetime.now(pytz.UTC) - timedelta(days=30)).strftime('%Y-%m-%d')
+        seven_days_ago = (datetime.now(pytz.UTC) - timedelta(days=7)).strftime('%Y-%m-%d')
+        today_str_utc = datetime.now(pytz.UTC).strftime('%Y-%m-%d')
+        twenty_four_h_ago = (datetime.now(pytz.UTC) - timedelta(hours=24)).isoformat()
+
         never_reminded = _get_supabase().table('tasks')\
             .select('id, title, due_date, due_time, priority, status, client_name, user_id, reminder_sent_at')\
             .eq('status', 'pending')\
             .is_('reminder_sent_at', 'null')\
+            .gte('due_date', thirty_days_ago)\
+            .limit(100)\
             .execute()
 
-        # Overdue tasks that were reminded > 24h ago — re-remind daily
-        twenty_four_h_ago = (datetime.now(pytz.UTC) - timedelta(hours=24)).isoformat()
-        seven_days_ago = (datetime.now(pytz.UTC) - timedelta(days=7)).strftime('%Y-%m-%d')
-        today_str_utc = datetime.now(pytz.UTC).strftime('%Y-%m-%d')
-
+        # Overdue tasks reminded > 24h ago — re-remind once per day (max 7 days old)
         overdue_reremind = _get_supabase().table('tasks')\
             .select('id, title, due_date, due_time, priority, status, client_name, user_id, reminder_sent_at')\
             .eq('status', 'pending')\
@@ -458,6 +461,7 @@ def check_and_send_reminders():
             .lt('reminder_sent_at', twenty_four_h_ago)\
             .lte('due_date', today_str_utc)\
             .gte('due_date', seven_days_ago)\
+            .limit(50)\
             .execute()
 
         raw_tasks = (never_reminded.data or []) + (overdue_reremind.data or [])
@@ -477,6 +481,9 @@ def check_and_send_reminders():
         reremind_count = len(overdue_reremind.data or [])
         print(f"   {new_count} new + {reremind_count} overdue re-remind = {len(raw_tasks)} total")
         print(f"   {len(tasks_with_time)} with due_time, {len(tasks_date_only)} with due_date only")
+        # Log task details for debugging
+        for t in raw_tasks[:10]:
+            print(f"   -> [{t.get('status')}] {t.get('title', '')[:40]} due={t.get('due_date')} {t.get('due_time', '')} reminded={t.get('reminder_sent_at', 'never')[:16] if t.get('reminder_sent_at') else 'never'}")
 
         sent_count = 0
         skip_reasons = {'too_far_future': 0, 'too_old': 0, 'no_user': 0, 'no_date': 0, 'bad_time': 0}
