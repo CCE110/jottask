@@ -3516,25 +3516,35 @@ def api_update_task_status(task_id):
 
 
 @app.route('/api/tasks/cleanup-duplicates', methods=['POST'])
-@login_required
 def api_cleanup_duplicates():
-    """Find and cancel duplicate tasks for the current user.
+    """Find and cancel duplicate tasks for a user.
     Groups tasks by client_name, keeps the newest pending task in each group,
-    and cancels the rest. Only touches tasks owned by the logged-in user.
+    and cancels the rest. Accepts logged-in session OR internal API key.
     """
-    user_id = session['user_id']
+    # Auth: logged-in user OR internal API key
+    api_key = request.headers.get('X-Internal-Key')
+    internal_key = os.getenv('INTERNAL_API_KEY', '')
     data = request.get_json() or {}
+
+    if api_key and api_key == internal_key:
+        user_id = data.get('user_id')  # Optional: if omitted, cleans all users
+    elif 'user_id' in session:
+        user_id = session['user_id']
+    else:
+        return jsonify({'error': 'Authentication required'}), 401
     client_name_filter = data.get('client_name')  # Optional: only clean this client
     dry_run = data.get('dry_run', False)
 
     try:
-        # Get all pending tasks for this user
+        # Get all pending tasks (filtered by user if specified)
         query = supabase.table('tasks')\
-            .select('id, title, client_name, due_date, due_time, created_at, status')\
-            .eq('user_id', user_id)\
+            .select('id, title, client_name, due_date, due_time, created_at, status, user_id')\
             .eq('status', 'pending')\
             .order('created_at', desc=True)\
             .limit(500)
+
+        if user_id:
+            query = query.eq('user_id', user_id)
 
         if client_name_filter:
             query = query.ilike('client_name', f'%{client_name_filter}%')
@@ -3570,9 +3580,12 @@ def api_cleanup_duplicates():
             for i in range(0, len(cancelled_ids), 20):
                 batch = cancelled_ids[i:i+20]
                 for task_id in batch:
-                    supabase.table('tasks').update({
+                    q = supabase.table('tasks').update({
                         'status': 'cancelled'
-                    }).eq('id', task_id).eq('user_id', user_id).execute()
+                    }).eq('id', task_id)
+                    if user_id:
+                        q = q.eq('user_id', user_id)
+                    q.execute()
 
         return jsonify({
             'success': True,
