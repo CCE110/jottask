@@ -2796,7 +2796,10 @@ def handle_action():
     project_id = request.args.get('project_id')
     task_id = request.args.get('task_id')
 
-    print(f"🎯 ACTION ROUTE HIT: action={action}, task_id={task_id}, project_id={project_id}")
+    # Audit log: track who accesses action routes
+    client_ip = request.headers.get('X-Forwarded-For', request.remote_addr)
+    user_agent = request.headers.get('User-Agent', 'unknown')[:100]
+    print(f"🎯 ACTION ROUTE HIT: action={action}, task_id={task_id}, project_id={project_id} | IP={client_ip} | UA={user_agent}")
 
     # Project actions
     if action == 'view_project' and project_id:
