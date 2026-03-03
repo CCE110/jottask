@@ -4170,40 +4170,39 @@ def admin_dashboard():
             </div>
 
             <div class="card" style="padding: 20px;">
-                <div style="display: flex; align-items: center; justify-content: space-between;">
-                    <div>
-                        <strong>Resend Missed Reminders</strong>
-                        <div style="color: #6B7280; font-size: 14px; margin-top: 2px;">Find tasks due in last 48h and resend reminders to all emails</div>
+                <div style="display: flex; align-items: center; gap: 12px; flex-wrap: wrap;">
+                    <div style="flex: 1; min-width: 200px;">
+                        <strong>Reminder Tools</strong>
+                        <div style="color: #6B7280; font-size: 14px; margin-top: 2px;">Resend sends emails now. Reset clears reminder flags so the scheduler picks them up again.</div>
                     </div>
-                    <button id="resendBtn" onclick="resendReminders()" style="background: #6366F1; color: white; border: none; padding: 10px 20px; border-radius: 8px; font-weight: 600; cursor: pointer; white-space: nowrap;">Resend Reminders</button>
+                    <button id="resendBtn" onclick="resendReminders()" style="background: #6366F1; color: white; border: none; padding: 10px 16px; border-radius: 8px; font-weight: 600; cursor: pointer; white-space: nowrap; font-size: 13px;">Resend Now</button>
+                    <button id="resetBtn" onclick="resetReminders()" style="background: #F59E0B; color: white; border: none; padding: 10px 16px; border-radius: 8px; font-weight: 600; cursor: pointer; white-space: nowrap; font-size: 13px;">Reset Flags</button>
                 </div>
-                <div id="resendResult" style="display: none; margin-top: 12px; padding: 12px; background: #F9FAFB; border-radius: 8px; font-size: 13px; font-family: monospace; white-space: pre-wrap; max-height: 300px; overflow-y: auto;"></div>
+                <div id="reminderResult" style="display: none; margin-top: 12px; padding: 12px; background: #F9FAFB; border-radius: 8px; font-size: 13px; font-family: monospace; white-space: pre-wrap; max-height: 300px; overflow-y: auto;"></div>
                 <script>
-                async function resendReminders() {{
-                    const btn = document.getElementById('resendBtn');
-                    const result = document.getElementById('resendResult');
+                async function adminAction(url, btn, label) {{
+                    const result = document.getElementById('reminderResult');
                     btn.disabled = true;
-                    btn.textContent = 'Sending...';
+                    btn.textContent = 'Working...';
                     btn.style.opacity = '0.6';
                     result.style.display = 'block';
-                    result.textContent = 'Querying tasks...';
+                    result.textContent = 'Processing...';
                     try {{
-                        const res = await fetch('/admin/resend-reminders', {{ method: 'POST' }});
+                        const res = await fetch(url, {{ method: 'POST' }});
                         const data = await res.json();
-                        btn.textContent = data.sent > 0 ? `Sent ${{data.sent}} reminder(s)` : 'No tasks found';
-                        btn.style.background = data.sent > 0 ? '#10B981' : '#6B7280';
-                        result.textContent = data.message + '\\n\\n' + (data.tasks || []).join('\\n');
-                        if (!data.tasks || data.tasks.length === 0) {{
-                            result.textContent += '\\nDebug: cutoff=' + (data.debug_cutoff || '?') + ' today=' + (data.debug_today || '?');
-                        }}
-                        setTimeout(() => {{ btn.textContent = 'Resend Reminders'; btn.style.background = '#6366F1'; btn.style.opacity = '1'; btn.disabled = false; }}, 8000);
+                        btn.textContent = data.message ? 'Done' : 'No results';
+                        btn.style.background = '#10B981';
+                        result.textContent = JSON.stringify(data, null, 2);
+                        setTimeout(() => {{ btn.textContent = label; btn.style.background = url.includes('reset') ? '#F59E0B' : '#6366F1'; btn.style.opacity = '1'; btn.disabled = false; }}, 5000);
                     }} catch(e) {{
                         btn.textContent = 'Error';
                         btn.style.background = '#EF4444';
                         result.textContent = 'Error: ' + e.message;
-                        setTimeout(() => {{ btn.textContent = 'Resend Reminders'; btn.style.background = '#6366F1'; btn.style.opacity = '1'; btn.disabled = false; }}, 5000);
+                        setTimeout(() => {{ btn.textContent = label; btn.style.background = url.includes('reset') ? '#F59E0B' : '#6366F1'; btn.style.opacity = '1'; btn.disabled = false; }}, 5000);
                     }}
                 }}
+                function resendReminders() {{ adminAction('/admin/resend-reminders', document.getElementById('resendBtn'), 'Resend Now'); }}
+                function resetReminders() {{ adminAction('/admin/reset-reminders', document.getElementById('resetBtn'), 'Reset Flags'); }}
                 </script>
             </div>
 
@@ -4415,14 +4414,48 @@ def admin_resend_reminders():
         else:
             details.append(f"FAILED {task['title'][:40]} -> {user['email']}: {error}")
 
-        # Mark reminder as sent
-        supabase.table('tasks').update({
-            'reminder_sent_at': datetime.now(pytz.UTC).isoformat()
-        }).eq('id', task['id']).execute()
+        # NOTE: Do NOT update reminder_sent_at here — this is a manual resend,
+        # the scheduler should continue its normal reminder cycle independently
 
     return jsonify({
         'message': f'Sent {sent_count} reminder(s) for {len(all_tasks)} task(s)',
         'sent': sent_count,
+        'tasks': details
+    })
+
+
+@app.route('/admin/reset-reminders', methods=['POST'])
+@admin_required
+def admin_reset_reminders():
+    """Reset reminder_sent_at to NULL for pending overdue tasks so the scheduler picks them up again."""
+    today = datetime.now(pytz.UTC).strftime('%Y-%m-%d')
+    seven_days_ago = (datetime.now(pytz.UTC) - timedelta(days=7)).strftime('%Y-%m-%d')
+
+    # Find pending tasks that are overdue (due_date <= today) and have reminder_sent_at set
+    result = supabase.table('tasks') \
+        .select('id, title, due_date, due_time, reminder_sent_at') \
+        .eq('status', 'pending') \
+        .not_.is_('reminder_sent_at', 'null') \
+        .lte('due_date', today) \
+        .gte('due_date', seven_days_ago) \
+        .execute()
+
+    tasks = result.data or []
+    if not tasks:
+        return jsonify({'message': 'No pending overdue tasks with reminder flags to reset', 'reset': 0})
+
+    reset_count = 0
+    details = []
+    for task in tasks:
+        supabase.table('tasks').update({
+            'reminder_sent_at': None
+        }).eq('id', task['id']).execute()
+        reset_count += 1
+        details.append(f"{task['title'][:50]} (due {task.get('due_date')})")
+
+    return jsonify({
+        'message': f'Reset {reset_count} task(s) — scheduler will re-remind on next tick',
+        'reset': reset_count,
         'tasks': details
     })
 
