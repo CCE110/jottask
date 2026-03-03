@@ -3532,7 +3532,8 @@ def api_cleanup_duplicates():
         user_id = session['user_id']
     else:
         return jsonify({'error': 'Authentication required'}), 401
-    client_name_filter = data.get('client_name')  # Optional: only clean this client
+    client_name_filter = data.get('client_name')  # Optional: filter by client_name column
+    title_filter = data.get('title')  # Optional: filter by title (ilike)
     dry_run = data.get('dry_run', False)
 
     try:
@@ -3549,14 +3550,20 @@ def api_cleanup_duplicates():
         if client_name_filter:
             query = query.ilike('client_name', f'%{client_name_filter}%')
 
+        if title_filter:
+            query = query.ilike('title', f'%{title_filter}%')
+
         result = query.execute()
         tasks = result.data or []
 
-        # Group by client_name (lowercased)
+        # Group by client_name (lowercased), falling back to title_filter as group key
         from collections import defaultdict
         groups = defaultdict(list)
         for task in tasks:
             key = (task.get('client_name') or '').strip().lower()
+            if not key and title_filter:
+                # No client_name — group all title-matched tasks together
+                key = title_filter.strip().lower()
             if key:
                 groups[key].append(task)
 
