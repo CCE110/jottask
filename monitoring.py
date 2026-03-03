@@ -227,27 +227,53 @@ def check_reminder_health():
     """Detect when reminders stop working silently.
 
     Returns True if healthy, False if a problem was detected (and alert sent).
-    Logic:
-    - Count pending tasks that were due in the last 2 hours with reminder_sent_at IS NULL.
-    - If any exist AND the last successful reminder email was > 2 hours ago, fire an alert.
+
+    Only flags tasks that SHOULD have been reminded but weren't:
+    - Must have due_time set (tasks without due_time don't get reminders)
+    - due_date must be today or yesterday
+    - due_time must already be past (not future tasks scheduled for later today)
+    - reminder_sent_at must be NULL
+    - AND no reminder email sent in the last 3 hours
     """
     try:
         sb = _get_supabase()
         now = datetime.now(pytz.UTC)
-        two_hours_ago = (now - timedelta(hours=2)).isoformat()
 
-        # Count pending tasks due in last 2 hours that never got a reminder
-        missed = sb.table('tasks')\
-            .select('id', count='exact')\
+        # Fetch pending tasks from today/yesterday with due_time set but never reminded
+        yesterday = (now - timedelta(days=1)).strftime('%Y-%m-%d')
+        today = now.strftime('%Y-%m-%d')
+
+        candidates = sb.table('tasks')\
+            .select('id, due_date, due_time, title')\
             .eq('status', 'pending')\
             .is_('reminder_sent_at', 'null')\
-            .lte('due_date', now.strftime('%Y-%m-%d'))\
-            .gte('due_date', (now - timedelta(days=1)).strftime('%Y-%m-%d'))\
+            .not_.is_('due_time', 'null')\
+            .gte('due_date', yesterday)\
+            .lte('due_date', today)\
+            .limit(50)\
             .execute()
 
-        missed_count = missed.count or 0
-        if missed_count == 0:
-            return True  # No tasks waiting — healthy
+        if not candidates.data:
+            return True  # No candidates — healthy
+
+        # Filter to tasks whose due_time has already passed
+        missed = []
+        for task in candidates.data:
+            due_time_str = task.get('due_time', '')
+            due_date_str = task.get('due_date', '')
+            if not due_time_str or not due_date_str:
+                continue
+            try:
+                due_dt = datetime.strptime(f"{due_date_str} {due_time_str}", '%Y-%m-%d %H:%M:%S')
+                due_dt = pytz.UTC.localize(due_dt)
+                # Task due_time has passed (with 10 min grace) and never reminded
+                if due_dt < now - timedelta(minutes=10):
+                    missed.append(task)
+            except (ValueError, TypeError):
+                continue
+
+        if not missed:
+            return True  # All un-reminded tasks are still in the future — healthy
 
         # Check when the last reminder email was actually sent
         last_reminder = sb.table('system_events')\
@@ -260,13 +286,15 @@ def check_reminder_health():
 
         if last_reminder.data:
             last_dt = datetime.fromisoformat(last_reminder.data[0]['created_at'].replace('Z', '+00:00'))
-            if (now - last_dt).total_seconds() < 7200:  # < 2 hours
+            if (now - last_dt).total_seconds() < 10800:  # < 3 hours
                 return True  # Reminders sent recently — healthy
 
-        # Problem: tasks are waiting but no reminders sent in 2+ hours
+        # Problem: tasks with past due_time have no reminder and no recent sends
+        task_list = ', '.join(f"{t['title'][:30]} (due {t['due_date']} {t['due_time']})" for t in missed[:5])
         send_self_alert(
             "Reminders may be silently failing",
-            f"{missed_count} pending task(s) due in the last 2 hours still have no reminder.\n"
+            f"{len(missed)} pending task(s) with due_time in the past still have no reminder.\n"
+            f"Tasks: {task_list}\n"
             f"Last successful reminder email: {last_reminder.data[0]['created_at'] if last_reminder.data else 'NEVER'}.\n"
             f"Check saas_scheduler.py and Railway logs."
         )
