@@ -5,7 +5,7 @@ Handles user signup, login, logout using Supabase Auth
 
 import os
 from functools import wraps
-from flask import session, redirect, url_for, request
+from flask import session, redirect, url_for, request, jsonify
 from supabase import create_client, Client
 
 # Initialize Supabase client
@@ -19,6 +19,10 @@ def login_required(f):
     @wraps(f)
     def decorated_function(*args, **kwargs):
         if 'user_id' not in session:
+            # Return 401 JSON for API/AJAX requests instead of redirect
+            # (fetch() silently follows redirects, making the caller think it succeeded)
+            if request.path.startswith('/api/') or request.headers.get('Content-Type') == 'application/json':
+                return jsonify({'error': 'Authentication required'}), 401
             return redirect(url_for('login', next=request.url))
         return f(*args, **kwargs)
     return decorated_function

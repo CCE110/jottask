@@ -3515,6 +3515,79 @@ def api_update_task_status(task_id):
     return jsonify({'success': True})
 
 
+@app.route('/api/tasks/cleanup-duplicates', methods=['POST'])
+@login_required
+def api_cleanup_duplicates():
+    """Find and cancel duplicate tasks for the current user.
+    Groups tasks by client_name, keeps the newest pending task in each group,
+    and cancels the rest. Only touches tasks owned by the logged-in user.
+    """
+    user_id = session['user_id']
+    data = request.get_json() or {}
+    client_name_filter = data.get('client_name')  # Optional: only clean this client
+    dry_run = data.get('dry_run', False)
+
+    try:
+        # Get all pending tasks for this user
+        query = supabase.table('tasks')\
+            .select('id, title, client_name, due_date, due_time, created_at, status')\
+            .eq('user_id', user_id)\
+            .eq('status', 'pending')\
+            .order('created_at', desc=True)\
+            .limit(500)
+
+        if client_name_filter:
+            query = query.ilike('client_name', f'%{client_name_filter}%')
+
+        result = query.execute()
+        tasks = result.data or []
+
+        # Group by client_name (lowercased)
+        from collections import defaultdict
+        groups = defaultdict(list)
+        for task in tasks:
+            key = (task.get('client_name') or '').strip().lower()
+            if key:
+                groups[key].append(task)
+
+        cancelled_ids = []
+        kept_tasks = []
+
+        for client_key, client_tasks in groups.items():
+            if len(client_tasks) <= 1:
+                continue  # No duplicates
+
+            # Keep the newest (first, since sorted by created_at desc), cancel the rest
+            keep = client_tasks[0]
+            dupes = client_tasks[1:]
+            kept_tasks.append({'id': keep['id'], 'title': keep['title'], 'client_name': keep.get('client_name')})
+
+            for dupe in dupes:
+                cancelled_ids.append(dupe['id'])
+
+        if not dry_run and cancelled_ids:
+            # Cancel in batches of 20
+            for i in range(0, len(cancelled_ids), 20):
+                batch = cancelled_ids[i:i+20]
+                for task_id in batch:
+                    supabase.table('tasks').update({
+                        'status': 'cancelled'
+                    }).eq('id', task_id).eq('user_id', user_id).execute()
+
+        return jsonify({
+            'success': True,
+            'dry_run': dry_run,
+            'duplicates_found': len(cancelled_ids),
+            'cancelled_ids': cancelled_ids if not dry_run else [],
+            'would_cancel': cancelled_ids if dry_run else [],
+            'kept_tasks': kept_tasks,
+        })
+
+    except Exception as e:
+        print(f"Cleanup error: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
 @app.route('/api/tasks/<task_id>/delay', methods=['POST'])
 @login_required
 def api_delay_task(task_id):

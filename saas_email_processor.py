@@ -705,10 +705,12 @@ class AIEmailProcessor:
             outcomes = []
 
             # Execute Tier 1 actions immediately
+            # batch_created tracks tasks created in this email to prevent within-batch duplicates
+            batch_created = {}
             if auto_actions:
                 print(f"  Auto-executing {len(auto_actions)} low-risk action(s)...")
                 for action in auto_actions:
-                    self.execute_action(action, user_context=user_context)
+                    self.execute_action(action, user_context=user_context, batch_created=batch_created)
                     atype = action.get('action_type', '')
                     if atype == 'update_task_notes':
                         outcomes.append('note_added')
@@ -1136,15 +1138,18 @@ Rules:
     # ACTION EXECUTION (TIER 1 — AUTO)
     # =========================================================================
 
-    def execute_action(self, action, user_context=None):
-        """Execute a Tier 1 (auto) action"""
+    def execute_action(self, action, user_context=None, batch_created=None):
+        """Execute a Tier 1 (auto) action.
+
+        batch_created: shared dict for within-batch dedup (passed to _create_task).
+        """
         action_type = action.get('action_type', '')
 
         try:
             if action_type == 'update_task_notes':
                 self._update_existing_task(action, user_context=user_context)
             elif action_type in ['create_task', 'set_callback', 'set_reminder']:
-                self._create_task(action, user_context=user_context)
+                self._create_task(action, user_context=user_context, batch_created=batch_created)
             else:
                 print(f"  Unknown auto action type: {action_type}")
 
@@ -1183,9 +1188,13 @@ Rules:
 
         print(f"  [AUTO] Note added to task {existing_task_id[:8]}: {action.get('title', '')[:40]}")
 
-    def _create_task(self, action, user_context=None):
+    def _create_task(self, action, user_context=None, batch_created=None):
         """Create a task in Supabase, or add a note to an existing task if the
-        same client already has an open task."""
+        same client already has an open task.
+
+        batch_created: dict mapping client_name_lower -> task dict, for within-batch
+        dedup when a single email produces multiple actions for the same client.
+        """
         if user_context:
             business_id = user_context.businesses.get(
                 action.get('business', ''),
@@ -1196,8 +1205,26 @@ Rules:
             print("[WARNING] _create_task called without user_context — skipping")
             return None
 
+        if batch_created is None:
+            batch_created = {}
+
         client_name = action.get('customer_name') or ''
         client_email = action.get('email_address') or ''
+
+        # --- Within-batch dedup: check if we already created a task for this client in this email ---
+        client_key = (client_name.strip().lower() or client_email.strip().lower())
+        if client_key and client_key in batch_created:
+            existing_batch_task = batch_created[client_key]
+            note_content = f"Email update: {action['title']}"
+            if action.get('description'):
+                note_content += f"\n{action['description']}"
+            self.tm.add_note(
+                task_id=existing_batch_task['id'],
+                content=note_content,
+                source='email',
+            )
+            print(f"  [AUTO] Note added to batch task '{existing_batch_task['title'][:40]}' (within-batch dedup)")
+            return None
 
         # --- Smart routing: check for existing open task for this client ---
         existing_task = None
@@ -1206,6 +1233,7 @@ Rules:
                 existing_task = self.tm.find_existing_task_by_client(
                     client_email=client_email or None,
                     client_name=client_name or None,
+                    user_id=user_id,
                 )
             except Exception as e:
                 print(f"  Warning: client match lookup failed: {e}")
@@ -1278,6 +1306,10 @@ Rules:
         if result.data:
             task = result.data[0]
             print(f"  [AUTO] Task created: {task['title']}")
+
+            # Track in batch for within-batch dedup
+            if client_key:
+                batch_created[client_key] = task
 
             # Send confirmation email to user
             if user_context and user_context.email_address:

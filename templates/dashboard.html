@@ -452,6 +452,11 @@
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ status: 'completed' })
             });
+            if (response.status === 401) {
+                alert('Session expired. Please log in again.');
+                window.location.href = '/login';
+                return;
+            }
             if (response.ok) {
                 const card = btn.closest('.kanban-card');
                 const completedCol = document.getElementById('col-completed');
@@ -462,9 +467,12 @@
                 if (actions) actions.remove();
                 completedCol.appendChild(card);
                 updateCounts();
+            } else {
+                alert('Failed to complete task. Please try again.');
             }
         } catch (err) {
             console.error('Failed to complete task:', err);
+            alert('Network error. Please check your connection.');
         }
     }
 </script>
