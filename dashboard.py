@@ -3521,12 +3521,12 @@ def api_cleanup_duplicates():
     Groups tasks by client_name, keeps the newest pending task in each group,
     and cancels the rest. Accepts logged-in session OR internal API key.
     """
-    # Auth: logged-in user OR internal API key
-    api_key = request.headers.get('X-Internal-Key')
+    # Auth: logged-in user OR internal API key (header or query param)
+    api_key = request.headers.get('X-Internal-Key') or request.args.get('key')
     internal_key = os.getenv('INTERNAL_API_KEY', '')
     data = request.get_json() or {}
 
-    if api_key and api_key == internal_key:
+    if api_key and internal_key and api_key == internal_key:
         user_id = data.get('user_id')  # Optional: if omitted, cleans all users
     elif 'user_id' in session:
         user_id = session['user_id']
