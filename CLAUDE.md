@@ -230,6 +230,32 @@ BUSINESS_ID_AIPP=ec5d7aab-8d74-4ef2-9d92-01b143c68c82
 9. **OpenSolar integration is web scraping** — fragile, needs API or more robust approach
 10. **No rate limiting** on API endpoints
 11. **No webhook receiver** for real-time CRM/email events (currently relies on polling)
+12. **`/action` route has no token-based auth** — email_action_tokens table exists (migration 010) but isn't wired in. Audit logging added 2026-03-04 as interim measure. Full token-based auth deferred.
+13. **INTERNAL_API_KEY in CLAUDE.md is stale** — the value `jottask-internal-2026` doesn't match what's set on Railway. Check Railway env vars for the real value.
+
+---
+
+## Recent Fixes (2026-03-04)
+
+### Bulletproof Reminder System (`saas_scheduler.py`)
+- **Optimistic locking**: `reminder_sent_at` set BEFORE email send, rolled back on failure. Eliminates race condition that caused duplicate reminder emails.
+- **Timezone validation**: Invalid timezone now falls back to `Australia/Brisbane` with a logged warning instead of crashing the entire user's reminder loop.
+- **Extended re-reminder window**: 7 → 14 days. Overdue tasks no longer vanish from daily re-reminders after a week.
+- **Configurable morning reminders**: Date-only tasks use user's `daily_summary_time` instead of hardcoded 8 AM.
+- **Per-tick dedup**: `sent_this_tick` set prevents double-send if same task appears in both DB queries.
+- **Reschedule button**: Purple "Reschedule" button added to reminder emails linking to the custom date/time edit form.
+
+### Task Dedup Fix (`saas_email_processor.py`, `task_manager.py`)
+- **Within-batch dedup**: When a single email produces multiple AI actions for the same client, the second+ actions add notes to the first task instead of creating duplicates. Uses `batch_created` dict shared across `execute_action` calls.
+- **User ID filtering**: `find_existing_task_by_client()` now requires `user_id` parameter — prevents cross-tenant task matching in multi-tenant setup. Also excludes cancelled tasks from matches.
+
+### Complete Button Auth Fix (`auth.py`, `templates/dashboard.html`)
+- **Root cause**: When session expired, `login_required` returned a 302 redirect. `fetch()` silently followed it and got a 200 from the login page, so the JS thought the Complete action succeeded. Tasks appeared completed visually but weren't updated in the DB — they reappeared on page refresh.
+- **Fix**: `login_required` now returns 401 JSON for API/AJAX requests (`/api/*` paths or `Content-Type: application/json`). `completeTask()` JS handles 401 with an alert and redirect to login.
+
+### Duplicate Cleanup Endpoint (`dashboard.py`)
+- **`POST /api/tasks/cleanup-duplicates`**: Groups pending tasks by `client_name` (or by title match as fallback), keeps the newest, cancels the rest. Supports `dry_run`, `client_name`, and `title` filters. Accepts logged-in session or internal API key auth.
+- **Audit logging on `/action` route**: Logs client IP and User-Agent for all email action button clicks.
 
 ---
 
