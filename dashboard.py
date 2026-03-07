@@ -3578,6 +3578,69 @@ def api_reminder_debug():
     })
 
 
+@app.route('/api/emails/reprocess', methods=['POST'])
+def api_reprocess_emails():
+    """Re-process recent emails that were marked as no_action.
+    Auth: logged-in session or internal API key.
+    Clears processed_emails entries with outcome='no_action' from last 24h,
+    so the next email processor cycle will re-analyze them.
+    """
+    user_id = session.get('user_id')
+    api_key = request.headers.get('X-Internal-Key') or request.args.get('key')
+    internal_key = os.getenv('INTERNAL_API_KEY', '')
+
+    if not user_id and not (api_key and internal_key and api_key == internal_key):
+        return jsonify({'error': 'Unauthorized'}), 401
+
+    hours = request.args.get('hours', '24')
+    try:
+        hours = int(hours)
+    except ValueError:
+        hours = 24
+
+    cutoff = (datetime.now(pytz.UTC) - timedelta(hours=hours)).isoformat()
+
+    # Find no_action emails in the time window
+    query = supabase.table('processed_emails')\
+        .select('id, subject, sender_email, outcome, processed_at')\
+        .eq('outcome', 'no_action')\
+        .gte('processed_at', cutoff)\
+        .order('processed_at', desc=True)\
+        .limit(50)
+
+    if user_id:
+        query = query.eq('user_id', user_id)
+
+    result = query.execute()
+    emails = result.data or []
+
+    if not emails:
+        return jsonify({'message': 'No no_action emails found in the last ' + str(hours) + ' hours', 'count': 0})
+
+    dry_run = request.args.get('dry_run', 'true').lower() == 'true'
+
+    if dry_run:
+        return jsonify({
+            'message': f'Found {len(emails)} no_action emails to reprocess (dry_run=true, POST with dry_run=false to execute)',
+            'count': len(emails),
+            'emails': [{'subject': e.get('subject', '')[:80], 'sender': e.get('sender_email', ''), 'processed_at': e.get('processed_at', '')[:19]} for e in emails],
+        })
+
+    # Delete the processed_emails entries so the processor picks them up again
+    deleted = 0
+    for e in emails:
+        try:
+            supabase.table('processed_emails').delete().eq('id', e['id']).execute()
+            deleted += 1
+        except Exception as err:
+            print(f"Failed to delete processed_email {e['id']}: {err}")
+
+    return jsonify({
+        'message': f'Cleared {deleted} no_action emails — they will be re-processed on the next cycle',
+        'count': deleted,
+    })
+
+
 @app.route('/api/tasks/cleanup-duplicates', methods=['POST'])
 def api_cleanup_duplicates():
     """Find and cancel duplicate tasks for a user.
