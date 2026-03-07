@@ -412,15 +412,23 @@
 
     searchInput.addEventListener('input', function() {
         clearTimeout(searchTimeout);
+        const query = this.value.toLowerCase();
+        // Instant client-side filter for visible cards
+        document.querySelectorAll('.kanban-card').forEach(card => {
+            const title = card.querySelector('.kanban-card-title').textContent.toLowerCase();
+            const meta = card.querySelector('.kanban-card-meta').textContent.toLowerCase();
+            card.style.display = (!query || title.includes(query) || meta.includes(query)) ? '' : 'none';
+        });
+        updateCounts();
+        // Auto server-side search after 600ms (finds completed tasks not on page)
         searchTimeout = setTimeout(() => {
-            const query = this.value.toLowerCase();
-            document.querySelectorAll('.kanban-card').forEach(card => {
-                const title = card.querySelector('.kanban-card-title').textContent.toLowerCase();
-                const meta = card.querySelector('.kanban-card-meta').textContent.toLowerCase();
-                card.style.display = (!query || title.includes(query) || meta.includes(query)) ? '' : 'none';
-            });
-            updateCounts();
-        }, 150);
+            const q = this.value.trim();
+            if (q.length >= 2) {
+                window.location.href = `{{ url_for('dashboard') }}?q=${encodeURIComponent(q)}`;
+            } else if (q.length === 0) {
+                window.location.href = '{{ url_for('dashboard') }}';
+            }
+        }, 600);
     });
 
     searchInput.addEventListener('keydown', function(e) {

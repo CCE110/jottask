@@ -2034,13 +2034,15 @@ def dashboard():
 
     if search_query:
         search_lower = search_query.lower()
+        # Escape chars that break PostgREST filter parsing
+        safe_q = search_query.replace(',', ' ').replace('(', '').replace(')', '')
 
-        # Search completed tasks at DB level (title, client_name) — no limit
+        # Search completed AND cancelled tasks at DB level
         completed_query = supabase.table('tasks')\
             .select('*')\
             .eq('user_id', user_id)\
-            .eq('status', 'completed')\
-            .or_(f'title.ilike.%{search_query}%,client_name.ilike.%{search_query}%,description.ilike.%{search_query}%')\
+            .in_('status', ['completed', 'cancelled'])\
+            .or_(f'title.ilike.%{safe_q}%,client_name.ilike.%{safe_q}%,description.ilike.%{safe_q}%')\
             .order('completed_at', desc=True)\
             .limit(100)\
             .execute()
