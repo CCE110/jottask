@@ -3603,18 +3603,18 @@ def api_reprocess_emails():
     cutoff = (datetime.now(pytz.UTC) - timedelta(hours=hours)).isoformat()
 
     # Find no_action emails in the time window
-    query = supabase.table('processed_emails')\
-        .select('id, subject, sender_email, outcome, processed_at')\
-        .eq('outcome', 'no_action')\
-        .gte('processed_at', cutoff)\
-        .order('processed_at', desc=True)\
-        .limit(50)
+    try:
+        query = supabase.table('processed_emails')\
+            .select('id, subject, sender_email, outcome, processed_at')\
+            .eq('outcome', 'no_action')\
+            .gte('processed_at', cutoff)\
+            .order('processed_at', desc=True)\
+            .limit(50)
 
-    if user_id:
-        query = query.eq('user_id', user_id)
-
-    result = query.execute()
-    emails = result.data or []
+        result = query.execute()
+        emails = result.data or []
+    except Exception as e:
+        return jsonify({'error': f'DB query failed: {str(e)}. Has migration 020 been run?'}), 500
 
     if not emails:
         return jsonify({'message': 'No no_action emails found in the last ' + str(hours) + ' hours', 'count': 0})
