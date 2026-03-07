@@ -2029,33 +2029,40 @@ def dashboard():
         .order('due_time')\
         .execute()
 
-    # Get recent completed tasks (last 50)
-    completed_tasks_result = supabase.table('tasks')\
-        .select('*')\
-        .eq('user_id', user_id)\
-        .eq('status', 'completed')\
-        .order('completed_at', desc=True)\
-        .limit(50)\
-        .execute()
-
-    # Combine: pending/ongoing first, then recent completed
+    # Get completed tasks — search all when filtering, otherwise last 50
     pending_list = pending_tasks_result.data or []
-    completed_list = completed_tasks_result.data or []
-    all_tasks = pending_list + completed_list
 
-    # Filter by search query if provided
     if search_query:
         search_lower = search_query.lower()
-        all_tasks = [t for t in all_tasks if
-            search_lower in (t.get('title') or '').lower() or
-            search_lower in (t.get('description') or '').lower() or
-            search_lower in (t.get('client_name') or '').lower()
-        ]
+
+        # Search completed tasks at DB level (title, client_name) — no limit
+        completed_query = supabase.table('tasks')\
+            .select('*')\
+            .eq('user_id', user_id)\
+            .eq('status', 'completed')\
+            .or_(f'title.ilike.%{search_query}%,client_name.ilike.%{search_query}%,description.ilike.%{search_query}%')\
+            .order('completed_at', desc=True)\
+            .limit(100)\
+            .execute()
+        completed_list = completed_query.data or []
+
+        # Filter pending in Python (already fully loaded)
         pending_list = [t for t in pending_list if
             search_lower in (t.get('title') or '').lower() or
             search_lower in (t.get('description') or '').lower() or
             search_lower in (t.get('client_name') or '').lower()
         ]
+        all_tasks = pending_list + completed_list
+    else:
+        completed_tasks_result = supabase.table('tasks')\
+            .select('*')\
+            .eq('user_id', user_id)\
+            .eq('status', 'completed')\
+            .order('completed_at', desc=True)\
+            .limit(50)\
+            .execute()
+        completed_list = completed_tasks_result.data or []
+        all_tasks = pending_list + completed_list
 
     # Calculate stats (from unfiltered data)
     all_pending = pending_tasks_result.data or []
@@ -2063,7 +2070,7 @@ def dashboard():
         'pending': len(all_pending),
         'due_today': len([t for t in all_pending if t.get('due_date') == today]),
         'overdue': len([t for t in all_pending if t.get('due_date') and t['due_date'] < today]),
-        'completed_this_week': len([t for t in (completed_tasks_result.data or []) if t.get('completed_at')])
+        'completed_this_week': len([t for t in completed_list if t.get('completed_at')])
     }
 
     # System health for admin banner
