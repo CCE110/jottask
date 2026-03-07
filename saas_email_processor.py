@@ -1100,8 +1100,9 @@ EXTRACT actions as JSON:
 }}
 
 Rules:
-- CRITICAL: NEVER return empty actions if the subject line contains a person's name + an action verb (call, send, quote, visit, follow up, remind, etc). The SUBJECT LINE IS THE TASK — create it even if the email body is just a signature or empty. Examples of subjects that MUST create tasks: "Mal smith send quote again and call 5pm today", "Rie Shresta site visit 1pm today", "Tony Mason build solar battery quote - remind me 6pm today". These are CRM reminders — the subject IS the instruction.
-- CRITICAL: If "remind me" or a specific time (e.g. "5pm", "1pm", "6pm") appears in the subject, ALWAYS create a task with that exact time as due_time and today as due_date. This is a REMINDER REQUEST — never ignore it.
+- CRITICAL — GOLDEN RULE: Every email forwarded to Jottask is an INSTRUCTION to create a task. NEVER return empty actions unless the email is genuinely automated spam/marketing with zero human intent. If in doubt, CREATE THE TASK. The user forwarded it for a reason.
+- CRITICAL: The SUBJECT LINE is often the entire instruction. If the subject contains any person name, time, action, or reminder — that IS the task. Create it even if the email body is empty or just a signature. Examples: "Mal smith send quote again and call 5pm today", "Rie Shresta site visit 1pm today", "Tony Mason - remind me 6pm today", "John 3pm", "Call Sarah back". ALL of these MUST create tasks.
+- CRITICAL: If a time (e.g. "5pm", "1pm", "6pm", "3pm", "10am") appears ANYWHERE in the subject or body, ALWAYS set that as due_time with today as due_date. If "remind me" appears, this is an explicit reminder request — priority high.
 - CRITICAL: Task titles MUST use format "[Full Name]- [concise status/action]". Examples: "Graham Kildey- awaiting site photos and electricity bills", "Paul Thompson- follow up on battery quote", "Todd McHenry- site visit 8am Black Milk". NO space before the dash. Never use generic prefixes like "CRM Update:" or "New Lead:" — put the customer name first, then what's happening
 - CRITICAL: If the email is FROM {ctx['user_name']} (CC'd to Jottask), this is an OUTGOING email. ALWAYS create a follow-up task like "[Customer Name]- follow up if no reply" with category "Remember to Callback", due in 2 business days, priority medium. Extract the customer name from the To field or subject line. This is the most common way {ctx['user_name']} uses Jottask — NEVER return empty actions for CC'd outgoing emails.
 - If only a first name appears in the subject, look in the email body/content for the full name
@@ -1116,7 +1117,7 @@ Rules:
 - Today's date: {_now_local(user_context).strftime('%Y-%m-%d')}
 - ALWAYS set due_date — if no date is mentioned, use today's date for urgent/high or next business day for medium/low
 - ALWAYS set due_time — if no time is mentioned, use "09:00" for morning tasks, "14:00" for afternoon follow-ups. Never leave due_time as null
-- If no actions needed, return {{"summary": "...", "customer_name": null, "actions": []}}
+- Only return empty actions for bulk marketing emails, automated system notifications with no human action needed, or out-of-office replies. Everything else gets a task.
 """
 
     # =========================================================================
