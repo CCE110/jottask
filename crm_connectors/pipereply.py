@@ -1,88 +1,62 @@
 """
-PipeReply CRM Connector
+PipeReply CRM Connector — GoHighLevel (GHL) API v2
 
-API paths below are PLACEHOLDERS based on common REST CRM patterns.
-Update these constants once the real PipeReply API paths are verified.
-test_connection() will catch wrong paths immediately during setup.
+PipeReply is a white-label GoHighLevel instance.
+Base URL: https://services.leadconnectorhq.com
+Auth: Private Integration Token (Bearer) or OAuth access token
+Required header: Version: 2021-07-28
+
+For SaaS subscribers: they generate a Private Integration Token from
+Settings > Integrations > Private Integrations in their GHL/PipeReply account.
 """
 
 import requests
-from crm_connectors.base import BaseCRMConnector, CRMContact, CRMResult
+from crm_connectors.base import BaseCRMConnector, CRMContact, CRMDeal, CRMResult
 from crm_connectors.registry import register_connector
 
-# Default timeout for all API calls (seconds)
 REQUEST_TIMEOUT = 15
+BASE_URL = 'https://services.leadconnectorhq.com'
+API_VERSION = '2021-07-28'
 
 
 class PipeReplyConnector(BaseCRMConnector):
 
     PROVIDER = 'pipereply'
 
-    # ======================================================
-    # API PATH CONSTANTS — update these with real endpoints
-    # ======================================================
-    PATH_ME = '/api/v1/me'                          # Test connection / current user
-    PATH_CONTACTS = '/api/v1/contacts'              # List / search contacts
-    PATH_CONTACT = '/api/v1/contacts/{contact_id}'  # Single contact
-    PATH_NOTES = '/api/v1/contacts/{contact_id}/notes'  # Add note to contact
-    PATH_DEALS = '/api/v1/deals'                    # List deals
-    PATH_DEAL = '/api/v1/deals/{deal_id}'           # Single deal / update stage
-
-    # Default base URL — user can override in settings
-    DEFAULT_BASE_URL = 'https://app.pipereply.com'
-
-    # Alternative paths to try if defaults return 404
-    DISCOVERY_PATHS_ME = ['/api/v2/me', '/api/me', '/me', '/api/v1/users/me', '/api/v1/account']
-
     def __init__(self, api_key: str = '', api_base_url: str = '',
                  access_token: str = '', settings: dict = None):
         super().__init__(api_key, api_base_url, access_token, settings)
-        self.base_url = (api_base_url or self.DEFAULT_BASE_URL).rstrip('/')
-
-        # Allow settings to override any default API path
-        api_paths = (settings or {}).get('api_paths', {})
-        if api_paths.get('me'):
-            self.PATH_ME = api_paths['me']
-        if api_paths.get('contacts'):
-            self.PATH_CONTACTS = api_paths['contacts']
-        if api_paths.get('contact'):
-            self.PATH_CONTACT = api_paths['contact']
-        if api_paths.get('notes'):
-            self.PATH_NOTES = api_paths['notes']
-        if api_paths.get('deals'):
-            self.PATH_DEALS = api_paths['deals']
-        if api_paths.get('deal'):
-            self.PATH_DEAL = api_paths['deal']
+        # Private Integration Token or OAuth access token
+        self.token = access_token or api_key
+        self.location_id = (settings or {}).get('location_id', '')
 
     def _headers(self) -> dict:
         return {
-            'Authorization': f'Bearer {self.api_key}',
+            'Authorization': f'Bearer {self.token}',
             'Content-Type': 'application/json',
             'Accept': 'application/json',
+            'Version': API_VERSION,
         }
 
-    def _url(self, path: str, **kwargs) -> str:
-        return self.base_url + path.format(**kwargs)
-
-    def _get(self, path: str, params: dict = None, **path_kwargs) -> requests.Response:
+    def _get(self, path: str, params: dict = None) -> requests.Response:
         return requests.get(
-            self._url(path, **path_kwargs),
+            f'{BASE_URL}{path}',
             headers=self._headers(),
             params=params,
             timeout=REQUEST_TIMEOUT,
         )
 
-    def _post(self, path: str, json_data: dict = None, **path_kwargs) -> requests.Response:
+    def _post(self, path: str, json_data: dict = None) -> requests.Response:
         return requests.post(
-            self._url(path, **path_kwargs),
+            f'{BASE_URL}{path}',
             headers=self._headers(),
             json=json_data,
             timeout=REQUEST_TIMEOUT,
         )
 
-    def _put(self, path: str, json_data: dict = None, **path_kwargs) -> requests.Response:
+    def _put(self, path: str, json_data: dict = None) -> requests.Response:
         return requests.put(
-            self._url(path, **path_kwargs),
+            f'{BASE_URL}{path}',
             headers=self._headers(),
             json=json_data,
             timeout=REQUEST_TIMEOUT,
@@ -93,86 +67,71 @@ class PipeReplyConnector(BaseCRMConnector):
     # ======================================================
 
     def test_connection(self) -> CRMResult:
-        """Test API key by fetching current user / account info.
-        If the default path returns 404, tries common alternatives and reports which works.
-        """
+        """Test credentials by searching for one contact."""
         try:
-            resp = self._get(self.PATH_ME)
+            params = {'limit': 1}
+            if self.location_id:
+                params['locationId'] = self.location_id
+
+            resp = self._get('/contacts/', params=params)
             if resp.status_code == 200:
                 data = resp.json()
+                total = data.get('meta', {}).get('total', data.get('total', '?'))
                 return CRMResult(
                     success=True,
-                    message=f"Connected to PipeReply as {data.get('name', data.get('email', 'user'))}",
+                    message=f'Connected to PipeReply/GHL ({total} contacts)',
                     data=data,
                 )
             elif resp.status_code == 401:
-                return CRMResult(success=False, message='Invalid API key')
-            elif resp.status_code == 404:
-                # Diagnostic: try alternative paths to help the user configure
-                discovered = self._discover_endpoints()
-                if discovered:
-                    paths_str = ', '.join(discovered)
-                    return CRMResult(
-                        success=False,
-                        message=f'Default path {self.PATH_ME} returned 404. '
-                                f'These paths responded: {paths_str}. '
-                                f'Update your connection settings with the correct API paths.',
-                        data={'discovered_paths': discovered},
-                    )
+                return CRMResult(success=False, message='Invalid token — check your Private Integration Token')
+            elif resp.status_code == 422:
                 return CRMResult(
                     success=False,
-                    message=f'PipeReply returned 404 for {self.PATH_ME}. '
-                            f'No alternative paths found — check your base URL ({self.base_url}).',
+                    message='Missing locationId — add your Location ID in CRM settings',
                 )
             else:
                 return CRMResult(
                     success=False,
-                    message=f'PipeReply returned HTTP {resp.status_code}: {resp.text[:200]}',
+                    message=f'PipeReply returned HTTP {resp.status_code}: {resp.text[:300]}',
                 )
         except requests.ConnectionError:
-            return CRMResult(success=False, message=f'Cannot reach PipeReply at {self.base_url}')
+            return CRMResult(success=False, message='Cannot reach GoHighLevel API')
         except requests.Timeout:
             return CRMResult(success=False, message='PipeReply request timed out')
         except Exception as e:
             return CRMResult(success=False, message=f'Connection error: {str(e)}')
 
-    def _discover_endpoints(self) -> list:
-        """Try alternative API paths and return any that don't 404."""
-        working = []
-        for path in self.DISCOVERY_PATHS_ME:
-            try:
-                resp = self._get(path)
-                if resp.status_code != 404:
-                    working.append(f'{path} (HTTP {resp.status_code})')
-            except Exception:
-                continue
-        return working
-
     def find_contact(self, name: str = '', email: str = '') -> CRMResult:
-        """Search contacts by name or email."""
+        """Search contacts by name or email using GHL v2 search."""
         try:
-            params = {}
+            params = {'limit': 10}
+            if self.location_id:
+                params['locationId'] = self.location_id
             if email:
-                params['email'] = email
-            if name:
-                params['search'] = name
+                params['query'] = email
+            elif name:
+                params['query'] = name
+            else:
+                return CRMResult(success=False, message='Provide a name or email to search')
 
-            resp = self._get(self.PATH_CONTACTS, params=params)
+            resp = self._get('/contacts/', params=params)
             if resp.status_code != 200:
-                return CRMResult(success=False, message=f'Search failed: HTTP {resp.status_code}')
+                return CRMResult(success=False, message=f'Search failed: HTTP {resp.status_code}: {resp.text[:200]}')
 
             data = resp.json()
-            # Handle both list response and paginated {data: [...]} response
-            items = data if isinstance(data, list) else data.get('data', data.get('contacts', []))
+            items = data.get('contacts', [])
 
             contacts = []
             for item in items:
+                first = item.get('firstName', '')
+                last = item.get('lastName', '')
+                full_name = item.get('name', f'{first} {last}'.strip())
                 contacts.append(CRMContact(
                     id=str(item.get('id', '')),
-                    name=item.get('name', item.get('full_name', '')),
+                    name=full_name,
                     email=item.get('email', ''),
-                    phone=item.get('phone', item.get('mobile', '')),
-                    company=item.get('company', item.get('organization', '')),
+                    phone=item.get('phone', ''),
+                    company=item.get('companyName', ''),
                     raw_data=item,
                 ))
 
@@ -184,38 +143,39 @@ class PipeReplyConnector(BaseCRMConnector):
             return CRMResult(success=False, message=f'Contact search failed: {str(e)}')
 
     def add_note(self, contact_id: str, note_text: str) -> CRMResult:
-        """Add a note to a contact."""
+        """Add a note to a contact via GHL v2 Notes API."""
         try:
             resp = self._post(
-                self.PATH_NOTES,
-                json_data={'content': note_text, 'body': note_text},
-                contact_id=contact_id,
+                f'/contacts/{contact_id}/notes',
+                json_data={'body': note_text},
             )
             if resp.status_code in (200, 201):
                 return CRMResult(success=True, message='Note added to PipeReply', data=resp.json())
             else:
-                return CRMResult(success=False, message=f'Failed to add note: HTTP {resp.status_code}')
+                return CRMResult(success=False, message=f'Failed to add note: HTTP {resp.status_code}: {resp.text[:200]}')
         except Exception as e:
             return CRMResult(success=False, message=f'Add note failed: {str(e)}')
 
     def get_contact_details(self, contact_id: str) -> CRMResult:
-        """Get full details for a contact."""
+        """Get full details for a contact by ID."""
         try:
-            resp = self._get(self.PATH_CONTACT, contact_id=contact_id)
+            resp = self._get(f'/contacts/{contact_id}')
             if resp.status_code != 200:
                 return CRMResult(success=False, message=f'Contact fetch failed: HTTP {resp.status_code}')
 
-            item = resp.json()
-            # Handle wrapped response
-            if 'data' in item and isinstance(item['data'], dict):
-                item = item['data']
+            data = resp.json()
+            item = data.get('contact', data)
+
+            first = item.get('firstName', '')
+            last = item.get('lastName', '')
+            full_name = item.get('name', f'{first} {last}'.strip())
 
             contact = CRMContact(
                 id=str(item.get('id', '')),
-                name=item.get('name', item.get('full_name', '')),
+                name=full_name,
                 email=item.get('email', ''),
-                phone=item.get('phone', item.get('mobile', '')),
-                company=item.get('company', item.get('organization', '')),
+                phone=item.get('phone', ''),
+                company=item.get('companyName', ''),
                 raw_data=item,
             )
             return CRMResult(success=True, message='Contact retrieved', contact=contact)
@@ -227,46 +187,100 @@ class PipeReplyConnector(BaseCRMConnector):
     # ======================================================
 
     def update_deal_stage(self, deal_id: str, stage: str) -> CRMResult:
-        """Update a deal's pipeline stage."""
+        """Update an opportunity's status/stage in GHL."""
         try:
             resp = self._put(
-                self.PATH_DEAL,
-                json_data={'stage': stage, 'status': stage},
-                deal_id=deal_id,
+                f'/opportunities/{deal_id}/status',
+                json_data={'status': stage},
             )
             if resp.status_code in (200, 201):
-                return CRMResult(success=True, message=f'Deal updated to stage: {stage}', data=resp.json())
+                return CRMResult(success=True, message=f'Opportunity updated to: {stage}', data=resp.json())
             else:
-                return CRMResult(success=False, message=f'Deal update failed: HTTP {resp.status_code}')
+                return CRMResult(success=False, message=f'Opportunity update failed: HTTP {resp.status_code}: {resp.text[:200]}')
         except Exception as e:
-            return CRMResult(success=False, message=f'Deal update failed: {str(e)}')
+            return CRMResult(success=False, message=f'Opportunity update failed: {str(e)}')
 
     def create_contact(self, name: str, email: str = '', phone: str = '') -> CRMResult:
-        """Create a new contact in PipeReply."""
+        """Create a new contact in GHL."""
         try:
-            payload = {'name': name}
+            parts = name.strip().split(' ', 1)
+            first_name = parts[0]
+            last_name = parts[1] if len(parts) > 1 else ''
+
+            payload = {
+                'firstName': first_name,
+                'lastName': last_name,
+            }
             if email:
                 payload['email'] = email
             if phone:
                 payload['phone'] = phone
+            if self.location_id:
+                payload['locationId'] = self.location_id
 
-            resp = self._post(self.PATH_CONTACTS, json_data=payload)
+            resp = self._post('/contacts/', json_data=payload)
             if resp.status_code in (200, 201):
-                item = resp.json()
-                if 'data' in item and isinstance(item['data'], dict):
-                    item = item['data']
+                item = resp.json().get('contact', resp.json())
                 contact = CRMContact(
                     id=str(item.get('id', '')),
-                    name=item.get('name', name),
+                    name=f"{item.get('firstName', '')} {item.get('lastName', '')}".strip(),
                     email=item.get('email', email),
                     phone=item.get('phone', phone),
                     raw_data=item,
                 )
-                return CRMResult(success=True, message='Contact created', contact=contact)
+                return CRMResult(success=True, message='Contact created in PipeReply', contact=contact)
             else:
-                return CRMResult(success=False, message=f'Create contact failed: HTTP {resp.status_code}')
+                return CRMResult(success=False, message=f'Create contact failed: HTTP {resp.status_code}: {resp.text[:200]}')
         except Exception as e:
             return CRMResult(success=False, message=f'Create contact failed: {str(e)}')
+
+    def get_pipelines(self) -> CRMResult:
+        """List all pipelines and their stages."""
+        try:
+            params = {}
+            if self.location_id:
+                params['locationId'] = self.location_id
+
+            resp = self._get('/opportunities/pipelines', params=params)
+            if resp.status_code != 200:
+                return CRMResult(success=False, message=f'Pipelines fetch failed: HTTP {resp.status_code}')
+            return CRMResult(success=True, message='Pipelines retrieved', data=resp.json())
+        except Exception as e:
+            return CRMResult(success=False, message=f'Pipelines fetch failed: {str(e)}')
+
+    def search_opportunities(self, pipeline_id: str = '', status: str = '',
+                              contact_id: str = '') -> CRMResult:
+        """Search opportunities/deals."""
+        try:
+            params = {'limit': 20}
+            if self.location_id:
+                params['locationId'] = self.location_id
+            if pipeline_id:
+                params['pipelineId'] = pipeline_id
+            if status:
+                params['status'] = status
+            if contact_id:
+                params['contactId'] = contact_id
+
+            resp = self._get('/opportunities/search', params=params)
+            if resp.status_code != 200:
+                return CRMResult(success=False, message=f'Opportunity search failed: HTTP {resp.status_code}')
+
+            data = resp.json()
+            opportunities = data.get('opportunities', [])
+            deals = []
+            for opp in opportunities:
+                deals.append(CRMDeal(
+                    id=str(opp.get('id', '')),
+                    title=opp.get('name', ''),
+                    stage=opp.get('pipelineStageId', ''),
+                    value=float(opp.get('monetaryValue', 0) or 0),
+                    contact_id=opp.get('contactId', ''),
+                    raw_data=opp,
+                ))
+            return CRMResult(success=True, message=f'Found {len(deals)} opportunity(ies)', data={'deals': deals})
+        except Exception as e:
+            return CRMResult(success=False, message=f'Opportunity search failed: {str(e)}')
 
 
 # Auto-register with the connector registry

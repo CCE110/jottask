@@ -265,9 +265,9 @@
     </nav>
 
     <main class="main">
-        <h1 style="margin-bottom: 8px;">CRM Connections</h1>
+        <h1 style="margin-bottom: 8px;">Integrations</h1>
         <p style="color: var(--gray-500); margin-bottom: 32px;">
-            Connect your CRM to automatically sync contact notes and updates.
+            Connect your CRM and solar tools to automatically sync contacts, notes, and projects.
         </p>
 
         {% if message %}
@@ -289,7 +289,7 @@
                 <div class="connection-item">
                     <div class="connection-info">
                         <div class="connection-icon">
-                            {% if conn.provider == 'pipereply' %}&#x1F4CA;{% elif conn.provider == 'hubspot' %}&#x1F7E0;{% elif conn.provider == 'zoho' %}&#x1F535;{% else %}&#x1F4C1;{% endif %}
+                            {% if conn.provider == 'pipereply' %}&#x1F4CA;{% elif conn.provider == 'hubspot' %}&#x1F7E0;{% elif conn.provider == 'zoho' %}&#x1F535;{% elif conn.provider == 'opensolar' %}&#x2600;{% else %}&#x1F4C1;{% endif %}
                         </div>
                         <div>
                             <strong>{{ conn.display_name or conn.provider|capitalize }}</strong>
@@ -327,12 +327,13 @@
                 <h2 class="card-title">Add CRM Connection</h2>
             </div>
             <div class="card-body">
+                <h3 style="margin-bottom: 12px; color: var(--gray-500); font-size: 13px; text-transform: uppercase; letter-spacing: 0.5px;">CRM</h3>
                 <div class="provider-grid" style="grid-template-columns: 1fr 1fr 1fr;">
                     <div class="provider-card" onclick="showSetup('pipereply')">
                         <div class="card-body">
                             <div class="provider-icon">&#x1F4CA;</div>
-                            <h3>PipeReply</h3>
-                            <p>Connect via API key</p>
+                            <h3>PipeReply / GHL</h3>
+                            <p>Private Integration Token</p>
                         </div>
                     </div>
                     <a href="/crm/oauth/hubspot/start" class="provider-card" style="text-decoration: none; color: inherit;">
@@ -351,23 +352,72 @@
                     </a>
                 </div>
 
+                <h3 style="margin-bottom: 12px; color: var(--gray-500); font-size: 13px; text-transform: uppercase; letter-spacing: 0.5px;">Solar Tools</h3>
+                <div class="provider-grid" style="grid-template-columns: 1fr 1fr 1fr;">
+                    <div class="provider-card" onclick="showSetup('opensolar')">
+                        <div class="card-body">
+                            <div class="provider-icon">&#x2600;</div>
+                            <h3>OpenSolar</h3>
+                            <p>Login with your account</p>
+                        </div>
+                    </div>
+                    <div class="provider-card disabled">
+                        <div class="card-body">
+                            <div class="provider-icon">&#x1F50C;</div>
+                            <h3>SolarEdge</h3>
+                            <p>Coming soon</p>
+                        </div>
+                    </div>
+                    <div class="provider-card disabled">
+                        <div class="card-body">
+                            <div class="provider-icon">&#x26A1;</div>
+                            <h3>Enphase</h3>
+                            <p>Coming soon</p>
+                        </div>
+                    </div>
+                </div>
+
                 <!-- PipeReply Setup Form -->
                 <div id="pipereply-setup" class="setup-form">
-                    <h3 style="margin-bottom: 16px;">PipeReply Setup</h3>
+                    <h3 style="margin-bottom: 16px;">PipeReply / GoHighLevel Setup</h3>
                     <p style="color: var(--gray-500); margin-bottom: 16px;">
-                        Enter your PipeReply API key to connect. You can find this in your PipeReply account under Settings &rarr; API.
+                        Create a Private Integration Token in your PipeReply/GHL account:<br>
+                        <strong>Settings &rarr; Integrations &rarr; Private Integrations &rarr; Create New</strong><br>
+                        Select scopes: contacts, opportunities, conversations. Copy the token below.
                     </p>
 
                     <form method="POST" action="/crm/add/pipereply">
                         <div class="form-group">
-                            <label class="form-label">API Key</label>
-                            <input type="password" name="api_key" class="form-input" placeholder="Your PipeReply API key" required>
+                            <label class="form-label">Private Integration Token</label>
+                            <input type="password" name="api_key" class="form-input" placeholder="pit-xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" required>
                         </div>
 
                         <div class="form-group">
-                            <label class="form-label">API Base URL (optional)</label>
-                            <input type="url" name="api_base_url" class="form-input" placeholder="https://app.pipereply.com">
-                            <p class="help-text">Leave blank to use the default. Only change if you have a custom PipeReply instance.</p>
+                            <label class="form-label">Location ID</label>
+                            <input type="text" name="location_id" class="form-input" placeholder="Your GHL Location ID">
+                            <p class="help-text">Found in Settings &rarr; Business Profile &rarr; General. Required for API access.</p>
+                        </div>
+
+                        <button type="submit" class="btn btn-primary">Test & Connect</button>
+                    </form>
+                </div>
+
+                <!-- OpenSolar Setup Form -->
+                <div id="opensolar-setup" class="setup-form">
+                    <h3 style="margin-bottom: 16px;">OpenSolar Setup</h3>
+                    <p style="color: var(--gray-500); margin-bottom: 16px;">
+                        Enter your OpenSolar login credentials. Jottask will securely authenticate to sync your projects, proposals, and equipment lists.
+                    </p>
+
+                    <form method="POST" action="/crm/add/opensolar">
+                        <div class="form-group">
+                            <label class="form-label">Email</label>
+                            <input type="email" name="email" class="form-input" placeholder="your@email.com" required>
+                        </div>
+
+                        <div class="form-group">
+                            <label class="form-label">Password</label>
+                            <input type="password" name="password" class="form-input" placeholder="Your OpenSolar password" required>
                         </div>
 
                         <button type="submit" class="btn btn-primary">Test & Connect</button>

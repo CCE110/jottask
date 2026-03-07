@@ -15,10 +15,47 @@ from flask import Blueprint, render_template, request, redirect, url_for, sessio
 from supabase import create_client, Client
 from auth import login_required
 from crm_manager import CRMManager
+from opensolar_connector import OpenSolarConnector
 
 crm_setup_bp = Blueprint('crm_setup', __name__, url_prefix='/crm')
 
 crm_mgr = CRMManager()
+
+# In-memory cache for OpenSolar connectors (keyed by user_id)
+_opensolar_connectors = {}
+
+
+def get_opensolar_for_user(user_id: str) -> OpenSolarConnector | None:
+    """Get an authenticated OpenSolar connector for a user.
+    Used by email processor, scheduler, and API routes.
+    """
+    # Check cache first
+    cached = _opensolar_connectors.get(user_id)
+    if cached and cached.token:
+        return cached
+
+    # Load from database
+    connections = crm_mgr.get_user_connections(user_id)
+    conn = next((c for c in connections if c['provider'] == 'opensolar' and c.get('is_active')), None)
+    if not conn:
+        return None
+
+    email = conn.get('api_base_url', '')  # email stored in api_base_url
+    password = conn.get('api_key', '')
+    org_id = (conn.get('settings') or {}).get('org_id', '')
+    token = conn.get('access_token', '')
+
+    connector = OpenSolarConnector(email=email, password=password, token=token, org_id=org_id)
+
+    # Re-authenticate if no token
+    if not token:
+        result = connector.authenticate()
+        if not result.success:
+            print(f"OpenSolar: Failed to authenticate for user {user_id}: {result.message}")
+            return None
+
+    _opensolar_connectors[user_id] = connector
+    return connector
 
 # OAuth request timeout
 OAUTH_TIMEOUT = 15
@@ -46,19 +83,23 @@ def crm_setup():
 @crm_setup_bp.route('/add/pipereply', methods=['POST'])
 @login_required
 def add_pipereply():
-    """Test and save a PipeReply CRM connection"""
+    """Test and save a PipeReply/GHL CRM connection using Private Integration Token"""
     user_id = session['user_id']
     api_key = request.form.get('api_key', '').strip()
-    api_base_url = request.form.get('api_base_url', '').strip()
+    location_id = request.form.get('location_id', '').strip()
 
     if not api_key:
-        return redirect(url_for('crm_setup.crm_setup', error='Please enter your API key'))
+        return redirect(url_for('crm_setup.crm_setup', error='Please enter your Private Integration Token'))
+
+    settings = {}
+    if location_id:
+        settings['location_id'] = location_id
 
     # Test the connection first
     result = crm_mgr.test_connection_for_user(
         provider='pipereply',
         api_key=api_key,
-        api_base_url=api_base_url,
+        settings=settings,
     )
 
     if not result.success:
@@ -69,13 +110,70 @@ def add_pipereply():
         user_id=user_id,
         provider='pipereply',
         api_key=api_key,
-        api_base_url=api_base_url,
         display_name='PipeReply CRM',
         connection_status='connected',
         is_active=True,
     )
 
+    # Save location_id in settings if provided
+    if location_id:
+        connections = crm_mgr.get_user_connections(user_id)
+        conn = next((c for c in connections if c['provider'] == 'pipereply'), None)
+        if conn:
+            crm_mgr.supabase.table('crm_connections') \
+                .update({'settings': settings}) \
+                .eq('id', conn['id']) \
+                .execute()
+
     return redirect(url_for('crm_setup.crm_setup', message='PipeReply connected successfully!'))
+
+
+@crm_setup_bp.route('/add/opensolar', methods=['POST'])
+@login_required
+def add_opensolar():
+    """Test and save an OpenSolar connection using email/password"""
+    user_id = session['user_id']
+    email = request.form.get('email', '').strip()
+    password = request.form.get('password', '').strip()
+
+    if not email or not password:
+        return redirect(url_for('crm_setup.crm_setup', error='Please enter your OpenSolar email and password'))
+
+    # Test the connection
+    connector = OpenSolarConnector(email=email, password=password)
+    result = connector.test_connection()
+
+    if not result.success:
+        return redirect(url_for('crm_setup.crm_setup', error=f'OpenSolar connection failed: {result.message}'))
+
+    # Save the connection (store email in display_name, password in api_key, org_id in settings)
+    settings = {'org_id': connector.org_id}
+    crm_mgr.save_connection(
+        user_id=user_id,
+        provider='opensolar',
+        api_key=password,  # Stored encrypted by Supabase RLS
+        display_name=f'OpenSolar ({email})',
+        connection_status='connected',
+        is_active=True,
+    )
+
+    # Update with email and settings
+    connections = crm_mgr.get_user_connections(user_id)
+    conn = next((c for c in connections if c['provider'] == 'opensolar'), None)
+    if conn:
+        crm_mgr.supabase.table('crm_connections') \
+            .update({
+                'settings': settings,
+                'access_token': connector.token,  # Cache the current token
+                'api_base_url': email,  # Store email in api_base_url field
+            }) \
+            .eq('id', conn['id']) \
+            .execute()
+
+    # Cache the connector
+    _opensolar_connectors[user_id] = connector
+
+    return redirect(url_for('crm_setup.crm_setup', message='OpenSolar connected successfully!'))
 
 
 # ========================================
@@ -322,6 +420,24 @@ def test_connection(connection_id):
 
     # Refresh token if needed (for OAuth connections)
     conn = crm_mgr.refresh_token_if_needed(conn)
+
+    # OpenSolar uses credential-based auth, not the CRM connector pattern
+    if conn.get('provider') == 'opensolar':
+        email = conn.get('api_base_url', '')  # email stored in api_base_url
+        password = conn.get('api_key', '')
+        os_connector = OpenSolarConnector(email=email, password=password)
+        os_result = os_connector.test_connection()
+        if os_result.success:
+            # Update cached token
+            crm_mgr.supabase.table('crm_connections') \
+                .update({'access_token': os_connector.token}) \
+                .eq('id', connection_id) \
+                .execute()
+            crm_mgr.update_connection_status(connection_id, 'connected')
+            return redirect(url_for('crm_setup.crm_setup', message=f'Connection working: {os_result.message}'))
+        else:
+            crm_mgr.update_connection_status(connection_id, 'error', os_result.message)
+            return redirect(url_for('crm_setup.crm_setup', error=f'Connection failed: {os_result.message}'))
 
     result = crm_mgr.test_connection_for_user(
         provider=conn['provider'],
