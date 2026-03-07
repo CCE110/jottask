@@ -922,24 +922,36 @@ class AIEmailProcessor:
                                               sender_email=sender_email, sender_tasks=sender_tasks)
 
         try:
+            # Log what we're sending to AI for debugging
+            print(f"  [AI INPUT] Subject: {subject}")
+            print(f"  [AI INPUT] Content length: {len(content)} chars")
+            print(f"  [AI INPUT] Content preview: {content[:200]}")
+
             response = self.claude.messages.create(
                 model="claude-sonnet-4-20250514",
                 max_tokens=2000,
+                system="You are a task extraction assistant. Your job is to ALWAYS create tasks from emails. NEVER return empty actions unless the email is pure spam. The subject line alone is enough to create a task.",
                 messages=[{"role": "user", "content": prompt}]
             )
 
             # Parse JSON response
             raw = response.content[0].text
+            print(f"  [AI OUTPUT] Raw response: {raw[:500]}")
             # Handle markdown code blocks
             if '```json' in raw:
                 raw = raw.split('```json')[1].split('```')[0]
             elif '```' in raw:
                 raw = raw.split('```')[1].split('```')[0]
 
-            return json.loads(raw.strip())
+            parsed = json.loads(raw.strip())
+            actions_count = len(parsed.get('actions', []))
+            print(f"  [AI OUTPUT] Parsed {actions_count} actions")
+            if actions_count == 0:
+                print(f"  [AI WARNING] Zero actions returned! Summary: {parsed.get('summary', 'none')}")
+            return parsed
 
         except json.JSONDecodeError:
-            print(f"  Could not parse AI response")
+            print(f"  Could not parse AI response: {raw[:300]}")
             return None
         except Exception as e:
             print(f"  Claude API error: {e}")

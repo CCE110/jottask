@@ -430,7 +430,7 @@ def check_and_send_reminders():
     When a task needs a reminder:
     - Has due_time → remind when within reminder_window minutes, or overdue
     - No due_time → remind after morning_hour on due_date, or anytime if overdue
-    - Re-remind overdue tasks every hour until completed (not every 24h)
+    - Re-remind overdue tasks once per day (morning) until completed
     """
     print(f"\n🔔 Checking task reminders...")
 
@@ -468,7 +468,7 @@ def check_and_send_reminders():
         skipped_future = 0
         skipped_throttle = 0
         already_reminded_today = 0
-        one_hour_ago = datetime.now(pytz.UTC) - timedelta(hours=1)
+        eight_hours_ago = datetime.now(pytz.UTC) - timedelta(hours=8)
 
         # ── Step 3: Check each task ──
         for task in all_tasks:
@@ -492,9 +492,9 @@ def check_and_send_reminders():
                 if last_reminded:
                     try:
                         last_dt = datetime.fromisoformat(last_reminded.replace('Z', '+00:00'))
-                        if last_dt > one_hour_ago:
+                        if last_dt > eight_hours_ago:
                             skipped_throttle += 1
-                            continue  # Reminded less than 1 hour ago — skip
+                            continue  # Reminded less than 8 hours ago — skip
                     except Exception:
                         pass  # Can't parse timestamp — proceed with reminder
 
