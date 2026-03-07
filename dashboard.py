@@ -3515,6 +3515,62 @@ def api_update_task_status(task_id):
     return jsonify({'success': True})
 
 
+@app.route('/api/tasks/reminder-debug', methods=['GET'])
+def api_reminder_debug():
+    """Diagnostic endpoint: show tasks that should get reminders.
+    Auth: logged-in session or internal API key.
+    """
+    user_id = session.get('user_id')
+    api_key = request.headers.get('X-Internal-Key') or request.args.get('key')
+    internal_key = os.getenv('INTERNAL_API_KEY', '')
+
+    if not user_id and not (api_key and internal_key and api_key == internal_key):
+        return jsonify({'error': 'Unauthorized'}), 401
+
+    aest = pytz.timezone('Australia/Brisbane')
+    now_aest = datetime.now(aest)
+    today_str = now_aest.strftime('%Y-%m-%d')
+    tomorrow_str = (now_aest + timedelta(days=1)).strftime('%Y-%m-%d')
+    fourteen_days_ago = (now_aest - timedelta(days=14)).strftime('%Y-%m-%d')
+
+    query = supabase.table('tasks')\
+        .select('id, title, due_date, due_time, priority, status, client_name, user_id, reminder_sent_at, created_at')\
+        .eq('status', 'pending')\
+        .gte('due_date', fourteen_days_ago)\
+        .lte('due_date', tomorrow_str)\
+        .order('due_date')\
+        .order('due_time')\
+        .limit(50)
+
+    if user_id:
+        query = query.eq('user_id', user_id)
+
+    result = query.execute()
+    tasks = result.data or []
+
+    output = []
+    for t in tasks:
+        reminded = t.get('reminder_sent_at')
+        output.append({
+            'id': t['id'][:8],
+            'title': t['title'][:60],
+            'due_date': t.get('due_date'),
+            'due_time': t.get('due_time'),
+            'client': t.get('client_name', ''),
+            'reminder_sent_at': reminded[:19] if reminded else None,
+            'created_at': t.get('created_at', '')[:19],
+            'user_id': t.get('user_id', '')[:8],
+        })
+
+    return jsonify({
+        'now_aest': now_aest.strftime('%Y-%m-%d %H:%M:%S'),
+        'query_range': f'{fourteen_days_ago} to {tomorrow_str}',
+        'total_pending': len(tasks),
+        'needs_reminder': len([t for t in tasks if not t.get('reminder_sent_at')]),
+        'tasks': output,
+    })
+
+
 @app.route('/api/tasks/cleanup-duplicates', methods=['POST'])
 def api_cleanup_duplicates():
     """Find and cancel duplicate tasks for a user.

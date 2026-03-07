@@ -443,31 +443,38 @@ def check_and_send_reminders():
 
         print(f"   Found {len(users)} user(s)")
 
-        # Get pending tasks that need a reminder:
-        # 1) Never reminded (reminder_sent_at IS NULL) — bounded to last 30 days
-        # 2) Overdue and last reminded > 24h ago (daily re-reminder, max 14 days old)
-        thirty_days_ago = (datetime.now(pytz.UTC) - timedelta(days=30)).strftime('%Y-%m-%d')
-        fourteen_days_ago = (datetime.now(pytz.UTC) - timedelta(days=14)).strftime('%Y-%m-%d')
-        today_str_utc = datetime.now(pytz.UTC).strftime('%Y-%m-%d')
+        # Use AEST for date boundaries (tasks store AEST dates, not UTC)
+        aest = pytz.timezone('Australia/Brisbane')
+        now_aest = datetime.now(aest)
+        today_str = now_aest.strftime('%Y-%m-%d')
+        tomorrow_str = (now_aest + timedelta(days=1)).strftime('%Y-%m-%d')
+        fourteen_days_ago = (now_aest - timedelta(days=14)).strftime('%Y-%m-%d')
         twenty_four_h_ago = (datetime.now(pytz.UTC) - timedelta(hours=24)).isoformat()
 
+        # Get pending tasks that need a reminder:
+        # 1) Never reminded — due today or earlier (no point fetching future tasks)
+        #    ORDER BY due_date ASC so nearest-due tasks come first
         never_reminded = _get_supabase().table('tasks')\
             .select('id, title, due_date, due_time, priority, status, client_name, user_id, reminder_sent_at')\
             .eq('status', 'pending')\
             .is_('reminder_sent_at', 'null')\
-            .gte('due_date', thirty_days_ago)\
-            .limit(100)\
+            .gte('due_date', fourteen_days_ago)\
+            .lte('due_date', tomorrow_str)\
+            .order('due_date')\
+            .order('due_time')\
+            .limit(200)\
             .execute()
 
-        # Overdue tasks reminded > 24h ago — re-remind once per day (max 14 days old)
+        # 2) Overdue and last reminded > 24h ago (daily re-reminder, max 14 days old)
         overdue_reremind = _get_supabase().table('tasks')\
             .select('id, title, due_date, due_time, priority, status, client_name, user_id, reminder_sent_at')\
             .eq('status', 'pending')\
             .not_.is_('reminder_sent_at', 'null')\
             .lt('reminder_sent_at', twenty_four_h_ago)\
-            .lte('due_date', today_str_utc)\
+            .lte('due_date', today_str)\
             .gte('due_date', fourteen_days_ago)\
-            .limit(50)\
+            .order('due_date')\
+            .limit(100)\
             .execute()
 
         raw_tasks = (never_reminded.data or []) + (overdue_reremind.data or [])
@@ -485,11 +492,11 @@ def check_and_send_reminders():
 
         new_count = len(never_reminded.data or [])
         reremind_count = len(overdue_reremind.data or [])
-        print(f"   {new_count} new + {reremind_count} overdue re-remind = {len(raw_tasks)} total")
-        print(f"   {len(tasks_with_time)} with due_time, {len(tasks_date_only)} with due_date only")
-        # Log task details for debugging
-        for t in raw_tasks[:10]:
-            print(f"   -> [{t.get('status')}] {t.get('title', '')[:40]} due={t.get('due_date')} {t.get('due_time', '')} reminded={t.get('reminder_sent_at', 'never')[:16] if t.get('reminder_sent_at') else 'never'}")
+        print(f"   Query: never_reminded={new_count} (due {fourteen_days_ago}..{tomorrow_str}), overdue_reremind={reremind_count}")
+        print(f"   After dedup: {len(raw_tasks)} total = {len(tasks_with_time)} with time + {len(tasks_date_only)} date-only")
+        # Log ALL tasks for debugging (they're already bounded to ~14 days)
+        for t in raw_tasks:
+            print(f"   -> {t.get('title', '')[:45]:45s} due={t.get('due_date')} {(t.get('due_time') or 'no-time')[:5]:5s} user={str(t.get('user_id', ''))[:8]} reminded={t.get('reminder_sent_at', 'never')[:16] if t.get('reminder_sent_at') else 'NEVER'}")
 
         sent_count = 0
         sent_this_tick = set()  # Per-tick dedup: prevent double-send if same task appears in both queries
@@ -632,7 +639,6 @@ def check_and_send_reminders():
                     print(f"   WARNING: Invalid timezone '{user.get('timezone')}' for user {user_id}, falling back to Australia/Brisbane")
                     user_tz = pytz.timezone('Australia/Brisbane')
                 now = datetime.now(user_tz)
-                today_str = now.date().isoformat()
 
                 task_due_date = str(task.get('due_date', ''))[:10]
 
@@ -645,20 +651,25 @@ def check_and_send_reminders():
                     except (ValueError, IndexError):
                         morning_hour = 8
 
-                # Only send for tasks due today or yesterday (catch-up)
-                if task_due_date != today_str:
-                    yesterday_str = (now.date() - timedelta(days=1)).isoformat()
-                    if task_due_date != yesterday_str:
-                        continue
-                    # Yesterday's task - send overdue reminder anytime
-                    is_overdue = True
-                else:
-                    # Today's task - only send after user's morning hour
+                # Send for tasks due today or overdue (up to 14 days)
+                local_today = now.date().isoformat()
+                if task_due_date > local_today:
+                    continue  # Future task — skip
+                elif task_due_date == local_today:
+                    # Today's task — only send after user's morning hour
                     if now.hour < morning_hour:
                         continue
                     is_overdue = False
+                else:
+                    # Overdue — send anytime
+                    is_overdue = True
 
-                display_time = "today" if task_due_date == today_str else "yesterday"
+                if task_due_date == local_today:
+                    display_time = "today"
+                elif task_due_date == (now.date() - timedelta(days=1)).isoformat():
+                    display_time = "yesterday"
+                else:
+                    display_time = task_due_date
 
                 if is_overdue:
                     print(f"   📨 OVERDUE (due {display_time}): '{task['title'][:40]}' -> {user['email']}")
