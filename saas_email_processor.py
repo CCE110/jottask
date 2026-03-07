@@ -352,17 +352,6 @@ class AIEmailProcessor:
                         part.decode(enc or 'utf-8') if isinstance(part, bytes) else part
                         for part, enc in decoded_parts
                     )
-                norm_subject = self._normalize_subject(raw_subject)
-                if norm_subject and norm_subject in seen_subjects:
-                    print(f"  Skipping duplicate subject: {raw_subject[:60]}")
-                    self._mark_email_processed(
-                        message_id, msg_id_str,
-                        connection_id=user_ctx.connection_id, user_id=user_ctx.user_id
-                    )
-                    skipped_dupes += 1
-                    continue
-                if norm_subject:
-                    seen_subjects.add(norm_subject)
 
                 sender_raw = email_body.get('From', '')
                 sender_addr = self._get_sender_email_address(sender_raw)
@@ -507,7 +496,7 @@ class AIEmailProcessor:
                 if msg_id_str in self.processed_emails or message_id in self.processed_emails:
                     continue
 
-                # Subject-level dedup: skip duplicate forwards of the same email
+                # Decode subject
                 raw_subject = email_body.get('Subject', '')
                 if raw_subject:
                     decoded_parts = decode_header(raw_subject)
@@ -515,14 +504,6 @@ class AIEmailProcessor:
                         part.decode(enc or 'utf-8') if isinstance(part, bytes) else part
                         for part, enc in decoded_parts
                     )
-                norm_subject = self._normalize_subject(raw_subject)
-                if norm_subject and norm_subject in seen_subjects:
-                    print(f"  Skipping duplicate subject: {raw_subject[:60]}")
-                    self._mark_email_processed(message_id, msg_id_str)
-                    skipped_dupes += 1
-                    continue
-                if norm_subject:
-                    seen_subjects.add(norm_subject)
 
                 # Extract sender info for history tracking
                 sender_raw = email_body.get('From', '')
