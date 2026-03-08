@@ -1867,7 +1867,7 @@ def edit_action():
 if __name__ == "__main__":
     import time
     from saas_scheduler import check_and_send_reminders, get_users_needing_summary, send_daily_summary
-    from monitoring import log_heartbeat, log_error, send_self_alert, cleanup_old_events, check_reminder_health, check_and_send_canary, check_email_processing_health
+    from monitoring import log_heartbeat, log_error, send_self_alert, cleanup_old_events, check_reminder_health, check_and_send_canary, check_email_processing_health, send_daily_health_digest
 
     processor = AIEmailProcessor()
     poll_interval = int(os.getenv('POLL_INTERVAL_SECONDS', '60'))
@@ -1920,11 +1920,28 @@ if __name__ == "__main__":
                 print("Canary email sent — email delivery verified")
             elif canary_result == 'failed':
                 print("WARNING: Canary email FAILED — email delivery may be broken")
+                send_self_alert(
+                    "Canary email failed — outbound email may be down",
+                    "check_and_send_canary() returned 'failed'. Resend API may be unreachable or misconfigured. "
+                    "Check RESEND_API_KEY and Railway logs."
+                )
                 tick_errors += 1
         except Exception as e:
             print(f"Error in canary check: {e}")
             log_error('canary_check', e, category='canary')
             tick_errors += 1
+
+        try:
+            # 2e. Daily health digest (8 AM AEST)
+            digest_result = send_daily_health_digest()
+            if digest_result == 'sent':
+                print("Daily health digest sent")
+            elif digest_result == 'failed':
+                print("WARNING: Failed to send daily health digest")
+                tick_errors += 1
+        except Exception as e:
+            print(f"Error in health digest: {e}")
+            log_error('health_digest', e, category='system')
 
         try:
             # 2d. Email processing audit (every 30 minutes)

@@ -469,6 +469,277 @@ def check_email_processing_health():
         return 'healthy'  # Don't raise false alarms if the check itself fails
 
 
+def check_imap_health():
+    """Test IMAP connectivity: login, select INBOX, logout.
+
+    Returns dict with 'status' ('ok' or 'error') and 'detail'.
+    Also checks all active email_connections for per-user IMAP health.
+    """
+    results = []
+
+    # 1. Test the main Jottask IMAP inbox (env-var config)
+    import imaplib
+    imap_server = os.getenv('IMAP_SERVER', 'mail.privateemail.com')
+    imap_user = os.getenv('JOTTASK_EMAIL', 'jottask@flowquote.ai')
+    imap_password = os.getenv('JOTTASK_EMAIL_PASSWORD')
+
+    main_result = _test_imap_connection(imap_server, imap_user, imap_password, 'main')
+    results.append(main_result)
+
+    # 2. Test all active email_connections
+    try:
+        sb = _get_supabase()
+        connections = sb.table('email_connections')\
+            .select('id, email_address, imap_server, imap_password, provider, user_id')\
+            .eq('is_active', True)\
+            .execute()
+
+        for conn in (connections.data or []):
+            if conn.get('imap_password') and conn.get('imap_server'):
+                conn_result = _test_imap_connection(
+                    conn['imap_server'],
+                    conn['email_address'],
+                    conn['imap_password'],
+                    f"connection:{conn['email_address']}"
+                )
+                results.append(conn_result)
+    except Exception as e:
+        results.append({'label': 'connections_query', 'status': 'error', 'detail': str(e)})
+
+    # Overall status
+    any_error = any(r['status'] == 'error' for r in results)
+    if any_error:
+        failed = [r for r in results if r['status'] == 'error']
+        detail = '; '.join(f"{r['label']}: {r['detail']}" for r in failed)
+        log_event('imap_health', f"IMAP check failed: {detail}", status='error', category='system')
+        return {'status': 'error', 'detail': detail, 'results': results}
+
+    log_event('imap_health', 'All IMAP connections healthy', status='success', category='system')
+    return {'status': 'ok', 'detail': 'All connections healthy', 'results': results}
+
+
+def _test_imap_connection(server, user, password, label):
+    """Test a single IMAP connection. Returns dict with status and detail."""
+    import imaplib
+    if not password:
+        return {'label': label, 'status': 'error', 'detail': 'No password configured'}
+    try:
+        mail = imaplib.IMAP4_SSL(server)
+        mail.login(user, password)
+        status, data = mail.select('INBOX', readonly=True)
+        msg_count = data[0].decode() if data else '?'
+        mail.logout()
+        return {'label': label, 'status': 'ok', 'detail': f'{msg_count} messages in INBOX'}
+    except Exception as e:
+        return {'label': label, 'status': 'error', 'detail': str(e)[:200]}
+
+
+def send_daily_health_digest():
+    """Send a comprehensive daily health report at 8 AM AEST.
+
+    Covers: outbound email stats, IMAP connectivity, reminder health,
+    recent errors, canary status. Sent to all global_admins.
+
+    Returns 'sent', 'skipped', or 'failed'.
+    """
+    try:
+        aest = pytz.timezone('Australia/Brisbane')
+        now_aest = datetime.now(aest)
+
+        # Only run in the 8:00-8:04 window
+        if not (now_aest.hour == 8 and now_aest.minute < 5):
+            return 'skipped'
+
+        sb = _get_supabase()
+        now_utc = datetime.now(pytz.UTC)
+
+        # Dedup: check if digest already sent today
+        today_start = now_aest.replace(hour=0, minute=0, second=0, microsecond=0).astimezone(pytz.UTC)
+        existing = sb.table('system_events')\
+            .select('id')\
+            .eq('event_type', 'health_digest')\
+            .gte('created_at', today_start.isoformat())\
+            .execute()
+        if existing.data:
+            return 'skipped'
+
+        # Gather health data
+        health = get_system_health()
+        imap_health = check_imap_health()
+        canary = get_last_canary_status()
+        reminder_ok = check_reminder_health()
+
+        since_24h = (now_utc - timedelta(hours=24)).isoformat()
+
+        # Recent errors (last 24h)
+        errors_result = sb.table('system_events')\
+            .select('message, created_at, category')\
+            .eq('event_type', 'error')\
+            .gte('created_at', since_24h)\
+            .order('created_at', desc=True)\
+            .limit(10)\
+            .execute()
+        recent_errors = errors_result.data or []
+
+        # Recent alerts (last 24h)
+        alerts_result = sb.table('system_events')\
+            .select('message, created_at')\
+            .eq('event_type', 'alert_sent')\
+            .gte('created_at', since_24h)\
+            .order('created_at', desc=True)\
+            .limit(5)\
+            .execute()
+        recent_alerts = alerts_result.data or []
+
+        # Build the digest email
+        def status_badge(ok, label_ok='OK', label_bad='FAILING'):
+            if ok:
+                return f'<span style="background:#10B981;color:white;padding:3px 10px;border-radius:4px;font-size:13px;font-weight:600;">{label_ok}</span>'
+            return f'<span style="background:#EF4444;color:white;padding:3px 10px;border-radius:4px;font-size:13px;font-weight:600;">{label_bad}</span>'
+
+        worker_ok = health['worker_status'] == 'healthy'
+        imap_ok = imap_health['status'] == 'ok'
+        canary_ok = canary['status'] == 'ok'
+        email_fail_rate = health['emails_failed_24h'] / max(health['emails_sent_24h'] + health['emails_failed_24h'], 1)
+
+        all_green = worker_ok and imap_ok and canary_ok and reminder_ok and email_fail_rate < 0.1 and not recent_errors
+        overall_color = '#10B981' if all_green else '#EF4444'
+        overall_text = 'All Systems Healthy' if all_green else 'Issues Detected'
+
+        errors_html = ''
+        if recent_errors:
+            rows = ''
+            for err in recent_errors[:5]:
+                ts = err['created_at'][:16].replace('T', ' ')
+                cat = err.get('category', '-')
+                msg = err['message'][:80]
+                rows += f'<tr><td style="padding:6px 8px;font-size:12px;color:#6B7280;">{ts}</td><td style="padding:6px 8px;font-size:12px;">{cat}</td><td style="padding:6px 8px;font-size:12px;">{msg}</td></tr>'
+            errors_html = f'''
+            <div style="margin-top:24px;">
+                <h3 style="font-size:14px;color:#EF4444;margin-bottom:8px;">Recent Errors ({len(recent_errors)} in 24h)</h3>
+                <table style="width:100%;border-collapse:collapse;">
+                    <tr style="background:#FEE2E2;"><th style="padding:6px 8px;text-align:left;font-size:12px;">Time</th><th style="padding:6px 8px;text-align:left;font-size:12px;">Category</th><th style="padding:6px 8px;text-align:left;font-size:12px;">Message</th></tr>
+                    {rows}
+                </table>
+            </div>'''
+
+        alerts_html = ''
+        if recent_alerts:
+            items = ''.join(f'<li style="font-size:13px;margin-bottom:4px;">{a["message"][:80]} <span style="color:#9CA3AF;">({a["created_at"][:16].replace("T", " ")})</span></li>' for a in recent_alerts)
+            alerts_html = f'''
+            <div style="margin-top:16px;">
+                <h3 style="font-size:14px;color:#F59E0B;margin-bottom:8px;">Alerts Fired ({len(recent_alerts)} in 24h)</h3>
+                <ul style="margin:0;padding-left:20px;">{items}</ul>
+            </div>'''
+
+        imap_detail = imap_health['detail']
+        if imap_health.get('results'):
+            imap_detail = ', '.join(f"{r['label']}: {r['detail'][:40]}" for r in imap_health['results'])
+
+        html = f'''
+        <html>
+        <body style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;max-width:600px;margin:0 auto;padding:20px;background:#F9FAFB;">
+            <div style="background:linear-gradient(135deg,{overall_color} 0%,{overall_color}CC 100%);padding:24px 32px;border-radius:16px 16px 0 0;">
+                <h1 style="color:white;margin:0 0 4px 0;font-size:22px;">Daily Health Digest</h1>
+                <p style="color:rgba(255,255,255,0.9);margin:0;font-size:14px;">{now_aest.strftime('%A, %B %d %Y')} - {overall_text}</p>
+            </div>
+
+            <div style="background:white;padding:32px;border-radius:0 0 16px 16px;box-shadow:0 4px 6px rgba(0,0,0,0.05);">
+
+                <h2 style="font-size:16px;margin-bottom:16px;color:#374151;">System Status</h2>
+                <table style="width:100%;border-collapse:collapse;">
+                    <tr style="border-bottom:1px solid #E5E7EB;">
+                        <td style="padding:10px 0;font-weight:500;">Worker Process</td>
+                        <td style="padding:10px 0;text-align:right;">{status_badge(worker_ok)}</td>
+                    </tr>
+                    <tr style="border-bottom:1px solid #E5E7EB;">
+                        <td style="padding:10px 0;font-weight:500;">IMAP Inbound</td>
+                        <td style="padding:10px 0;text-align:right;">{status_badge(imap_ok)}</td>
+                    </tr>
+                    <tr style="border-bottom:1px solid #E5E7EB;">
+                        <td style="padding:10px 0;font-weight:500;">Email Outbound (Resend)</td>
+                        <td style="padding:10px 0;text-align:right;">{status_badge(canary_ok)}</td>
+                    </tr>
+                    <tr style="border-bottom:1px solid #E5E7EB;">
+                        <td style="padding:10px 0;font-weight:500;">Reminder System</td>
+                        <td style="padding:10px 0;text-align:right;">{status_badge(reminder_ok)}</td>
+                    </tr>
+                </table>
+
+                <h2 style="font-size:16px;margin:24px 0 12px;color:#374151;">24-Hour Stats</h2>
+                <div style="display:flex;gap:12px;flex-wrap:wrap;">
+                    <div style="flex:1;min-width:120px;background:#F0FDF4;padding:16px;border-radius:8px;text-align:center;">
+                        <div style="font-size:28px;font-weight:700;color:#16A34A;">{health['emails_sent_24h']}</div>
+                        <div style="font-size:12px;color:#6B7280;">Emails Sent</div>
+                    </div>
+                    <div style="flex:1;min-width:120px;background:{'#FEF2F2' if health['emails_failed_24h'] else '#F0FDF4'};padding:16px;border-radius:8px;text-align:center;">
+                        <div style="font-size:28px;font-weight:700;color:{'#EF4444' if health['emails_failed_24h'] else '#16A34A'};">{health['emails_failed_24h']}</div>
+                        <div style="font-size:12px;color:#6B7280;">Failed</div>
+                    </div>
+                    <div style="flex:1;min-width:120px;background:{'#FEF2F2' if health['errors_24h'] else '#F0FDF4'};padding:16px;border-radius:8px;text-align:center;">
+                        <div style="font-size:28px;font-weight:700;color:{'#EF4444' if health['errors_24h'] else '#16A34A'};">{health['errors_24h']}</div>
+                        <div style="font-size:12px;color:#6B7280;">Errors</div>
+                    </div>
+                </div>
+
+                <h2 style="font-size:16px;margin:24px 0 12px;color:#374151;">Details</h2>
+                <div style="background:#F9FAFB;padding:16px;border-radius:8px;font-size:13px;line-height:1.8;">
+                    <strong>Worker:</strong> Last heartbeat {f"{health['heartbeat_age_minutes']:.0f} min ago" if health['heartbeat_age_minutes'] else 'unknown'}<br>
+                    <strong>IMAP:</strong> {imap_detail}<br>
+                    <strong>Canary:</strong> Last successful at {canary.get('last_canary', 'never')}<br>
+                </div>
+
+                {errors_html}
+                {alerts_html}
+
+                <div style="margin-top:24px;text-align:center;">
+                    <a href="https://www.jottask.app/health" style="display:inline-block;background:#6366F1;color:white;padding:12px 28px;border-radius:8px;text-decoration:none;font-weight:600;">View Health Dashboard</a>
+                </div>
+            </div>
+
+            <p style="color:#9CA3AF;font-size:12px;text-align:center;margin-top:24px;">
+                Jottask System Monitoring - Sent daily at 8:00 AM AEST
+            </p>
+        </body>
+        </html>
+        '''
+
+        # Send to all global admins
+        from email_utils import send_email
+        admins = sb.table('users').select('id, email').eq('role', 'global_admin').execute()
+        if not admins.data:
+            print("[health_digest] No global_admin users found")
+            return 'skipped'
+
+        sent_ok = False
+        for admin in admins.data:
+            subject_prefix = 'ALL GREEN' if all_green else 'ISSUES DETECTED'
+            success, error = send_email(
+                admin['email'],
+                f'[{subject_prefix}] Jottask Health Digest - {now_aest.strftime("%b %d")}',
+                html,
+                category='health_digest',
+                user_id=admin['id'],
+            )
+            if success:
+                sent_ok = True
+
+        if sent_ok:
+            log_event('health_digest', f"Daily health digest sent ({'all green' if all_green else 'issues detected'})",
+                       status='success' if all_green else 'warning', category='system')
+            return 'sent'
+        else:
+            log_event('health_digest', 'Failed to send health digest', status='error', category='system')
+            return 'failed'
+
+    except Exception as e:
+        print(f"[health_digest] Error: {e}")
+        import traceback
+        traceback.print_exc()
+        log_event('health_digest', f'Health digest error: {e}', status='error', category='system', error_detail=str(e))
+        return 'failed'
+
+
 def cleanup_old_events(days=30):
     """Delete events older than N days."""
     try:

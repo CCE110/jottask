@@ -4284,22 +4284,29 @@ def chat_message():
 @app.route('/health')
 def health_check():
     """Public health endpoint for uptime monitors. No auth required.
-    Returns 200 if worker heartbeat < 5 min, 503 if stale/missing or canary failed."""
-    from monitoring import get_system_health, get_last_canary_status
-    health = get_system_health()
-    canary = get_last_canary_status()
-    # 503 if worker unhealthy OR canary explicitly failed (not 'missing' — avoids false alarm before first canary)
-    if health['worker_status'] != 'healthy' or canary['status'] == 'failed':
-        status_code = 503
-    else:
-        status_code = 200
-    return jsonify({
-        'status': health['worker_status'],
-        'last_heartbeat': health['last_heartbeat'],
-        'heartbeat_age_minutes': health['heartbeat_age_minutes'],
-        'canary_status': canary['status'],
-        'last_canary': canary['last_canary'],
-    }), status_code
+
+    Returns 200 as long as the web process can serve requests and reach
+    the database.  Worker/canary status is included in the JSON body for
+    informational purposes but does NOT cause a 503 — the web service
+    being up is what the uptime monitor cares about.  Worker-down alerts
+    are handled separately by send_self_alert / daily health digest.
+    """
+    try:
+        from monitoring import get_system_health, get_last_canary_status
+        health = get_system_health()
+        canary = get_last_canary_status()
+        return jsonify({
+            'status': 'ok',
+            'web': 'healthy',
+            'worker': health['worker_status'],
+            'last_heartbeat': health['last_heartbeat'],
+            'heartbeat_age_minutes': health['heartbeat_age_minutes'],
+            'canary_status': canary['status'],
+            'last_canary': canary['last_canary'],
+        }), 200
+    except Exception as e:
+        # If we can't even query the DB, THEN the web service is unhealthy
+        return jsonify({'status': 'error', 'web': 'unhealthy', 'detail': str(e)}), 503
 
 
 @app.route('/api/system/health')
