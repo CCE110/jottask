@@ -2209,46 +2209,59 @@ def create_task():
 def edit_task(task_id):
     user_id = session['user_id']
 
-    # Verify ownership
-    task = supabase.table('tasks').select('*').eq('id', task_id).eq('user_id', user_id).single().execute()
-    if not task.data:
-        return redirect(url_for('dashboard'))
+    try:
+        # Verify ownership
+        task = supabase.table('tasks').select('*').eq('id', task_id).eq('user_id', user_id).single().execute()
+        if not task.data:
+            return redirect(url_for('dashboard'))
 
-    if request.method == 'POST':
-        update_data = {
-            'title': request.form.get('title'),
-            'description': request.form.get('description'),
-            'due_date': request.form.get('due_date'),
-            'due_time': request.form.get('due_time', '09:00') + ':00',
-            'priority': request.form.get('priority'),
-            'status': request.form.get('status'),
-            'client_name': request.form.get('client_name') or None,
-            'client_email': request.form.get('client_email') or None,
-            'client_phone': request.form.get('client_phone') or None,
-            'project_name': request.form.get('project_name') or None
-        }
+        if request.method == 'POST':
+            update_data = {
+                'title': request.form.get('title'),
+                'description': request.form.get('description'),
+                'due_date': request.form.get('due_date'),
+                'due_time': request.form.get('due_time', '09:00') + ':00',
+                'priority': request.form.get('priority'),
+                'status': request.form.get('status'),
+                'client_name': request.form.get('client_name') or None,
+                'client_email': request.form.get('client_email') or None,
+                'client_phone': request.form.get('client_phone') or None,
+                'project_name': request.form.get('project_name') or None
+            }
 
-        if update_data['status'] == 'completed':
-            update_data['completed_at'] = datetime.now(pytz.UTC).isoformat()
-        elif update_data['status'] in ('pending', 'ongoing'):
-            update_data['completed_at'] = None
+            if update_data['status'] == 'completed':
+                update_data['completed_at'] = datetime.now(pytz.UTC).isoformat()
+            elif update_data['status'] in ('pending', 'ongoing'):
+                update_data['completed_at'] = None
 
-        supabase.table('tasks').update(update_data).eq('id', task_id).execute()
-        return redirect(url_for('dashboard'))
+            supabase.table('tasks').update(update_data).eq('id', task_id).execute()
+            return redirect(url_for('dashboard'))
 
-    # Get checklist items
-    checklist = supabase.table('task_checklist_items')\
-        .select('*')\
-        .eq('task_id', task_id)\
-        .order('display_order')\
-        .execute()
+        # Get checklist items
+        checklist = supabase.table('task_checklist_items')\
+            .select('*')\
+            .eq('task_id', task_id)\
+            .order('display_order')\
+            .execute()
 
-    return render_template(
-        'task_edit.html',
-        title='Edit Task',
-        task=task.data,
-        checklist=checklist.data or []
-    )
+        # Ensure task data has safe defaults for template rendering
+        task_data = task.data
+        if task_data.get('due_date') is None:
+            task_data['due_date'] = ''
+        if task_data.get('due_time') is None:
+            task_data['due_time'] = ''
+
+        return render_template(
+            'task_edit.html',
+            title='Edit Task',
+            task=task_data,
+            checklist=checklist.data or []
+        )
+    except Exception as e:
+        import traceback
+        print(f"❌ Error editing task {task_id}: {e}")
+        traceback.print_exc()
+        return f"Error loading task: {e}", 500
 
 
 @app.route('/tasks/<task_id>')
