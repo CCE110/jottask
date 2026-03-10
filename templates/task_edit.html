@@ -115,6 +115,52 @@
 
             <hr style="margin: 24px 0; border: none; border-top: 1px solid var(--gray-200);">
 
+            <!-- Lead Card: Copy buttons for CRM entry -->
+            {% set lead_details = {} %}
+            {% if task.description and '--- LEAD DETAILS ---' in (task.description or '') %}
+                {% set _ = lead_details.update({'has_details': true}) %}
+            {% endif %}
+            {% if task.client_name or task.client_email or task.client_phone or lead_details.get('has_details') %}
+            <h3 style="font-size: 14px; color: var(--gray-500); margin-bottom: 16px;">LEAD CARD — COPY FOR CRM</h3>
+            <div style="background: #F0F9FF; border: 1px solid #BAE6FD; border-radius: 12px; padding: 16px; margin-bottom: 24px;">
+                <div style="display: flex; flex-direction: column; gap: 8px;">
+                    {% if task.client_name %}
+                    <div class="lead-field" style="display: flex; align-items: center; justify-content: space-between; padding: 8px 12px; background: white; border-radius: 8px;">
+                        <div><span style="font-size: 12px; color: var(--gray-500); display: block;">Name</span><strong>{{ task.client_name }}</strong></div>
+                        <button type="button" class="btn btn-sm" onclick="copyField('{{ task.client_name }}')" style="padding: 4px 12px; font-size: 12px; background: #E0E7FF; color: #4338CA; border: none; border-radius: 6px; cursor: pointer;">Copy</button>
+                    </div>
+                    {% endif %}
+                    {% if task.client_email %}
+                    <div class="lead-field" style="display: flex; align-items: center; justify-content: space-between; padding: 8px 12px; background: white; border-radius: 8px;">
+                        <div><span style="font-size: 12px; color: var(--gray-500); display: block;">Email</span><strong>{{ task.client_email }}</strong></div>
+                        <button type="button" class="btn btn-sm" onclick="copyField('{{ task.client_email }}')" style="padding: 4px 12px; font-size: 12px; background: #E0E7FF; color: #4338CA; border: none; border-radius: 6px; cursor: pointer;">Copy</button>
+                    </div>
+                    {% endif %}
+                    {% if task.client_phone %}
+                    <div class="lead-field" style="display: flex; align-items: center; justify-content: space-between; padding: 8px 12px; background: white; border-radius: 8px;">
+                        <div><span style="font-size: 12px; color: var(--gray-500); display: block;">Phone</span><strong>{{ task.client_phone }}</strong></div>
+                        <button type="button" class="btn btn-sm" onclick="copyField('{{ task.client_phone }}')" style="padding: 4px 12px; font-size: 12px; background: #E0E7FF; color: #4338CA; border: none; border-radius: 6px; cursor: pointer;">Copy</button>
+                    </div>
+                    {% endif %}
+                    {% if task.description and '--- LEAD DETAILS ---' in (task.description or '') %}
+                        {% set lead_section = task.description.split('--- LEAD DETAILS ---')[1] %}
+                        {% for line in lead_section.strip().split('\n') %}
+                            {% if ':' in line and line.strip() %}
+                            {% set parts = line.split(':', 1) %}
+                            <div class="lead-field" style="display: flex; align-items: center; justify-content: space-between; padding: 8px 12px; background: white; border-radius: 8px;">
+                                <div><span style="font-size: 12px; color: var(--gray-500); display: block;">{{ parts[0].strip() }}</span><strong>{{ parts[1].strip() }}</strong></div>
+                                <button type="button" class="btn btn-sm" onclick="copyField('{{ parts[1].strip() }}')" style="padding: 4px 12px; font-size: 12px; background: #E0E7FF; color: #4338CA; border: none; border-radius: 6px; cursor: pointer;">Copy</button>
+                            </div>
+                            {% endif %}
+                        {% endfor %}
+                    {% endif %}
+                </div>
+                <button type="button" class="btn btn-sm" onclick="copyAllLeadDetails()" style="margin-top: 12px; width: 100%; padding: 10px; background: #4338CA; color: white; border: none; border-radius: 8px; font-weight: 600; cursor: pointer;">
+                    Copy All for CRM
+                </button>
+            </div>
+            {% endif %}
+
             <h3 style="font-size: 14px; color: var(--gray-500); margin-bottom: 16px;">QUICK RESCHEDULE</h3>
 
             <div class="delay-buttons" style="margin-bottom: 24px;">
@@ -171,6 +217,39 @@
 </main>
 
 <script>
+// Lead card copy functions
+function copyField(text) {
+    navigator.clipboard.writeText(text).then(() => {
+        event.target.textContent = 'Copied!';
+        event.target.style.background = '#D1FAE5';
+        event.target.style.color = '#065F46';
+        setTimeout(() => {
+            event.target.textContent = 'Copy';
+            event.target.style.background = '#E0E7FF';
+            event.target.style.color = '#4338CA';
+        }, 1500);
+    });
+}
+
+function copyAllLeadDetails() {
+    const fields = document.querySelectorAll('.lead-field');
+    let text = '';
+    fields.forEach(field => {
+        const label = field.querySelector('span').textContent;
+        const value = field.querySelector('strong').textContent;
+        text += label + ': ' + value + '\n';
+    });
+    navigator.clipboard.writeText(text.trim()).then(() => {
+        const btn = event.target;
+        btn.textContent = 'Copied to clipboard!';
+        btn.style.background = '#059669';
+        setTimeout(() => {
+            btn.textContent = 'Copy All for CRM';
+            btn.style.background = '#4338CA';
+        }, 2000);
+    });
+}
+
 async function delayTask(taskId, hours, days) {
     try {
         const response = await fetch(`/api/tasks/${taskId}/delay`, {

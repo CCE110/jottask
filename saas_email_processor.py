@@ -1081,6 +1081,12 @@ EXTRACT actions as JSON:
             "description": "What needs to be done — include useful context like referral source, what they're waiting on, etc",
             "customer_name": "Customer FULL NAME (first + last)",
             "email_address": "Customer email if visible anywhere in the email headers, body, or signature, null if not",
+            "client_phone": "Phone number if found anywhere in the email (body, signature, contact info), null if not",
+            "client_address": "Street address or suburb if found in the email, null if not",
+            "system_size": "Solar system size if mentioned (e.g. '6.6kW', '10kW + 13.5kWh battery'), null if not",
+            "electricity_bill": "Electricity bill amount or usage if mentioned (e.g. '$400/qtr', '30kWh/day'), null if not",
+            "roof_type": "Roof type if mentioned (e.g. 'tin', 'tile', 'colorbond', 'flat'), null if not",
+            "referral_source": "How the lead found them (e.g. 'SolarQuotes', 'Google', 'referral from John', 'Facebook'), null if not",
             "business": "{ctx['default_business']}",
             "priority": "low|medium|high|urgent",
             "due_date": "YYYY-MM-DD or null",
@@ -1100,6 +1106,7 @@ Rules:
 - CRITICAL: If the email is FROM {ctx['user_name']} (CC'd to Jottask), this is an OUTGOING email. ALWAYS create a follow-up task like "[Customer Name]- follow up if no reply" with category "Remember to Callback", due in 2 business days, priority medium. Extract the customer name from the To field or subject line. This is the most common way {ctx['user_name']} uses Jottask — NEVER return empty actions for CC'd outgoing emails.
 - If only a first name appears in the subject, look in the email body/content for the full name
 - Always scrape and capture email addresses — check the From header, To header, email body, signatures, and any contact info in the content
+- LEAD DETAILS: For new leads or enquiries, extract ALL available details: phone numbers (Australian mobile 04xx, landline 07/02/03/08), street addresses or suburbs, system size requests, electricity bill amounts, roof type, and how they found us (referral source). These fields help auto-populate CRM entries. Check the entire email body and signature for this info.
 - If existing open tasks are listed above and this email is a follow-up, use action_type "update_task_notes" with the existing_task_id
 - New lead assignment emails → create_task with category "New Lead", priority "high", due today
 - Customer replies about quotes → create_task with category "Quote Follow Up"
@@ -1289,12 +1296,35 @@ Rules:
         if client_email:
             task_data['client_email'] = client_email.lower()
 
+        # Add phone if extracted
+        client_phone = action.get('client_phone')
+        if client_phone:
+            task_data['client_phone'] = client_phone
+
+        # Build structured lead details block and append to description
+        lead_fields = []
+        for field_key, field_label in [
+            ('client_address', 'Address'),
+            ('system_size', 'System Size'),
+            ('electricity_bill', 'Electricity Bill'),
+            ('roof_type', 'Roof Type'),
+            ('referral_source', 'Referral Source'),
+        ]:
+            val = action.get(field_key)
+            if val and val != 'null':
+                lead_fields.append(f"{field_label}: {val}")
+
+        if lead_fields:
+            lead_block = "\n\n--- LEAD DETAILS ---\n" + "\n".join(lead_fields)
+            task_data['description'] = (task_data.get('description') or '') + lead_block
+
         try:
             result = self.tm.supabase.table('tasks').insert(task_data).execute()
         except Exception as col_err:
             if 'column' in str(col_err).lower() or 'schema' in str(col_err).lower():
-                # client_email column may not exist yet — retry without it
+                # client columns may not exist yet — retry without them
                 task_data.pop('client_email', None)
+                task_data.pop('client_phone', None)
                 result = self.tm.supabase.table('tasks').insert(task_data).execute()
             else:
                 raise col_err
