@@ -2211,7 +2211,7 @@ def edit_task(task_id):
 
     try:
         # Verify ownership
-        task = supabase.table('tasks').select('*').eq('id', task_id).eq('user_id', user_id).single().execute()
+        task = supabase.table('tasks').select('*').eq('id', task_id).eq('user_id', user_id).maybe_single().execute()
         if not task.data:
             return redirect(url_for('dashboard'))
 
@@ -2270,7 +2270,7 @@ def task_detail(task_id):
     user_id = session['user_id']
 
     # Get task
-    task = supabase.table('tasks').select('*').eq('id', task_id).eq('user_id', user_id).single().execute()
+    task = supabase.table('tasks').select('*').eq('id', task_id).eq('user_id', user_id).maybe_single().execute()
     if not task.data:
         return redirect(url_for('dashboard'))
 
@@ -3758,7 +3758,7 @@ def api_delay_task(task_id):
     days = data.get('days', 0)
 
     # Verify ownership and get task
-    task = supabase.table('tasks').select('*').eq('id', task_id).eq('user_id', user_id).single().execute()
+    task = supabase.table('tasks').select('*').eq('id', task_id).eq('user_id', user_id).maybe_single().execute()
     if not task.data:
         return jsonify({'error': 'Not found'}), 404
 
