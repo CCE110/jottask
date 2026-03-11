@@ -490,14 +490,16 @@ def check_imap_health():
     try:
         sb = _get_supabase()
         connections = sb.table('email_connections')\
-            .select('id, email_address, imap_server, imap_password, provider, user_id')\
+            .select('id, email_address, imap_password, provider, user_id')\
             .eq('is_active', True)\
             .execute()
 
         for conn in (connections.data or []):
-            if conn.get('imap_password') and conn.get('imap_server'):
+            if conn.get('imap_password') and conn.get('provider') == 'imap':
+                # Use main IMAP server as default since per-connection server isn't stored
+                conn_imap_server = imap_server
                 conn_result = _test_imap_connection(
-                    conn['imap_server'],
+                    conn_imap_server,
                     conn['email_address'],
                     conn['imap_password'],
                     f"connection:{conn['email_address']}"
