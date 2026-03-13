@@ -118,6 +118,9 @@
                     <div class="kanban-card-actions">
                         <button class="btn-complete" onclick="event.stopPropagation(); completeTask('{{ task.id }}', this)">Complete</button>
                         <button onclick="event.stopPropagation(); openDelayModal('{{ task.id }}')">Delay</button>
+                        <button style="background:#0EA5E9;color:white;border:none;border-radius:6px;padding:4px 8px;font-size:12px;cursor:pointer;" onclick="event.stopPropagation(); delayTaskPreset('{{ task.id }}', 'next_day_8am')">🌅 Tmrw 8am</button>
+                        <button style="background:#0EA5E9;color:white;border:none;border-radius:6px;padding:4px 8px;font-size:12px;cursor:pointer;" onclick="event.stopPropagation(); delayTaskPreset('{{ task.id }}', 'next_day_9am')">☀️ Tmrw 9am</button>
+                        <button style="background:#F59E0B;color:white;border:none;border-radius:6px;padding:4px 8px;font-size:12px;cursor:pointer;" onclick="event.stopPropagation(); delayTaskPreset('{{ task.id }}', 'next_monday_9am')">📆 Mon 9am</button>
                     </div>
                 </div>
                 {% endif %}
@@ -144,6 +147,9 @@
                     <div class="kanban-card-actions">
                         <button class="btn-complete" onclick="event.stopPropagation(); completeTask('{{ task.id }}', this)">Complete</button>
                         <button onclick="event.stopPropagation(); openDelayModal('{{ task.id }}')">Delay</button>
+                        <button style="background:#0EA5E9;color:white;border:none;border-radius:6px;padding:4px 8px;font-size:12px;cursor:pointer;" onclick="event.stopPropagation(); delayTaskPreset('{{ task.id }}', 'next_day_8am')">🌅 Tmrw 8am</button>
+                        <button style="background:#0EA5E9;color:white;border:none;border-radius:6px;padding:4px 8px;font-size:12px;cursor:pointer;" onclick="event.stopPropagation(); delayTaskPreset('{{ task.id }}', 'next_day_9am')">☀️ Tmrw 9am</button>
+                        <button style="background:#F59E0B;color:white;border:none;border-radius:6px;padding:4px 8px;font-size:12px;cursor:pointer;" onclick="event.stopPropagation(); delayTaskPreset('{{ task.id }}', 'next_monday_9am')">📆 Mon 9am</button>
                     </div>
                 </div>
                 {% endif %}
@@ -170,6 +176,9 @@
                     <div class="kanban-card-actions">
                         <button class="btn-complete" onclick="event.stopPropagation(); completeTask('{{ task.id }}', this)">Complete</button>
                         <button onclick="event.stopPropagation(); openDelayModal('{{ task.id }}')">Delay</button>
+                        <button style="background:#0EA5E9;color:white;border:none;border-radius:6px;padding:4px 8px;font-size:12px;cursor:pointer;" onclick="event.stopPropagation(); delayTaskPreset('{{ task.id }}', 'next_day_8am')">🌅 Tmrw 8am</button>
+                        <button style="background:#0EA5E9;color:white;border:none;border-radius:6px;padding:4px 8px;font-size:12px;cursor:pointer;" onclick="event.stopPropagation(); delayTaskPreset('{{ task.id }}', 'next_day_9am')">☀️ Tmrw 9am</button>
+                        <button style="background:#F59E0B;color:white;border:none;border-radius:6px;padding:4px 8px;font-size:12px;cursor:pointer;" onclick="event.stopPropagation(); delayTaskPreset('{{ task.id }}', 'next_monday_9am')">📆 Mon 9am</button>
                     </div>
                 </div>
                 {% endif %}
@@ -453,6 +462,28 @@
     });
 
     // Complete task from kanban card button
+    async function delayTask(taskId, hours, days) {
+        try {
+            const response = await fetch(`/api/tasks/${taskId}/delay`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ hours, days })
+            });
+            if (response.ok) location.reload();
+        } catch (err) { console.error('Failed to delay task:', err); }
+    }
+
+    async function delayTaskPreset(taskId, preset) {
+        try {
+            const response = await fetch(`/api/tasks/${taskId}/delay`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ preset })
+            });
+            if (response.ok) location.reload();
+        } catch (err) { console.error('Failed to delay task:', err); }
+    }
+
     async function completeTask(taskId, btn) {
         try {
             const response = await fetch(`/api/tasks/${taskId}/status`, {
