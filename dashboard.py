@@ -73,6 +73,9 @@ def send_task_confirmation_email(user_email, task_title, due_date, due_time, tas
     complete_url = f"{action_base}?action=complete&task_id={task_id}"
     delay_1hour_url = f"{action_base}?action=delay_1hour&task_id={task_id}"
     delay_1day_url = f"{action_base}?action=delay_1day&task_id={task_id}"
+    delay_next_day_8am_url = f"{action_base}?action=delay_next_day_8am&task_id={task_id}"
+    delay_next_day_9am_url = f"{action_base}?action=delay_next_day_9am&task_id={task_id}"
+    delay_next_monday_9am_url = f"{action_base}?action=delay_next_monday_9am&task_id={task_id}"
     reschedule_url = f"{action_base}?action=delay_custom&task_id={task_id}"
 
     greeting = f"Hi {user_name}," if user_name else "Hi,"
@@ -95,6 +98,9 @@ def send_task_confirmation_email(user_email, task_title, due_date, due_time, tas
                 <a href="{complete_url}" style="display: inline-block; background: #10B981; color: white; padding: 12px 20px; border-radius: 8px; text-decoration: none; margin: 4px; font-weight: 600;">✅ Complete</a>
                 <a href="{delay_1hour_url}" style="display: inline-block; background: #6b7280; color: white; padding: 12px 20px; border-radius: 8px; text-decoration: none; margin: 4px; font-weight: 600;">⏰ +1 Hour</a>
                 <a href="{delay_1day_url}" style="display: inline-block; background: #6b7280; color: white; padding: 12px 20px; border-radius: 8px; text-decoration: none; margin: 4px; font-weight: 600;">📅 +1 Day</a>
+                <a href="{delay_next_day_8am_url}" style="display: inline-block; background: #0EA5E9; color: white; padding: 12px 20px; border-radius: 8px; text-decoration: none; margin: 4px; font-weight: 600;">🌅 Tmrw 8am</a>
+                <a href="{delay_next_day_9am_url}" style="display: inline-block; background: #0EA5E9; color: white; padding: 12px 20px; border-radius: 8px; text-decoration: none; margin: 4px; font-weight: 600;">☀️ Tmrw 9am</a>
+                <a href="{delay_next_monday_9am_url}" style="display: inline-block; background: #F59E0B; color: white; padding: 12px 20px; border-radius: 8px; text-decoration: none; margin: 4px; font-weight: 600;">📆 Mon 9am</a>
                 <a href="{reschedule_url}" style="display: inline-block; background: #6366F1; color: white; padding: 12px 20px; border-radius: 8px; text-decoration: none; margin: 4px; font-weight: 600;">🗓️ Change Time</a>
             </div>
             <p style="color: #6b7280; font-size: 13px; margin-top: 16px;">You'll receive a reminder 5-20 minutes before this task is due.</p>
@@ -797,6 +803,22 @@ BASE_TEMPLATE = """
                 console.error('Failed to delay task:', err);
             }
         }
+
+        async function delayTaskPreset(taskId, preset) {
+            try {
+                const response = await fetch(`/api/tasks/${taskId}/delay`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ preset })
+                });
+
+                if (response.ok) {
+                    location.reload();
+                }
+            } catch (err) {
+                console.error('Failed to delay task:', err);
+            }
+        }
     </script>
 </body>
 </html>
@@ -980,6 +1002,9 @@ DASHBOARD_TEMPLATE = """
                 <button class="delay-btn" onclick="delayTask(currentTaskId, 3, 0)">+3 Hours</button>
                 <button class="delay-btn" onclick="delayTask(currentTaskId, 0, 1)">+1 Day</button>
                 <button class="delay-btn" onclick="delayTask(currentTaskId, 0, 7)">+1 Week</button>
+                <button class="delay-btn" style="background:#0EA5E9;color:white;" onclick="delayTaskPreset(currentTaskId, 'next_day_8am')">🌅 Tmrw 8am</button>
+                <button class="delay-btn" style="background:#0EA5E9;color:white;" onclick="delayTaskPreset(currentTaskId, 'next_day_9am')">☀️ Tmrw 9am</button>
+                <button class="delay-btn" style="background:#F59E0B;color:white;" onclick="delayTaskPreset(currentTaskId, 'next_monday_9am')">📆 Mon 9am</button>
             </div>
 
             <hr style="margin: 20px 0; border: none; border-top: 1px solid var(--gray-200);">
@@ -2936,6 +2961,36 @@ def handle_action():
                 </body></html>
                 """, title=task_title, new_date=new_date)
 
+            elif action in ('delay_next_day_8am', 'delay_next_day_9am', 'delay_next_monday_9am'):
+                aest = pytz.timezone('Australia/Brisbane')
+                now_aest = datetime.now(aest)
+                if action == 'delay_next_day_8am':
+                    target = (now_aest + timedelta(days=1)).replace(hour=8, minute=0, second=0, microsecond=0)
+                    label = 'Tomorrow 8:00 AM'
+                elif action == 'delay_next_day_9am':
+                    target = (now_aest + timedelta(days=1)).replace(hour=9, minute=0, second=0, microsecond=0)
+                    label = 'Tomorrow 9:00 AM'
+                else:
+                    days_until_monday = (7 - now_aest.weekday()) % 7 or 7
+                    target = (now_aest + timedelta(days=days_until_monday)).replace(hour=9, minute=0, second=0, microsecond=0)
+                    label = 'Monday 9:00 AM'
+
+                supabase.table('tasks').update({
+                    'due_date': target.date().isoformat(),
+                    'due_time': target.strftime('%H:%M:%S'),
+                    'reminder_sent_at': None
+                }).eq('id', task_id).execute()
+
+                return render_template_string("""
+                <html><head><title>Task Rescheduled</title></head>
+                <body style="font-family: sans-serif; text-align: center; padding: 50px; background: #eff6ff;">
+                    <h2 style="color: #0EA5E9;">📅 Task Rescheduled</h2>
+                    <p><strong>{{ title }}</strong></p>
+                    <p>Moved to: {{ label }}</p>
+                    <a href="https://www.jottask.app/dashboard" style="color: #6366F1;">Open Dashboard</a>
+                </body></html>
+                """, title=task_title, label=label)
+
             elif action == 'delay_custom' or action == 'reschedule':
                 # Show reschedule form with full edit capability
                 current_date = task_data.get('due_date', datetime.now(pytz.timezone('Australia/Brisbane')).date().isoformat())
@@ -3756,20 +3811,31 @@ def api_delay_task(task_id):
     data = request.get_json()
     hours = data.get('hours', 0)
     days = data.get('days', 0)
+    preset = data.get('preset')
 
-    # Verify ownership and get task
+    # Verify ownership
     task = supabase.table('tasks').select('*').eq('id', task_id).eq('user_id', user_id).maybe_single().execute()
     if not task.data:
         return jsonify({'error': 'Not found'}), 404
 
     tz = get_user_timezone()
     now = datetime.now(tz)
-    new_dt = now + timedelta(hours=hours, days=days)
+
+    if preset == 'next_day_8am':
+        new_dt = (now + timedelta(days=1)).replace(hour=8, minute=0, second=0, microsecond=0)
+    elif preset == 'next_day_9am':
+        new_dt = (now + timedelta(days=1)).replace(hour=9, minute=0, second=0, microsecond=0)
+    elif preset == 'next_monday_9am':
+        days_until_monday = (7 - now.weekday()) % 7 or 7
+        new_dt = (now + timedelta(days=days_until_monday)).replace(hour=9, minute=0, second=0, microsecond=0)
+    else:
+        new_dt = now + timedelta(hours=hours, days=days)
 
     supabase.table('tasks').update({
         'due_date': new_dt.date().isoformat(),
         'due_time': new_dt.strftime('%H:%M:%S'),
-        'status': 'pending'
+        'status': 'pending',
+        'reminder_sent_at': None
     }).eq('id', task_id).execute()
 
     return jsonify({'success': True, 'new_due': new_dt.isoformat()})
@@ -4194,6 +4260,37 @@ def email_action(token):
         </body>
         </html>
         """, title=task_data.get('title', 'Task'), new_date=new_date)
+
+    elif action in ('delay_next_day_8am', 'delay_next_day_9am', 'delay_next_monday_9am'):
+        aest = pytz.timezone('Australia/Brisbane')
+        now_aest = datetime.now(aest)
+        if action == 'delay_next_day_8am':
+            target = (now_aest + timedelta(days=1)).replace(hour=8, minute=0, second=0, microsecond=0)
+            label = 'Tomorrow 8:00 AM'
+        elif action == 'delay_next_day_9am':
+            target = (now_aest + timedelta(days=1)).replace(hour=9, minute=0, second=0, microsecond=0)
+            label = 'Tomorrow 9:00 AM'
+        else:
+            days_until_monday = (7 - now_aest.weekday()) % 7 or 7
+            target = (now_aest + timedelta(days=days_until_monday)).replace(hour=9, minute=0, second=0, microsecond=0)
+            label = 'Monday 9:00 AM'
+
+        supabase.table('tasks').update({
+            'due_date': target.date().isoformat(),
+            'due_time': target.strftime('%H:%M:%S'),
+            'reminder_sent_at': None
+        }).eq('id', task_id).execute()
+
+        return render_template_string("""
+        <html>
+        <body style="font-family: sans-serif; text-align: center; padding: 50px;">
+            <h2 style="color: #0EA5E9;">📅 Task Rescheduled</h2>
+            <p><strong>{{ title }}</strong></p>
+            <p>Moved to: {{ label }}</p>
+            <a href="https://www.jottask.app/dashboard" style="color: #6366F1;">Open Dashboard</a>
+        </body>
+        </html>
+        """, title=task_data.get('title', 'Task'), label=label)
 
     return redirect(url_for('login'))
 

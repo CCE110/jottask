@@ -397,6 +397,18 @@ def generate_reminder_email_html(task, due_time_str, user_name, is_overdue=False
                    style="display: inline-block; padding: 12px 24px; background: #6B7280; color: white; text-decoration: none; border-radius: 8px; font-weight: 600; font-size: 14px;">
                     +1 Day
                 </a>
+                <a href="{ACTION_URL}?action=delay_next_day_8am&task_id={task_id}"
+                   style="display: inline-block; padding: 12px 24px; background: #0EA5E9; color: white; text-decoration: none; border-radius: 8px; font-weight: 600; font-size: 14px;">
+                    🌅 Tmrw 8am
+                </a>
+                <a href="{ACTION_URL}?action=delay_next_day_9am&task_id={task_id}"
+                   style="display: inline-block; padding: 12px 24px; background: #0EA5E9; color: white; text-decoration: none; border-radius: 8px; font-weight: 600; font-size: 14px;">
+                    ☀️ Tmrw 9am
+                </a>
+                <a href="{ACTION_URL}?action=delay_next_monday_9am&task_id={task_id}"
+                   style="display: inline-block; padding: 12px 24px; background: #F59E0B; color: white; text-decoration: none; border-radius: 8px; font-weight: 600; font-size: 14px;">
+                    📆 Mon 9am
+                </a>
                 <a href="{ACTION_URL}?action=delay_custom&task_id={task_id}"
                    style="display: inline-block; padding: 12px 24px; background: #7C3AED; color: white; text-decoration: none; border-radius: 8px; font-weight: 600; font-size: 14px;">
                     Reschedule
