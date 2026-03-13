@@ -8,10 +8,23 @@ from functools import wraps
 from flask import session, redirect, url_for, request, jsonify
 from supabase import create_client, Client
 
-# Initialize Supabase client
+# Initialize Supabase client (service role — used for all DB queries)
 SUPABASE_URL = os.getenv('SUPABASE_URL')
 SUPABASE_KEY = os.getenv('SUPABASE_KEY')
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+
+
+def _auth_client() -> Client:
+    """Return a fresh Supabase client for auth-only operations.
+
+    sign_in_with_password / sign_up / sign_out mutate the client's internal
+    JWT.  If we use the global service-role client for those calls, its auth
+    headers get overwritten with a short-lived user token that expires in ~1h,
+    causing PGRST303 JWT-expired errors on every subsequent DB query.
+
+    Using a throwaway client keeps the global client's headers clean.
+    """
+    return create_client(SUPABASE_URL, SUPABASE_KEY)
 
 
 def login_required(f):
@@ -89,7 +102,7 @@ def signup_user(email, password, full_name=None, timezone='Australia/Brisbane'):
     """
     try:
         # Create auth user
-        auth_response = supabase.auth.sign_up({
+        auth_response = _auth_client().auth.sign_up({
             'email': email,
             'password': password
         })
@@ -124,7 +137,7 @@ def login_user(email, password):
     Returns: (success: bool, user_or_error: dict/str)
     """
     try:
-        auth_response = supabase.auth.sign_in_with_password({
+        auth_response = _auth_client().auth.sign_in_with_password({
             'email': email,
             'password': password
         })
@@ -158,7 +171,7 @@ def login_user(email, password):
 def logout_user():
     """Log out the current user"""
     try:
-        supabase.auth.sign_out()
+        _auth_client().auth.sign_out()
     except:
         pass
 
@@ -169,7 +182,7 @@ def logout_user():
 def reset_password(email):
     """Send password reset email"""
     try:
-        supabase.auth.reset_password_email(email)
+        _auth_client().auth.reset_password_email(email)
         return True, "Password reset email sent"
     except Exception as e:
         return False, str(e)
