@@ -115,12 +115,16 @@
                         {% if task.status == 'ongoing' %}<span class="badge" style="background: #E0E7FF; color: #3730A3;">Ongoing</span>{% endif %}
                         {% if task.client_name %}<span>{{ task.client_name }}</span>{% endif %}
                     </div>
-                    <div class="kanban-card-actions">
-                        <button class="btn-complete" onclick="event.stopPropagation(); completeTask('{{ task.id }}', this)">Complete</button>
-                        <button onclick="event.stopPropagation(); openDelayModal('{{ task.id }}')">Delay</button>
-                        <button style="background:#0EA5E9;color:white;border:none;border-radius:6px;padding:4px 8px;font-size:12px;cursor:pointer;" onclick="event.stopPropagation(); delayTaskPreset('{{ task.id }}', 'next_day_8am')">🌅 Tmrw 8am</button>
-                        <button style="background:#0EA5E9;color:white;border:none;border-radius:6px;padding:4px 8px;font-size:12px;cursor:pointer;" onclick="event.stopPropagation(); delayTaskPreset('{{ task.id }}', 'next_day_9am')">☀️ Tmrw 9am</button>
-                        <button style="background:#F59E0B;color:white;border:none;border-radius:6px;padding:4px 8px;font-size:12px;cursor:pointer;" onclick="event.stopPropagation(); delayTaskPreset('{{ task.id }}', 'next_monday_9am')">📆 Mon 9am</button>
+                    <div class="kanban-card-actions" style="display:flex;flex-direction:column;gap:6px;">
+                        <div style="display:flex;gap:6px;">
+                            <button class="btn-complete" onclick="event.stopPropagation(); completeTask('{{ task.id }}', this)">Complete</button>
+                            <button onclick="event.stopPropagation(); openDelayModal('{{ task.id }}')">Delay</button>
+                        </div>
+                        <div style="display:flex;gap:6px;">
+                            <button style="background:#0EA5E9;color:white;border:none;border-radius:6px;padding:4px 8px;font-size:12px;cursor:pointer;flex:1;" onclick="event.stopPropagation(); delayTaskPreset('{{ task.id }}', 'next_day_8am')">🌅 Tmrw 8am</button>
+                            <button style="background:#0EA5E9;color:white;border:none;border-radius:6px;padding:4px 8px;font-size:12px;cursor:pointer;flex:1;" onclick="event.stopPropagation(); delayTaskPreset('{{ task.id }}', 'next_day_9am')">☀️ Tmrw 9am</button>
+                            <button style="background:#F59E0B;color:white;border:none;border-radius:6px;padding:4px 8px;font-size:12px;cursor:pointer;flex:1;" onclick="event.stopPropagation(); delayTaskPreset('{{ task.id }}', 'next_monday_9am')">📆 Mon 9am</button>
+                        </div>
                     </div>
                 </div>
                 {% endif %}
@@ -144,12 +148,16 @@
                         {% if task.status == 'ongoing' %}<span class="badge" style="background: #E0E7FF; color: #3730A3;">Ongoing</span>{% endif %}
                         {% if task.client_name %}<span>{{ task.client_name }}</span>{% endif %}
                     </div>
-                    <div class="kanban-card-actions">
-                        <button class="btn-complete" onclick="event.stopPropagation(); completeTask('{{ task.id }}', this)">Complete</button>
-                        <button onclick="event.stopPropagation(); openDelayModal('{{ task.id }}')">Delay</button>
-                        <button style="background:#0EA5E9;color:white;border:none;border-radius:6px;padding:4px 8px;font-size:12px;cursor:pointer;" onclick="event.stopPropagation(); delayTaskPreset('{{ task.id }}', 'next_day_8am')">🌅 Tmrw 8am</button>
-                        <button style="background:#0EA5E9;color:white;border:none;border-radius:6px;padding:4px 8px;font-size:12px;cursor:pointer;" onclick="event.stopPropagation(); delayTaskPreset('{{ task.id }}', 'next_day_9am')">☀️ Tmrw 9am</button>
-                        <button style="background:#F59E0B;color:white;border:none;border-radius:6px;padding:4px 8px;font-size:12px;cursor:pointer;" onclick="event.stopPropagation(); delayTaskPreset('{{ task.id }}', 'next_monday_9am')">📆 Mon 9am</button>
+                    <div class="kanban-card-actions" style="display:flex;flex-direction:column;gap:6px;">
+                        <div style="display:flex;gap:6px;">
+                            <button class="btn-complete" onclick="event.stopPropagation(); completeTask('{{ task.id }}', this)">Complete</button>
+                            <button onclick="event.stopPropagation(); openDelayModal('{{ task.id }}')">Delay</button>
+                        </div>
+                        <div style="display:flex;gap:6px;">
+                            <button style="background:#0EA5E9;color:white;border:none;border-radius:6px;padding:4px 8px;font-size:12px;cursor:pointer;flex:1;" onclick="event.stopPropagation(); delayTaskPreset('{{ task.id }}', 'next_day_8am')">🌅 Tmrw 8am</button>
+                            <button style="background:#0EA5E9;color:white;border:none;border-radius:6px;padding:4px 8px;font-size:12px;cursor:pointer;flex:1;" onclick="event.stopPropagation(); delayTaskPreset('{{ task.id }}', 'next_day_9am')">☀️ Tmrw 9am</button>
+                            <button style="background:#F59E0B;color:white;border:none;border-radius:6px;padding:4px 8px;font-size:12px;cursor:pointer;flex:1;" onclick="event.stopPropagation(); delayTaskPreset('{{ task.id }}', 'next_monday_9am')">📆 Mon 9am</button>
+                        </div>
                     </div>
                 </div>
                 {% endif %}
@@ -173,12 +181,16 @@
                         {% if task.status == 'ongoing' %}<span class="badge" style="background: #E0E7FF; color: #3730A3;">Ongoing</span>{% endif %}
                         {% if task.client_name %}<span>{{ task.client_name }}</span>{% endif %}
                     </div>
-                    <div class="kanban-card-actions">
-                        <button class="btn-complete" onclick="event.stopPropagation(); completeTask('{{ task.id }}', this)">Complete</button>
-                        <button onclick="event.stopPropagation(); openDelayModal('{{ task.id }}')">Delay</button>
-                        <button style="background:#0EA5E9;color:white;border:none;border-radius:6px;padding:4px 8px;font-size:12px;cursor:pointer;" onclick="event.stopPropagation(); delayTaskPreset('{{ task.id }}', 'next_day_8am')">🌅 Tmrw 8am</button>
-                        <button style="background:#0EA5E9;color:white;border:none;border-radius:6px;padding:4px 8px;font-size:12px;cursor:pointer;" onclick="event.stopPropagation(); delayTaskPreset('{{ task.id }}', 'next_day_9am')">☀️ Tmrw 9am</button>
-                        <button style="background:#F59E0B;color:white;border:none;border-radius:6px;padding:4px 8px;font-size:12px;cursor:pointer;" onclick="event.stopPropagation(); delayTaskPreset('{{ task.id }}', 'next_monday_9am')">📆 Mon 9am</button>
+                    <div class="kanban-card-actions" style="display:flex;flex-direction:column;gap:6px;">
+                        <div style="display:flex;gap:6px;">
+                            <button class="btn-complete" onclick="event.stopPropagation(); completeTask('{{ task.id }}', this)">Complete</button>
+                            <button onclick="event.stopPropagation(); openDelayModal('{{ task.id }}')">Delay</button>
+                        </div>
+                        <div style="display:flex;gap:6px;">
+                            <button style="background:#0EA5E9;color:white;border:none;border-radius:6px;padding:4px 8px;font-size:12px;cursor:pointer;flex:1;" onclick="event.stopPropagation(); delayTaskPreset('{{ task.id }}', 'next_day_8am')">🌅 Tmrw 8am</button>
+                            <button style="background:#0EA5E9;color:white;border:none;border-radius:6px;padding:4px 8px;font-size:12px;cursor:pointer;flex:1;" onclick="event.stopPropagation(); delayTaskPreset('{{ task.id }}', 'next_day_9am')">☀️ Tmrw 9am</button>
+                            <button style="background:#F59E0B;color:white;border:none;border-radius:6px;padding:4px 8px;font-size:12px;cursor:pointer;flex:1;" onclick="event.stopPropagation(); delayTaskPreset('{{ task.id }}', 'next_monday_9am')">📆 Mon 9am</button>
+                        </div>
                     </div>
                 </div>
                 {% endif %}
