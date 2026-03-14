@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Squad — Team Roster</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+         background: #f0fdf4; min-height: 100vh; color: #1a2e1a; }
+  .header {
+    background: linear-gradient(135deg, #15803d 0%, #166534 60%, #14532d 100%);
+    padding: 0 24px; box-shadow: 0 2px 8px rgba(0,0,0,.25);
+  }
+  .header-inner {
+    max-width: 1000px; margin: 0 auto;
+    display: flex; align-items: center; justify-content: space-between; height: 64px;
+  }
+  .header-logo { color: white; text-decoration: none; font-size: 20px; font-weight: 700; }
+  .header-nav a {
+    color: rgba(255,255,255,.8); text-decoration: none; padding: 8px 14px;
+    border-radius: 8px; font-size: 14px; margin-left: 4px;
+  }
+  .header-nav a:hover, .header-nav a.active { background: rgba(255,255,255,.15); color: white; }
+  .back-link {
+    color: rgba(255,255,255,.7); text-decoration: none; font-size: 13px;
+    padding: 6px 12px; border: 1px solid rgba(255,255,255,.3); border-radius: 6px;
+  }
+  .page { max-width: 1000px; margin: 0 auto; padding: 32px 24px; }
+  .page-header { margin-bottom: 24px; display: flex; align-items: center; justify-content: space-between; }
+  .page-header h1 { font-size: 26px; font-weight: 800; color: #15803d; }
+  .card { background: white; border-radius: 14px; box-shadow: 0 1px 4px rgba(0,0,0,.07); overflow: hidden; }
+  table { width: 100%; border-collapse: collapse; }
+  thead th {
+    text-align: left; padding: 12px 16px; background: #f0fdf4;
+    color: #15803d; font-size: 12px; text-transform: uppercase; letter-spacing: .4px;
+  }
+  tbody td { padding: 12px 16px; border-bottom: 1px solid #f0fdf4; font-size: 14px; color: #374151; }
+  tbody tr:last-child td { border-bottom: none; }
+  tbody tr:hover td { background: #f9fef9; }
+  .number { font-weight: 800; color: #15803d; font-size: 18px; }
+  .empty { text-align: center; padding: 48px; color: #6b7280; }
+  .empty-icon { font-size: 48px; display: block; margin-bottom: 12px; }
+</style>
+</head>
+<body>
+<header class="header">
+  <div class="header-inner">
+    <a href="/squad/" class="header-logo">⚽ Squad</a>
+    <nav class="header-nav">
+      <a href="/squad/">Dashboard</a>
+      <a href="/squad/inbox">Inbox</a>
+      <a href="/squad/team" class="active">Team</a>
+      <a href="/squad/inbox/paste">Paste</a>
+    </nav>
+    <a href="/dashboard" class="back-link">← Jottask</a>
+  </div>
+</header>
+<main class="page">
+  <div class="page-header">
+    <h1>👥 {{ squad.name if squad else 'Team' }} — Roster</h1>
+  </div>
+  <div class="card">
+    {% if players %}
+    <table>
+      <thead>
+        <tr>
+          <th>#</th>
+          <th>Player</th>
+          <th>Position</th>
+          <th>Date of Birth</th>
+          <th>Notes</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for p in players %}
+        <tr>
+          <td><span class="number">{{ p.shirt_number or '—' }}</span></td>
+          <td><strong>{{ p.player_name }}</strong></td>
+          <td>{{ p.position or '—' }}</td>
+          <td>{{ p.date_of_birth or '—' }}</td>
+          <td>{{ p.notes or '' }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <div class="empty">
+      <span class="empty-icon">👥</span>
+      <p>No players added yet.</p>
+    </div>
+    {% endif %}
+  </div>
+</main>
+</body>
+</html>
