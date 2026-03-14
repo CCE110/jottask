@@ -3,11 +3,12 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Squad — Team Roster</title>
+<title>Squad — Team</title>
 <style>
   *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
   body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
          background: #f0fdf4; min-height: 100vh; color: #1a2e1a; }
+
   .header {
     background: linear-gradient(135deg, #15803d 0%, #166534 60%, #14532d 100%);
     padding: 0 24px; box-shadow: 0 2px 8px rgba(0,0,0,.25);
@@ -16,7 +17,7 @@
     max-width: 1000px; margin: 0 auto;
     display: flex; align-items: center; justify-content: space-between; height: 64px;
   }
-  .header-logo { color: white; text-decoration: none; font-size: 20px; font-weight: 700; }
+  .header-logo { color: white; text-decoration: none; font-size: 20px; font-weight: 700; display:flex;align-items:center;gap:8px; }
   .header-nav a {
     color: rgba(255,255,255,.8); text-decoration: none; padding: 8px 14px;
     border-radius: 8px; font-size: 14px; margin-left: 4px;
@@ -26,24 +27,95 @@
     color: rgba(255,255,255,.7); text-decoration: none; font-size: 13px;
     padding: 6px 12px; border: 1px solid rgba(255,255,255,.3); border-radius: 6px;
   }
+
   .page { max-width: 1000px; margin: 0 auto; padding: 32px 24px; }
-  .page-header { margin-bottom: 24px; display: flex; align-items: center; justify-content: space-between; }
-  .page-header h1 { font-size: 26px; font-weight: 800; color: #15803d; }
+
+  /* ── Section heading ───────────────────────────── */
+  .section { margin-bottom: 32px; }
+  .section-header {
+    display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px;
+  }
+  .section-title { font-size: 18px; font-weight: 800; color: #15803d; }
+
+  /* ── Card ──────────────────────────────────────── */
   .card { background: white; border-radius: 14px; box-shadow: 0 1px 4px rgba(0,0,0,.07); overflow: hidden; }
+
+  /* ── Upload zone ───────────────────────────────── */
+  .upload-zone {
+    border: 2px dashed #86efac; border-radius: 12px; padding: 28px 24px;
+    text-align: center; background: white; cursor: pointer; transition: all .15s;
+  }
+  .upload-zone:hover, .upload-zone.drag-over { border-color: #15803d; background: #f0fdf4; }
+  .upload-icon { font-size: 36px; display: block; margin-bottom: 8px; }
+  .upload-title { font-size: 15px; font-weight: 700; color: #15803d; margin-bottom: 4px; }
+  .upload-sub { font-size: 13px; color: #6b7280; }
+  .upload-input { display: none; }
+  .upload-btn {
+    display: inline-block; margin-top: 12px; background: #15803d; color: white;
+    padding: 9px 20px; border-radius: 8px; font-size: 13px; font-weight: 600;
+    border: none; cursor: pointer;
+  }
+  .upload-btn:hover { background: #166534; }
+  .file-chosen { margin-top: 8px; font-size: 13px; color: #166534; font-weight: 600; display: none; }
+
+  /* ── Table ──────────────────────────────────────── */
   table { width: 100%; border-collapse: collapse; }
   thead th {
-    text-align: left; padding: 12px 16px; background: #f0fdf4;
-    color: #15803d; font-size: 12px; text-transform: uppercase; letter-spacing: .4px;
+    text-align: left; padding: 11px 16px; background: #f0fdf4;
+    color: #15803d; font-size: 11px; text-transform: uppercase; letter-spacing: .4px;
   }
-  tbody td { padding: 12px 16px; border-bottom: 1px solid #f0fdf4; font-size: 14px; color: #374151; }
+  tbody td { padding: 11px 16px; border-bottom: 1px solid #f0fdf4; font-size: 14px; color: #374151; }
   tbody tr:last-child td { border-bottom: none; }
   tbody tr:hover td { background: #f9fef9; }
-  .number { font-weight: 800; color: #15803d; font-size: 18px; }
-  .empty { text-align: center; padding: 48px; color: #6b7280; }
-  .empty-icon { font-size: 48px; display: block; margin-bottom: 12px; }
+  .number { font-weight: 800; color: #15803d; font-size: 17px; }
+
+  /* ── Add row form ────────────────────────────────── */
+  .add-row { background: #f0fdf4; }
+  .add-row td { padding: 10px 16px; }
+  .add-row input, .add-row select {
+    width: 100%; padding: 7px 10px; border: 1.5px solid #86efac; border-radius: 7px;
+    font-size: 13px; background: white; color: #1a2e1a;
+  }
+  .add-row input:focus, .add-row select:focus { outline: none; border-color: #15803d; }
+  .btn-add {
+    background: #15803d; color: white; border: none; border-radius: 7px;
+    padding: 8px 16px; font-size: 13px; font-weight: 600; cursor: pointer; white-space: nowrap;
+  }
+  .btn-add:hover { background: #166534; }
+  .btn-remove {
+    background: #fef2f2; color: #dc2626; border: 1px solid #fecaca; border-radius: 6px;
+    padding: 4px 10px; font-size: 12px; font-weight: 600; cursor: pointer;
+  }
+  .btn-remove:hover { background: #fee2e2; }
+
+  /* ── Magic link ──────────────────────────────────── */
+  .magic-link {
+    font-size: 11px; color: #6b7280; font-family: monospace;
+    background: #f3f4f6; padding: 2px 6px; border-radius: 4px;
+    max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    display: inline-block; vertical-align: middle; cursor: pointer;
+  }
+  .magic-link:hover { background: #e5e7eb; }
+
+  /* ── Empty ───────────────────────────────────────── */
+  .empty { text-align: center; padding: 36px; color: #6b7280; font-size: 14px; }
+  .empty-icon { font-size: 36px; display: block; margin-bottom: 8px; }
+
+  /* ── Toast ───────────────────────────────────────── */
+  #toast {
+    position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%);
+    background: #15803d; color: white; padding: 10px 22px; border-radius: 10px;
+    font-size: 14px; font-weight: 600; display: none; z-index: 9999;
+  }
+
+  /* ── Spinner ─────────────────────────────────────── */
+  .spinner { display:none; width:18px; height:18px; border:2px solid rgba(255,255,255,.4);
+             border-top-color:white; border-radius:50%; animation:spin .7s linear infinite; vertical-align:middle; }
+  @keyframes spin { to { transform:rotate(360deg); } }
 </style>
 </head>
 <body>
+
 <header class="header">
   <div class="header-inner">
     <a href="/squad/" class="header-logo">⚽ Squad</a>
@@ -56,41 +128,211 @@
     <a href="/dashboard" class="back-link">← Jottask</a>
   </div>
 </header>
+
 <main class="page">
-  <div class="page-header">
-    <h1>👥 {{ squad.name if squad else 'Team' }} — Roster</h1>
-  </div>
-  <div class="card">
-    {% if players %}
-    <table>
-      <thead>
-        <tr>
-          <th>#</th>
-          <th>Player</th>
-          <th>Position</th>
-          <th>Date of Birth</th>
-          <th>Notes</th>
-        </tr>
-      </thead>
-      <tbody>
-        {% for p in players %}
-        <tr>
-          <td><span class="number">{{ p.shirt_number or '—' }}</span></td>
-          <td><strong>{{ p.player_name }}</strong></td>
-          <td>{{ p.position or '—' }}</td>
-          <td>{{ p.date_of_birth or '—' }}</td>
-          <td>{{ p.notes or '' }}</td>
-        </tr>
-        {% endfor %}
-      </tbody>
-    </table>
-    {% else %}
-    <div class="empty">
-      <span class="empty-icon">👥</span>
-      <p>No players added yet.</p>
+
+  <!-- ── Upload Team Sheet ──────────────────────────────────────── -->
+  <div class="section">
+    <div class="section-header">
+      <span class="section-title">📄 Upload Team Sheet</span>
     </div>
-    {% endif %}
+    <form method="POST" action="/squad/team/upload" enctype="multipart/form-data" id="uploadForm">
+      <div class="upload-zone" id="uploadZone" onclick="document.getElementById('teamSheetFile').click()">
+        <span class="upload-icon">📋</span>
+        <div class="upload-title">Drop a team sheet here or click to upload</div>
+        <div class="upload-sub">Image (photo/screenshot) or CSV/text file — Claude will extract players and parents automatically</div>
+        <input type="file" name="team_sheet" id="teamSheetFile" class="upload-input"
+               accept=".jpg,.jpeg,.png,.gif,.webp,.csv,.txt,.pdf">
+        <div class="file-chosen" id="fileChosen"></div>
+        <button type="submit" class="upload-btn" id="uploadBtn" style="display:none;">
+          <span class="spinner" id="uploadSpinner"></span>
+          🤖 Parse with AI
+        </button>
+      </div>
+    </form>
   </div>
+
+  <!-- ── Players ─────────────────────────────────────────────────── -->
+  <div class="section">
+    <div class="section-header">
+      <span class="section-title">⚽ Players ({{ players | length }})</span>
+    </div>
+    <div class="card">
+      <table>
+        <thead>
+          <tr>
+            <th style="width:60px">#</th>
+            <th>Player Name</th>
+            <th>Position</th>
+            <th style="width:80px"></th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for p in players %}
+          <tr>
+            <td><span class="number">{{ p.shirt_number if p.shirt_number else '—' }}</span></td>
+            <td><strong>{{ p.player_name }}</strong></td>
+            <td>{{ p.position or '—' }}</td>
+            <td>
+              <form method="POST" action="/squad/team/players/{{ p.id }}/remove"
+                    onsubmit="return confirm('Remove {{ p.player_name }}?')">
+                <button type="submit" class="btn-remove">Remove</button>
+              </form>
+            </td>
+          </tr>
+          {% endfor %}
+
+          <!-- Add player row -->
+          <tr class="add-row">
+            <form method="POST" action="/squad/team/players/add">
+              <td><input type="number" name="shirt_number" placeholder="#" min="1" max="99" style="width:54px"></td>
+              <td><input type="text" name="player_name" placeholder="Player name" required></td>
+              <td>
+                <select name="position">
+                  <option value="">Position (optional)</option>
+                  <option>Goalkeeper</option>
+                  <option>Defender</option>
+                  <option>Midfielder</option>
+                  <option>Forward</option>
+                  <option>Striker</option>
+                </select>
+              </td>
+              <td><button type="submit" class="btn-add">+ Add</button></td>
+            </form>
+          </tr>
+        </tbody>
+      </table>
+      {% if not players %}
+      <div class="empty">
+        <span class="empty-icon">⚽</span>
+        No players yet — add one above or upload a team sheet.
+      </div>
+      {% endif %}
+    </div>
+  </div>
+
+  <!-- ── Parents ─────────────────────────────────────────────────── -->
+  <div class="section">
+    <div class="section-header">
+      <span class="section-title">👨‍👩‍👧 Parents / Guardians ({{ parents | length }})</span>
+    </div>
+    <div class="card">
+      <table>
+        <thead>
+          <tr>
+            <th>Parent Name</th>
+            <th>Email</th>
+            <th>Player</th>
+            <th>Magic Link</th>
+            <th style="width:80px"></th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for pa in parents %}
+          {% set player = pa.squad_players %}
+          <tr>
+            <td><strong>{{ pa.parent_name }}</strong></td>
+            <td>{{ pa.parent_email or '—' }}</td>
+            <td>{{ player.player_name if player else '—' }}</td>
+            <td>
+              {% if pa.magic_token %}
+              <span class="magic-link" title="{{ app_url }}/p/{{ pa.magic_token }}"
+                    onclick="copyLink('{{ app_url }}/p/{{ pa.magic_token }}', this)">
+                /p/{{ pa.magic_token[:12] }}…
+              </span>
+              {% else %}—{% endif %}
+            </td>
+            <td>
+              <form method="POST" action="/squad/team/parents/{{ pa.id }}/remove"
+                    onsubmit="return confirm('Remove {{ pa.parent_name }}?')">
+                <button type="submit" class="btn-remove">Remove</button>
+              </form>
+            </td>
+          </tr>
+          {% endfor %}
+
+          <!-- Add parent row -->
+          <tr class="add-row">
+            <form method="POST" action="/squad/team/parents/add">
+              <td><input type="text" name="parent_name" placeholder="Parent name" required></td>
+              <td><input type="email" name="parent_email" placeholder="Email (optional)"></td>
+              <td>
+                <select name="player_id">
+                  <option value="">Link to player (optional)</option>
+                  {% for p in players %}
+                  <option value="{{ p.id }}">{{ p.player_name }}</option>
+                  {% endfor %}
+                </select>
+              </td>
+              <td colspan="2"><button type="submit" class="btn-add">+ Add</button></td>
+            </form>
+          </tr>
+        </tbody>
+      </table>
+      {% if not parents %}
+      <div class="empty">
+        <span class="empty-icon">👨‍👩‍👧</span>
+        No parents added yet. Add manually or upload a team sheet.
+      </div>
+      {% endif %}
+    </div>
+  </div>
+
 </main>
+
+<div id="toast"></div>
+
+<script>
+// File picker
+document.getElementById('teamSheetFile').addEventListener('change', function() {
+  const file = this.files[0];
+  if (!file) return;
+  document.getElementById('fileChosen').textContent = '📎 ' + file.name;
+  document.getElementById('fileChosen').style.display = 'block';
+  document.getElementById('uploadBtn').style.display = 'inline-block';
+});
+
+// Drag and drop
+const zone = document.getElementById('uploadZone');
+zone.addEventListener('dragover', e => { e.preventDefault(); zone.classList.add('drag-over'); });
+zone.addEventListener('dragleave', () => zone.classList.remove('drag-over'));
+zone.addEventListener('drop', e => {
+  e.preventDefault();
+  zone.classList.remove('drag-over');
+  const file = e.dataTransfer.files[0];
+  if (!file) return;
+  const input = document.getElementById('teamSheetFile');
+  const dt = new DataTransfer();
+  dt.items.add(file);
+  input.files = dt.files;
+  input.dispatchEvent(new Event('change'));
+});
+
+// Upload spinner
+document.getElementById('uploadForm').addEventListener('submit', function() {
+  const btn = document.getElementById('uploadBtn');
+  const spinner = document.getElementById('uploadSpinner');
+  btn.disabled = true;
+  spinner.style.display = 'inline-block';
+  btn.innerHTML = '<span style="display:inline-block;width:14px;height:14px;border:2px solid rgba(255,255,255,.4);border-top-color:white;border-radius:50%;animation:spin .7s linear infinite;vertical-align:middle;margin-right:6px;"></span> Parsing…';
+});
+
+// Copy magic link
+function copyLink(url, el) {
+  navigator.clipboard.writeText(url).then(() => {
+    const orig = el.textContent;
+    el.textContent = 'Copied!';
+    setTimeout(() => { el.textContent = orig; }, 1500);
+  });
+}
+
+// Toast helper
+function showToast(msg) {
+  const t = document.getElementById('toast');
+  t.textContent = msg;
+  t.style.display = 'block';
+  setTimeout(() => { t.style.display = 'none'; }, 2500);
+}
+</script>
 </body>
 </html>

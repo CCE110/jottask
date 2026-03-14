@@ -283,3 +283,78 @@ def parse_pasted_text(anthropic: Anthropic, source: str, text: str) -> dict:
         return json.loads(raw)
     except json.JSONDecodeError:
         return {'raw_response': raw, 'error': 'JSON parse failed', 'email_type': 'other'}
+
+
+# ── Team Sheet Upload ─────────────────────────────────────────────────────────
+
+TEAM_SHEET_SYSTEM = """\
+You are an assistant helping a youth soccer team manager extract player and parent information from a team sheet.
+
+The team sheet may be an image (photo of a printed sheet, screenshot) or text/CSV.
+
+Extract all players and parents/guardians and return ONLY valid JSON — no markdown fences, no explanation:
+{
+  "players": [
+    {
+      "player_name": "full name",
+      "shirt_number": 7,
+      "position": "Midfielder or null"
+    }
+  ],
+  "parents": [
+    {
+      "parent_name": "full name",
+      "parent_email": "email or null",
+      "player_name": "the player this parent is linked to, or null"
+    }
+  ]
+}
+
+If shirt numbers or positions are not on the sheet, use null. Extract every player and every parent/guardian you can find."""
+
+
+def parse_team_sheet(anthropic: Anthropic, text: str = None,
+                     image_b64: str = None, media_type: str = 'image/png') -> dict:
+    """
+    Parse a team sheet from either plain text or a base64-encoded image.
+    Returns dict with 'players' and 'parents' lists.
+    """
+    if image_b64:
+        messages = [{
+            'role': 'user',
+            'content': [
+                {
+                    'type': 'image',
+                    'source': {
+                        'type': 'base64',
+                        'media_type': media_type,
+                        'data': image_b64,
+                    }
+                },
+                {
+                    'type': 'text',
+                    'text': 'Extract all players and parents from this team sheet.'
+                }
+            ]
+        }]
+    else:
+        messages = [{
+            'role': 'user',
+            'content': f"Extract all players and parents from this team sheet:\n\n{text[:8000]}"
+        }]
+
+    response = anthropic.messages.create(
+        model='claude-opus-4-6',
+        max_tokens=2000,
+        system=TEAM_SHEET_SYSTEM,
+        messages=messages,
+    )
+    raw = response.content[0].text.strip()
+    if raw.startswith('```'):
+        raw = raw.split('```')[1]
+        if raw.startswith('json'):
+            raw = raw[4:]
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        return {'players': [], 'parents': [], 'error': 'JSON parse failed', 'raw': raw}

@@ -252,6 +252,7 @@ def team():
     squad_id = squad['id'] if squad else None
 
     players = []
+    parents = []
     if squad_id:
         pl = _db().table('squad_players') \
             .select('*') \
@@ -260,7 +261,183 @@ def team():
             .execute()
         players = pl.data or []
 
-    return render_template('squad/team.html', squad=squad, players=players)
+        pa = _db().table('squad_parent_links') \
+            .select('*, squad_players(player_name)') \
+            .eq('squad_id', squad_id) \
+            .eq('is_active', True) \
+            .order('parent_name') \
+            .execute()
+        parents = pa.data or []
+
+    app_url = os.getenv('APP_URL', 'https://www.jottask.app')
+    return render_template('squad/team.html',
+        squad=squad, players=players, parents=parents, app_url=app_url)
+
+
+@squad_bp.route('/squad/team/players/add', methods=['POST'])
+@login_required
+def add_player():
+    user_id = session.get('user_id')
+    squad = _get_squad_for_user(user_id)
+    if not squad:
+        return jsonify({'error': 'No squad found'}), 404
+
+    player_name  = request.form.get('player_name', '').strip()
+    shirt_number = request.form.get('shirt_number', '').strip()
+    position     = request.form.get('position', '').strip()
+
+    if not player_name:
+        return redirect(url_for('squad.team'))
+
+    _db().table('squad_players').insert({
+        'id':           str(uuid.uuid4()),
+        'squad_id':     squad['id'],
+        'player_name':  player_name,
+        'shirt_number': int(shirt_number) if shirt_number.isdigit() else None,
+        'position':     position or None,
+        'created_at':   datetime.now(pytz.UTC).isoformat(),
+    }).execute()
+
+    return redirect(url_for('squad.team'))
+
+
+@squad_bp.route('/squad/team/players/<player_id>/remove', methods=['POST'])
+@login_required
+def remove_player(player_id):
+    user_id = session.get('user_id')
+    squad = _get_squad_for_user(user_id)
+    if not squad:
+        return jsonify({'error': 'No squad'}), 404
+
+    # Only delete if player belongs to this manager's squad
+    _db().table('squad_players') \
+        .delete() \
+        .eq('id', player_id) \
+        .eq('squad_id', squad['id']) \
+        .execute()
+
+    return redirect(url_for('squad.team'))
+
+
+@squad_bp.route('/squad/team/parents/add', methods=['POST'])
+@login_required
+def add_parent():
+    user_id = session.get('user_id')
+    squad = _get_squad_for_user(user_id)
+    if not squad:
+        return jsonify({'error': 'No squad'}), 404
+
+    parent_name  = request.form.get('parent_name', '').strip()
+    parent_email = request.form.get('parent_email', '').strip()
+    player_id    = request.form.get('player_id', '').strip() or None
+
+    if not parent_name:
+        return redirect(url_for('squad.team'))
+
+    _db().table('squad_parent_links').insert({
+        'id':           str(uuid.uuid4()),
+        'squad_id':     squad['id'],
+        'player_id':    player_id or None,
+        'parent_name':  parent_name,
+        'parent_email': parent_email or None,
+        'is_active':    True,
+        'created_at':   datetime.now(pytz.UTC).isoformat(),
+    }).execute()
+
+    return redirect(url_for('squad.team'))
+
+
+@squad_bp.route('/squad/team/parents/<parent_id>/remove', methods=['POST'])
+@login_required
+def remove_parent(parent_id):
+    user_id = session.get('user_id')
+    squad = _get_squad_for_user(user_id)
+    if not squad:
+        return jsonify({'error': 'No squad'}), 404
+
+    _db().table('squad_parent_links') \
+        .update({'is_active': False}) \
+        .eq('id', parent_id) \
+        .eq('squad_id', squad['id']) \
+        .execute()
+
+    return redirect(url_for('squad.team'))
+
+
+@squad_bp.route('/squad/team/upload', methods=['POST'])
+@login_required
+def upload_team_sheet():
+    """Parse an uploaded team sheet (image or text/CSV) with Claude."""
+    import base64
+    from anthropic import Anthropic
+    from squad_prompts import parse_team_sheet
+
+    user_id = session.get('user_id')
+    squad = _get_squad_for_user(user_id)
+    if not squad:
+        return jsonify({'error': 'No squad'}), 404
+
+    file = request.files.get('team_sheet')
+    if not file or not file.filename:
+        return redirect(url_for('squad.team'))
+
+    anthropic = Anthropic(api_key=os.getenv('ANTHROPIC_API_KEY'))
+    filename  = file.filename.lower()
+    content   = file.read()
+
+    # Images → Claude vision; text/csv → plain text
+    if any(filename.endswith(ext) for ext in ('.png', '.jpg', '.jpeg', '.gif', '.webp')):
+        b64 = base64.standard_b64encode(content).decode('utf-8')
+        ext_map = {'.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
+                   '.png': 'image/png', '.gif': 'image/gif', '.webp': 'image/webp'}
+        media_type = next((v for k, v in ext_map.items() if filename.endswith(k)), 'image/png')
+        parsed = parse_team_sheet(anthropic, image_b64=b64, media_type=media_type)
+    else:
+        text = content.decode('utf-8', errors='replace')
+        parsed = parse_team_sheet(anthropic, text=text)
+
+    squad_id  = squad['id']
+    now_iso   = datetime.now(pytz.UTC).isoformat()
+    added_players = 0
+    added_parents = 0
+
+    for p in parsed.get('players', []):
+        name = (p.get('player_name') or '').strip()
+        if not name:
+            continue
+        shirt = p.get('shirt_number')
+        _db().table('squad_players').insert({
+            'id':           str(uuid.uuid4()),
+            'squad_id':     squad_id,
+            'player_name':  name,
+            'shirt_number': int(shirt) if shirt and str(shirt).isdigit() else None,
+            'position':     p.get('position') or None,
+            'created_at':   now_iso,
+        }).execute()
+        added_players += 1
+
+    # Look up player IDs by name for parent linking
+    pl_result = _db().table('squad_players').select('id, player_name').eq('squad_id', squad_id).execute()
+    player_map = {r['player_name'].lower(): r['id'] for r in (pl_result.data or [])}
+
+    for pa in parsed.get('parents', []):
+        pname = (pa.get('parent_name') or '').strip()
+        if not pname:
+            continue
+        linked_player = (pa.get('player_name') or '').strip().lower()
+        player_id = player_map.get(linked_player)
+        _db().table('squad_parent_links').insert({
+            'id':           str(uuid.uuid4()),
+            'squad_id':     squad_id,
+            'player_id':    player_id,
+            'parent_name':  pname,
+            'parent_email': pa.get('parent_email') or None,
+            'is_active':    True,
+            'created_at':   now_iso,
+        }).execute()
+        added_parents += 1
+
+    return redirect(url_for('squad.team'))
 
 
 # ── Parent: Magic Link View ───────────────────────────────────────────────────
