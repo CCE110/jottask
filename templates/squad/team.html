@@ -87,6 +87,12 @@
     padding: 4px 10px; font-size: 12px; font-weight: 600; cursor: pointer;
   }
   .btn-remove:hover { background: #fee2e2; }
+  .btn-send {
+    background: #eff6ff; color: #1d4ed8; border: 1px solid #bfdbfe; border-radius: 6px;
+    padding: 4px 10px; font-size: 12px; font-weight: 600; cursor: pointer; white-space: nowrap;
+  }
+  .btn-send:hover { background: #dbeafe; }
+  .btn-send:disabled { opacity: .5; cursor: not-allowed; }
 
   /* ── Magic link ──────────────────────────────────── */
   .magic-link {
@@ -224,7 +230,7 @@
             <th>Email</th>
             <th>Player</th>
             <th>Magic Link</th>
-            <th style="width:80px"></th>
+            <th style="width:160px"></th>
           </tr>
         </thead>
         <tbody>
@@ -242,7 +248,13 @@
               </span>
               {% else %}—{% endif %}
             </td>
-            <td>
+            <td style="display:flex;gap:6px;align-items:center;">
+              {% if pa.parent_email and pa.magic_token %}
+              <button class="btn-send" id="send-{{ pa.id }}"
+                      onclick="sendLink('{{ pa.id }}', this)">
+                📧 Send Link
+              </button>
+              {% endif %}
               <form method="POST" action="/squad/team/parents/{{ pa.id }}/remove"
                     onsubmit="return confirm('Remove {{ pa.parent_name }}?')">
                 <button type="submit" class="btn-remove">Remove</button>
@@ -326,10 +338,32 @@ function copyLink(url, el) {
   });
 }
 
+// Send magic link email
+async function sendLink(parentId, btn) {
+  btn.disabled = true;
+  btn.textContent = '⏳ Sending…';
+  try {
+    const res = await fetch(`/squad/team/parents/${parentId}/send-link`, { method: 'POST' });
+    const data = await res.json();
+    if (res.ok && data.ok) {
+      btn.textContent = '✅ Sent!';
+      showToast('Magic link sent!');
+    } else {
+      btn.textContent = '❌ Failed';
+      btn.disabled = false;
+      showToast(data.error || 'Send failed', false);
+    }
+  } catch (e) {
+    btn.textContent = '❌ Error';
+    btn.disabled = false;
+  }
+}
+
 // Toast helper
-function showToast(msg) {
+function showToast(msg, ok = true) {
   const t = document.getElementById('toast');
   t.textContent = msg;
+  t.style.background = ok ? '#15803d' : '#dc2626';
   t.style.display = 'block';
   setTimeout(() => { t.style.display = 'none'; }, 2500);
 }

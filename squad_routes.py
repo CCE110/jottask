@@ -347,6 +347,86 @@ def add_parent():
     return redirect(url_for('squad.team'))
 
 
+@squad_bp.route('/squad/team/parents/<parent_id>/send-link', methods=['POST'])
+@login_required
+def send_parent_link(parent_id):
+    """Email the magic link to the parent."""
+    from email_utils import send_email
+
+    user_id = session.get('user_id')
+    squad = _get_squad_for_user(user_id)
+    if not squad:
+        return jsonify({'error': 'No squad'}), 404
+
+    pa = _db().table('squad_parent_links') \
+        .select('*, squad_players(player_name)') \
+        .eq('id', parent_id) \
+        .eq('squad_id', squad['id']) \
+        .maybe_single() \
+        .execute()
+
+    if not pa.data:
+        return jsonify({'error': 'Not found'}), 404
+
+    link     = pa.data
+    email    = link.get('parent_email', '').strip()
+    if not email:
+        return jsonify({'error': 'No email address for this parent'}), 400
+
+    token       = link.get('magic_token')
+    parent_name = link.get('parent_name', 'there')
+    player      = link.get('squad_players') or {}
+    player_name = player.get('player_name', 'your player')
+    squad_name  = squad.get('name', 'the team')
+    app_url     = os.getenv('APP_URL', 'https://www.jottask.app')
+    magic_url   = f"{app_url}/p/{token}"
+    webcal_url  = magic_url.replace('https://', 'webcal://').replace('http://', 'webcal://')
+
+    html = f"""
+    <html><body style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
+                        max-width:560px;margin:0 auto;padding:20px;background:#f0fdf4;">
+      <div style="background:linear-gradient(135deg,#15803d,#14532d);padding:28px 32px;border-radius:14px 14px 0 0;">
+        <h1 style="color:white;margin:0;font-size:24px;">⚽ {squad_name}</h1>
+        <p style="color:rgba(255,255,255,.85);margin:6px 0 0;font-size:15px;">Season schedule &amp; updates</p>
+      </div>
+      <div style="background:white;padding:28px 32px;border-radius:0 0 14px 14px;box-shadow:0 4px 8px rgba(0,0,0,.06);">
+        <p style="font-size:16px;color:#1a2e1a;">Hi {parent_name},</p>
+        <p style="font-size:14px;color:#374151;margin-top:10px;line-height:1.6;">
+          Here's your personal link to view {player_name}'s upcoming fixtures, RSVP to games,
+          and subscribe to the team calendar.
+        </p>
+        <div style="text-align:center;margin:28px 0;">
+          <a href="{magic_url}" style="display:inline-block;background:#15803d;color:white;
+             padding:14px 32px;border-radius:10px;text-decoration:none;font-weight:700;font-size:16px;">
+            View {player_name}'s Schedule
+          </a>
+        </div>
+        <p style="font-size:13px;color:#6b7280;text-align:center;">
+          You can also subscribe to the calendar directly:<br>
+          <a href="{webcal_url}" style="color:#15803d;">Add to Apple / Google Calendar</a>
+        </p>
+        <hr style="border:none;border-top:1px solid #e5e7eb;margin:24px 0;">
+        <p style="font-size:12px;color:#9ca3af;text-align:center;">
+          This link is personal to you — no password needed.<br>
+          Powered by <a href="https://www.jottask.app" style="color:#6b7280;">Jottask Squad</a>
+        </p>
+      </div>
+    </body></html>
+    """
+
+    success, error = send_email(
+        email,
+        f"{squad_name} — {player_name}'s schedule link",
+        html,
+        category='squad_parent_link'
+    )
+
+    if success:
+        return jsonify({'ok': True})
+    else:
+        return jsonify({'error': error or 'Send failed'}), 500
+
+
 @squad_bp.route('/squad/team/parents/<parent_id>/remove', methods=['POST'])
 @login_required
 def remove_parent(parent_id):
