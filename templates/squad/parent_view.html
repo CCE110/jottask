@@ -1,0 +1,233 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>{{ squad_name }} — {{ player_name }}</title>
+<meta name="theme-color" content="#15803d">
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    background: #f0fdf4; min-height: 100vh; color: #1a2e1a;
+  }
+
+  /* ── Header ──────────────────────────────────────────── */
+  .hero {
+    background: linear-gradient(135deg, #15803d 0%, #166534 60%, #14532d 100%);
+    padding: 36px 24px 28px; text-align: center;
+  }
+  .hero-icon  { font-size: 48px; display: block; margin-bottom: 10px; }
+  .hero-title { font-size: 26px; font-weight: 800; color: white; }
+  .hero-sub   { font-size: 15px; color: rgba(255,255,255,.8); margin-top: 6px; }
+
+  /* ── Cal button ──────────────────────────────────────── */
+  .cal-section { max-width: 480px; margin: 20px auto; padding: 0 20px; }
+  .cal-btn {
+    display: flex; align-items: center; justify-content: center; gap: 10px;
+    background: white; border: 2px solid #15803d; border-radius: 12px;
+    padding: 14px 20px; text-decoration: none; color: #15803d;
+    font-size: 15px; font-weight: 700; transition: background .15s;
+  }
+  .cal-btn:hover { background: #dcfce7; }
+  .cal-btn .icon { font-size: 22px; }
+
+  /* ── Events ──────────────────────────────────────────── */
+  .events-section { max-width: 480px; margin: 0 auto; padding: 20px 20px 48px; }
+  .section-title  { font-size: 13px; font-weight: 700; text-transform: uppercase;
+                     letter-spacing: .5px; color: #15803d; margin-bottom: 14px; }
+
+  .event-card {
+    background: white; border-radius: 14px;
+    box-shadow: 0 1px 4px rgba(0,0,0,.07); margin-bottom: 12px; overflow: hidden;
+  }
+  .event-card-header {
+    display: flex; align-items: center; gap: 14px; padding: 14px 16px;
+  }
+  .date-block {
+    min-width: 50px; text-align: center; background: #dcfce7;
+    border-radius: 8px; padding: 7px 6px;
+  }
+  .date-block .day { font-size: 24px; font-weight: 800; color: #15803d; line-height: 1; }
+  .date-block .mon { font-size: 11px; color: #166534; text-transform: uppercase; font-weight: 600; }
+  .event-info     { flex: 1; }
+  .event-title    { font-size: 15px; font-weight: 700; color: #1a2e1a; }
+  .event-detail   { font-size: 13px; color: #4b5563; margin-top: 3px; }
+  .event-type-badge {
+    font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 4px;
+    display: inline-block; margin-top: 5px;
+  }
+  .badge-game     { background: #dcfce7; color: #166534; }
+  .badge-training { background: #dbeafe; color: #1e40af; }
+  .badge-cup      { background: #fef9c3; color: #854d0e; }
+  .badge-other    { background: #f3f4f6; color: #374151; }
+
+  /* ── RSVP buttons ────────────────────────────────────── */
+  .rsvp-bar {
+    border-top: 1px solid #f0fdf4; padding: 10px 16px;
+    display: flex; align-items: center; gap: 8px; background: #fafafa;
+  }
+  .rsvp-label { font-size: 12px; color: #6b7280; font-weight: 600;
+                 text-transform: uppercase; letter-spacing: .3px; margin-right: 4px; }
+  .rsvp-btn {
+    padding: 6px 14px; border-radius: 8px; font-size: 13px; font-weight: 600;
+    border: 2px solid transparent; cursor: pointer; transition: all .15s; background: #f3f4f6;
+    color: #374151;
+  }
+  .rsvp-btn:hover  { transform: translateY(-1px); }
+  .rsvp-yes        { border-color: #15803d; }
+  .rsvp-yes.active { background: #15803d; color: white; }
+  .rsvp-maybe      { border-color: #f59e0b; }
+  .rsvp-maybe.active { background: #f59e0b; color: white; }
+  .rsvp-no         { border-color: #ef4444; }
+  .rsvp-no.active  { background: #ef4444; color: white; }
+
+  /* ── Empty ───────────────────────────────────────────── */
+  .empty { text-align: center; padding: 48px 0; color: #6b7280; font-size: 15px; }
+  .empty-icon { font-size: 48px; display: block; margin-bottom: 10px; }
+
+  /* ── Footer ──────────────────────────────────────────── */
+  .footer {
+    text-align: center; color: #9ca3af; font-size: 12px;
+    padding: 24px; border-top: 1px solid #dcfce7;
+  }
+  .footer a { color: #6b7280; }
+
+  /* ── Toast ───────────────────────────────────────────── */
+  #toast {
+    position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%);
+    background: #1a2e1a; color: white; padding: 10px 22px; border-radius: 10px;
+    font-size: 14px; font-weight: 600; display: none; z-index: 9999;
+    box-shadow: 0 4px 16px rgba(0,0,0,.25);
+  }
+</style>
+</head>
+<body>
+
+<!-- ── Hero ───────────────────────────────────────────────────────── -->
+<div class="hero">
+  <span class="hero-icon">⚽</span>
+  <h1 class="hero-title">{{ squad_name }}</h1>
+  <p class="hero-sub">{{ player_name }}'s upcoming schedule</p>
+</div>
+
+<!-- ── Calendar Subscribe ─────────────────────────────────────────── -->
+<div class="cal-section">
+  <a href="{{ cal_url }}" class="cal-btn">
+    <span class="icon">📆</span>
+    Subscribe to Calendar
+  </a>
+  <p style="font-size:12px;color:#6b7280;text-align:center;margin-top:8px;">
+    Opens in Apple Calendar, Google Calendar, or Outlook.
+    Events update automatically.
+  </p>
+</div>
+
+<!-- ── Upcoming Events ────────────────────────────────────────────── -->
+<div class="events-section">
+  <div class="section-title">Upcoming Events</div>
+
+  {% if events %}
+    {% for ev in events %}
+    {% set parts = ev.event_date.split('-') %}
+    {% set months = ['','Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'] %}
+    <div class="event-card" id="card-{{ ev.id }}">
+      <div class="event-card-header">
+        <div class="date-block">
+          <span class="day">{{ parts[2] | int }}</span>
+          <span class="mon">{{ months[parts[1] | int] }}</span>
+        </div>
+        <div class="event-info">
+          <div class="event-title">
+            {% if ev.opponent %}
+              {% if ev.is_home %}vs {{ ev.opponent }}{% else %}@ {{ ev.opponent }}{% endif %}
+            {% else %}
+              {{ ev.event_type | title if ev.event_type else 'Event' }}
+            {% endif %}
+          </div>
+          <div class="event-detail">
+            {% if ev.event_time %}{{ ev.event_time[:5] }}{% endif %}
+            {% if ev.event_time and ev.venue %} · {% endif %}
+            {% if ev.venue %}{{ ev.venue }}{% else %}Venue TBD{% endif %}
+          </div>
+          <span class="event-type-badge badge-{{ ev.event_type or 'other' }}">
+            {{ ev.event_type or 'event' }}
+          </span>
+        </div>
+      </div>
+
+      <!-- RSVP bar -->
+      <div class="rsvp-bar">
+        <span class="rsvp-label">RSVP</span>
+        <button
+          class="rsvp-btn rsvp-yes {% if ev.rsvp_status == 'attending' %}active{% endif %}"
+          onclick="submitRsvp('{{ ev.id }}', 'attending', this)">
+          ✅ Yes
+        </button>
+        <button
+          class="rsvp-btn rsvp-maybe {% if ev.rsvp_status == 'maybe' %}active{% endif %}"
+          onclick="submitRsvp('{{ ev.id }}', 'maybe', this)">
+          🤔 Maybe
+        </button>
+        <button
+          class="rsvp-btn rsvp-no {% if ev.rsvp_status == 'not_attending' %}active{% endif %}"
+          onclick="submitRsvp('{{ ev.id }}', 'not_attending', this)">
+          ❌ Can't make it
+        </button>
+      </div>
+    </div>
+    {% endfor %}
+
+  {% else %}
+    <div class="empty">
+      <span class="empty-icon">📅</span>
+      <p>No upcoming events scheduled yet.</p>
+    </div>
+  {% endif %}
+
+</div>
+
+<!-- ── Footer ─────────────────────────────────────────────────────── -->
+<div class="footer">
+  Powered by <a href="https://www.jottask.app">Jottask</a> Squad ⚽
+</div>
+
+<div id="toast"></div>
+
+<script>
+const RSVP_URL = '/p/{{ token }}/rsvp';
+
+function showToast(msg, ok) {
+  const el = document.getElementById('toast');
+  el.textContent = msg;
+  el.style.background = ok ? '#15803d' : '#dc2626';
+  el.style.display = 'block';
+  setTimeout(() => { el.style.display = 'none'; }, 2500);
+}
+
+async function submitRsvp(eventId, status, clickedBtn) {
+  // Visual optimistic update
+  const card = document.getElementById(`card-${eventId}`);
+  card.querySelectorAll('.rsvp-btn').forEach(b => b.classList.remove('active'));
+  clickedBtn.classList.add('active');
+
+  try {
+    const res = await fetch(RSVP_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ event_id: eventId, status }),
+    });
+    const data = await res.json();
+    if (res.ok && data.ok) {
+      const labels = {attending:'✅ Yes — saved!', maybe:'🤔 Maybe — saved!', not_attending:"❌ Can't make it — saved!"};
+      showToast(labels[status] || 'RSVP saved', true);
+    } else {
+      showToast(data.error || 'Failed to save RSVP', false);
+    }
+  } catch (e) {
+    showToast('Network error — try again', false);
+  }
+}
+</script>
+</body>
+</html>

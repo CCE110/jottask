@@ -651,6 +651,13 @@ def run_scheduler():
             # Check task reminders every tick (every 1 minute)
             check_and_send_reminders()
 
+            # Poll Squad inbox every tick (Gmail IMAP, ~15s per run)
+            try:
+                from squad_email_processor import poll_squad_inbox
+                poll_squad_inbox()
+            except Exception as squad_err:
+                print(f"⚠️  Squad poller error (non-fatal): {squad_err}")
+
             # Check daily summaries
             users = get_users_needing_summary()
 

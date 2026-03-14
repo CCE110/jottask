@@ -1,0 +1,329 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Squad — {{ squad.name if squad else 'Dashboard' }}</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+         background: #f0fdf4; min-height: 100vh; color: #1a2e1a; }
+
+  /* ── Header ─────────────────────────────────────────── */
+  .header {
+    background: linear-gradient(135deg, #15803d 0%, #166534 60%, #14532d 100%);
+    padding: 0 24px;
+    box-shadow: 0 2px 8px rgba(0,0,0,.25);
+  }
+  .header-inner {
+    max-width: 1200px; margin: 0 auto;
+    display: flex; align-items: center; justify-content: space-between;
+    height: 64px;
+  }
+  .header-logo { display: flex; align-items: center; gap: 10px; color: white; text-decoration: none; }
+  .header-logo .icon { font-size: 28px; }
+  .header-logo .wordmark { font-size: 20px; font-weight: 700; letter-spacing: -0.5px; }
+  .header-nav { display: flex; gap: 4px; }
+  .header-nav a {
+    color: rgba(255,255,255,.8); text-decoration: none; padding: 8px 14px;
+    border-radius: 8px; font-size: 14px; font-weight: 500; transition: background .15s;
+  }
+  .header-nav a:hover, .header-nav a.active { background: rgba(255,255,255,.15); color: white; }
+  .header-right { display: flex; align-items: center; gap: 12px; }
+  .header-right a {
+    color: rgba(255,255,255,.75); text-decoration: none; font-size: 13px;
+    padding: 6px 12px; border: 1px solid rgba(255,255,255,.3); border-radius: 6px;
+  }
+  .header-right a:hover { background: rgba(255,255,255,.1); color: white; }
+
+  /* ── Inbox alert badge ─────────────────────────────── */
+  .inbox-badge {
+    background: #ef4444; color: white; border-radius: 999px;
+    font-size: 11px; font-weight: 700; padding: 1px 6px;
+    margin-left: 4px; line-height: 1.5;
+  }
+
+  /* ── Layout ──────────────────────────────────────────── */
+  .page { max-width: 1200px; margin: 0 auto; padding: 28px 24px; }
+  .grid { display: grid; grid-template-columns: 1fr 320px; gap: 24px; }
+  @media (max-width: 768px) { .grid { grid-template-columns: 1fr; } }
+
+  /* ── Cards ───────────────────────────────────────────── */
+  .card {
+    background: white; border-radius: 14px;
+    box-shadow: 0 1px 4px rgba(0,0,0,.07); overflow: hidden;
+  }
+  .card-header {
+    padding: 16px 20px;
+    border-bottom: 1px solid #e7f5eb;
+    display: flex; align-items: center; justify-content: space-between;
+  }
+  .card-title { font-size: 15px; font-weight: 700; color: #15803d; }
+  .card-body { padding: 16px 20px; }
+  .card-action { font-size: 13px; color: #15803d; text-decoration: none; font-weight: 500; }
+  .card-action:hover { text-decoration: underline; }
+
+  /* ── Inbox alert ──────────────────────────────────────── */
+  .alert-inbox {
+    background: #fefce8; border: 1px solid #fde047; border-radius: 12px;
+    padding: 14px 18px; margin-bottom: 24px;
+    display: flex; align-items: center; gap: 12px;
+  }
+  .alert-inbox .icon { font-size: 22px; }
+  .alert-inbox strong { color: #854d0e; font-size: 15px; }
+  .alert-inbox a {
+    margin-left: auto; background: #ca8a04; color: white; text-decoration: none;
+    padding: 7px 16px; border-radius: 8px; font-size: 13px; font-weight: 600;
+  }
+  .alert-inbox a:hover { background: #a16207; }
+
+  /* ── Event list ───────────────────────────────────────── */
+  .event-item {
+    display: flex; align-items: flex-start; gap: 14px;
+    padding: 12px 0; border-bottom: 1px solid #f0fdf4;
+  }
+  .event-item:last-child { border-bottom: none; }
+  .event-date-block {
+    min-width: 48px; text-align: center; background: #dcfce7;
+    border-radius: 8px; padding: 6px 4px;
+  }
+  .event-date-block .day { font-size: 22px; font-weight: 800; color: #15803d; line-height: 1; }
+  .event-date-block .mon { font-size: 11px; color: #166534; text-transform: uppercase; font-weight: 600; }
+  .event-info { flex: 1; }
+  .event-title { font-weight: 600; font-size: 14px; color: #1a2e1a; }
+  .event-meta { font-size: 12px; color: #4b5563; margin-top: 2px; }
+  .event-type-badge {
+    font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 4px;
+    display: inline-block; margin-top: 4px;
+  }
+  .badge-game     { background: #dcfce7; color: #166534; }
+  .badge-training { background: #dbeafe; color: #1e40af; }
+  .badge-cup      { background: #fef9c3; color: #854d0e; }
+  .badge-other    { background: #f3f4f6; color: #374151; }
+
+  /* ── Inbox preview items ─────────────────────────────── */
+  .inbox-item {
+    padding: 10px 0; border-bottom: 1px solid #f0fdf4;
+  }
+  .inbox-item:last-child { border-bottom: none; }
+  .inbox-item-subject { font-size: 13px; font-weight: 600; color: #1a2e1a;
+                         white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .inbox-item-summary { font-size: 12px; color: #4b5563; margin-top: 3px;
+                         display: -webkit-box; -webkit-line-clamp: 2;
+                         -webkit-box-orient: vertical; overflow: hidden; }
+  .type-pill {
+    font-size: 10px; font-weight: 700; padding: 2px 6px; border-radius: 4px;
+    text-transform: uppercase; letter-spacing: .3px;
+  }
+  .pill-club_update    { background: #dcfce7; color: #166534; }
+  .pill-parent_message { background: #ede9fe; color: #5b21b6; }
+  .pill-fixture_list   { background: #fef9c3; color: #854d0e; }
+  .pill-other          { background: #f3f4f6; color: #374151; }
+
+  /* ── Players ─────────────────────────────────────────── */
+  .player-grid {
+    display: grid; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); gap: 10px;
+  }
+  .player-chip {
+    background: #f0fdf4; border: 1px solid #bbf7d0; border-radius: 8px;
+    padding: 10px 12px; font-size: 13px; font-weight: 500; color: #15803d;
+    text-align: center;
+  }
+  .player-chip .number { font-size: 18px; font-weight: 800; color: #166534; display: block; }
+
+  /* ── Empty state ─────────────────────────────────────── */
+  .empty { text-align: center; padding: 32px 0; color: #6b7280; font-size: 14px; }
+  .empty-icon { font-size: 36px; display: block; margin-bottom: 8px; }
+
+  /* ── Page header ─────────────────────────────────────── */
+  .page-header { margin-bottom: 24px; }
+  .page-header h1 { font-size: 26px; font-weight: 800; color: #15803d; }
+  .page-header p  { font-size: 14px; color: #4b5563; margin-top: 4px; }
+</style>
+</head>
+<body>
+
+<!-- ── Navigation ─────────────────────────────────────────────────── -->
+<header class="header">
+  <div class="header-inner">
+    <a href="/squad/" class="header-logo">
+      <span class="icon">⚽</span>
+      <span class="wordmark">Squad{% if squad %} — {{ squad.name }}{% endif %}</span>
+    </a>
+    <nav class="header-nav">
+      <a href="/squad/" class="active">Dashboard</a>
+      <a href="/squad/inbox">
+        Inbox
+        {% if pending_count > 0 %}
+          <span class="inbox-badge">{{ pending_count }}</span>
+        {% endif %}
+      </a>
+      <a href="/squad/team">Team</a>
+      <a href="/squad/inbox/paste">Paste</a>
+    </nav>
+    <div class="header-right">
+      <a href="/dashboard">← Jottask</a>
+    </div>
+  </div>
+</header>
+
+<!-- ── Main ───────────────────────────────────────────────────────── -->
+<main class="page">
+
+  <div class="page-header">
+    <h1>Squad Dashboard</h1>
+    <p>{{ now.strftime('%A, %d %B %Y') }} · {{ now.strftime('%I:%M %p') }} AEST</p>
+  </div>
+
+  <!-- Inbox alert -->
+  {% if pending_count > 0 %}
+  <div class="alert-inbox">
+    <span class="icon">📬</span>
+    <strong>{{ pending_count }} item{{ 's' if pending_count != 1 else '' }} waiting in AI Inbox</strong>
+    <a href="/squad/inbox">Review →</a>
+  </div>
+  {% endif %}
+
+  <div class="grid">
+
+    <!-- LEFT COLUMN -->
+    <div>
+
+      <!-- Upcoming Events -->
+      <div class="card" style="margin-bottom:20px;">
+        <div class="card-header">
+          <span class="card-title">📅 Upcoming Events</span>
+          <a href="/squad/inbox/paste" class="card-action">+ Add</a>
+        </div>
+        <div class="card-body">
+          {% if upcoming_events %}
+            {% for ev in upcoming_events %}
+            {% set parts = ev.event_date.split('-') %}
+            {% set months = ['','Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'] %}
+            <div class="event-item">
+              <div class="event-date-block">
+                <span class="day">{{ parts[2] | int }}</span>
+                <span class="mon">{{ months[parts[1] | int] }}</span>
+              </div>
+              <div class="event-info">
+                <div class="event-title">
+                  {% if ev.opponent %}
+                    {% if ev.is_home %}vs {{ ev.opponent }}{% else %}@ {{ ev.opponent }}{% endif %}
+                  {% else %}
+                    {{ ev.event_type | title if ev.event_type else 'Event' }}
+                  {% endif %}
+                </div>
+                <div class="event-meta">
+                  {% if ev.event_time %}{{ ev.event_time[:5] }} · {% endif %}
+                  {% if ev.venue %}{{ ev.venue }}{% else %}Venue TBD{% endif %}
+                </div>
+                <span class="event-type-badge badge-{{ ev.event_type or 'other' }}">
+                  {{ ev.event_type or 'event' }}
+                </span>
+              </div>
+            </div>
+            {% endfor %}
+          {% else %}
+            <div class="empty">
+              <span class="empty-icon">📅</span>
+              No upcoming events. Forward a fixture list email to
+              <strong>squadflowquote@gmail.com</strong> to get started.
+            </div>
+          {% endif %}
+        </div>
+      </div>
+
+      <!-- Recent Inbox -->
+      {% if recent_inbox %}
+      <div class="card">
+        <div class="card-header">
+          <span class="card-title">📬 Recent Inbox</span>
+          <a href="/squad/inbox" class="card-action">View all →</a>
+        </div>
+        <div class="card-body">
+          {% for item in recent_inbox %}
+          <div class="inbox-item">
+            <div style="display:flex;align-items:center;gap:8px;margin-bottom:3px;">
+              <span class="type-pill pill-{{ item.email_type or 'other' }}">
+                {{ item.email_type or 'other' | replace('_', ' ') }}
+              </span>
+              <span style="font-size:11px;color:#9ca3af;">{{ item.created_at[:10] }}</span>
+            </div>
+            <div class="inbox-item-subject">{{ item.email_subject or '(no subject)' }}</div>
+            {% if item.parsed_data and item.parsed_data.summary %}
+            <div class="inbox-item-summary">{{ item.parsed_data.summary }}</div>
+            {% endif %}
+          </div>
+          {% endfor %}
+        </div>
+      </div>
+      {% endif %}
+
+    </div>
+
+    <!-- RIGHT COLUMN -->
+    <div>
+
+      <!-- Quick Actions -->
+      <div class="card" style="margin-bottom:20px;">
+        <div class="card-header">
+          <span class="card-title">⚡ Quick Actions</span>
+        </div>
+        <div class="card-body" style="display:flex;flex-direction:column;gap:10px;">
+          <a href="/squad/inbox/paste" style="display:block;background:#15803d;color:white;
+             text-align:center;padding:11px;border-radius:9px;text-decoration:none;
+             font-weight:600;font-size:14px;">
+            📋 Paste WhatsApp / Email
+          </a>
+          <a href="/squad/inbox" style="display:block;background:#166534;color:white;
+             text-align:center;padding:11px;border-radius:9px;text-decoration:none;
+             font-weight:600;font-size:14px;">
+            📬 Review AI Inbox
+            {% if pending_count > 0 %}<span class="inbox-badge">{{ pending_count }}</span>{% endif %}
+          </a>
+          <a href="/squad/team" style="display:block;background:#f0fdf4;color:#15803d;
+             border:1px solid #bbf7d0;text-align:center;padding:11px;border-radius:9px;
+             text-decoration:none;font-weight:600;font-size:14px;">
+            👥 Team Roster
+          </a>
+          {% if squad and squad.cal_token %}
+          <a href="/squad/cal/{{ squad.cal_token }}.ics" style="display:block;background:#f0fdf4;
+             color:#15803d;border:1px solid #bbf7d0;text-align:center;padding:11px;
+             border-radius:9px;text-decoration:none;font-weight:600;font-size:14px;">
+            📆 Download Calendar (.ics)
+          </a>
+          {% endif %}
+        </div>
+      </div>
+
+      <!-- Players -->
+      <div class="card">
+        <div class="card-header">
+          <span class="card-title">👥 Players ({{ players | length }})</span>
+          <a href="/squad/team" class="card-action">Manage →</a>
+        </div>
+        <div class="card-body">
+          {% if players %}
+          <div class="player-grid">
+            {% for p in players %}
+            <div class="player-chip">
+              {% if p.shirt_number %}<span class="number">#{{ p.shirt_number }}</span>{% endif %}
+              {{ p.player_name.split()[0] if p.player_name else '?' }}
+            </div>
+            {% endfor %}
+          </div>
+          {% else %}
+          <div class="empty">
+            <span class="empty-icon">👥</span>
+            No players yet.
+          </div>
+          {% endif %}
+        </div>
+      </div>
+
+    </div>
+  </div>
+</main>
+
+</body>
+</html>
