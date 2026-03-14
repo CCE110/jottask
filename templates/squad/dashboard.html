@@ -84,10 +84,11 @@
   }
   .event-item:last-child { border-bottom: none; }
   .event-date-block {
-    min-width: 48px; text-align: center; background: #dcfce7;
+    min-width: 56px; text-align: center; background: #dcfce7;
     border-radius: 8px; padding: 6px 4px;
   }
-  .event-date-block .day { font-size: 22px; font-weight: 800; color: #15803d; line-height: 1; }
+  .event-date-block .dow { font-size: 10px; color: #166534; text-transform: uppercase; font-weight: 700; letter-spacing: .3px; }
+  .event-date-block .day { font-size: 22px; font-weight: 800; color: #15803d; line-height: 1.1; }
   .event-date-block .mon { font-size: 11px; color: #166534; text-transform: uppercase; font-weight: 600; }
   .event-info { flex: 1; }
   .event-title { font-weight: 600; font-size: 14px; color: #1a2e1a; }
@@ -175,6 +176,79 @@
     <p>{{ now.strftime('%A, %d %B %Y') }} · {{ now.strftime('%I:%M %p') }} AEST</p>
   </div>
 
+  <!-- Generate recurring training -->
+  <div id="genTrainingBanner" style="background:white;border:1px solid #bbf7d0;border-radius:12px;
+       padding:14px 20px;margin-bottom:20px;display:flex;align-items:center;gap:12px;flex-wrap:wrap;">
+    <span style="font-size:20px;">🔄</span>
+    <span style="font-size:14px;font-weight:600;color:#15803d;flex:1;">Generate recurring training sessions</span>
+    <button onclick="document.getElementById('genForm').style.display=document.getElementById('genForm').style.display==='none'?'block':'none'"
+            style="background:#15803d;color:white;border:none;border-radius:8px;padding:8px 16px;
+                   font-size:13px;font-weight:600;cursor:pointer;">
+      Set up ▾
+    </button>
+  </div>
+
+  <div id="genForm" style="display:none;background:white;border-radius:12px;
+       box-shadow:0 1px 4px rgba(0,0,0,.08);padding:20px 24px;margin-bottom:24px;">
+    <form method="POST" action="/squad/events/generate-training">
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:14px;margin-bottom:16px;">
+        <div>
+          <label style="display:block;font-size:12px;font-weight:700;color:#374151;
+                         text-transform:uppercase;letter-spacing:.4px;margin-bottom:5px;">Day</label>
+          <select name="weekday" style="width:100%;padding:8px 10px;border:1.5px solid #d1fae5;
+                  border-radius:8px;font-size:14px;">
+            <option value="0">Monday</option>
+            <option value="1">Tuesday</option>
+            <option value="2" selected>Wednesday</option>
+            <option value="3">Thursday</option>
+            <option value="4">Friday</option>
+            <option value="5">Saturday</option>
+            <option value="6">Sunday</option>
+          </select>
+        </div>
+        <div>
+          <label style="display:block;font-size:12px;font-weight:700;color:#374151;
+                         text-transform:uppercase;letter-spacing:.4px;margin-bottom:5px;">Time</label>
+          <input type="time" name="time" value="18:00"
+                 style="width:100%;padding:8px 10px;border:1.5px solid #d1fae5;border-radius:8px;font-size:14px;">
+        </div>
+        <div>
+          <label style="display:block;font-size:12px;font-weight:700;color:#374151;
+                         text-transform:uppercase;letter-spacing:.4px;margin-bottom:5px;">Venue</label>
+          <input type="text" name="venue" placeholder="e.g. Runcorn Fields"
+                 style="width:100%;padding:8px 10px;border:1.5px solid #d1fae5;border-radius:8px;font-size:14px;">
+        </div>
+        <div>
+          <label style="display:block;font-size:12px;font-weight:700;color:#374151;
+                         text-transform:uppercase;letter-spacing:.4px;margin-bottom:5px;">From</label>
+          <input type="date" name="start_date" value="2026-03-16"
+                 style="width:100%;padding:8px 10px;border:1.5px solid #d1fae5;border-radius:8px;font-size:14px;">
+        </div>
+        <div>
+          <label style="display:block;font-size:12px;font-weight:700;color:#374151;
+                         text-transform:uppercase;letter-spacing:.4px;margin-bottom:5px;">Until</label>
+          <input type="date" name="end_date" value="2026-11-28"
+                 style="width:100%;padding:8px 10px;border:1.5px solid #d1fae5;border-radius:8px;font-size:14px;">
+        </div>
+      </div>
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:16px;">
+        <input type="checkbox" name="skip_holidays" value="true" id="skipHols" checked
+               style="width:16px;height:16px;accent-color:#15803d;">
+        <label for="skipHols" style="font-size:13px;color:#374151;cursor:pointer;">
+          Skip QLD school holidays
+          <span style="color:#6b7280;font-size:12px;">
+            (28 Mar–12 Apr, 27 Jun–12 Jul, 19 Sep–4 Oct, 5 Dec+)
+          </span>
+        </label>
+      </div>
+      <button type="submit"
+              style="background:#15803d;color:white;border:none;border-radius:8px;
+                     padding:10px 24px;font-size:14px;font-weight:700;cursor:pointer;">
+        ⚽ Generate Training Sessions
+      </button>
+    </form>
+  </div>
+
   <!-- Inbox alert -->
   {% if pending_count > 0 %}
   <div class="alert-inbox">
@@ -202,6 +276,7 @@
             {% set months = ['','Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'] %}
             <div class="event-item">
               <div class="event-date-block">
+                <span class="dow">{{ ev.day_short or '' }}</span>
                 <span class="day">{{ parts[2] | int }}</span>
                 <span class="mon">{{ months[parts[1] | int] }}</span>
               </div>

@@ -8,7 +8,7 @@ Blueprint prefix: none (routes use explicit /squad/ and /p/ prefixes)
 import json
 import os
 import uuid
-from datetime import datetime
+from datetime import datetime, date, timedelta
 
 import pytz
 from flask import (Blueprint, Response, jsonify, redirect, render_template,
@@ -68,12 +68,23 @@ def dashboard():
         ev = _db().table('squad_events') \
             .select('*') \
             .eq('squad_id', squad_id) \
+            .eq('is_cancelled', False) \
             .gte('event_date', today) \
             .order('event_date') \
             .order('event_time') \
             .limit(10) \
             .execute()
         upcoming_events = ev.data or []
+
+    # Annotate events with day of week
+    for ev in upcoming_events:
+        try:
+            d = date.fromisoformat(str(ev['event_date'])[:10])
+            ev['day_name'] = d.strftime('%A')   # Monday, Tuesday…
+            ev['day_short'] = d.strftime('%a')  # Mon, Tue…
+        except Exception:
+            ev['day_name'] = ''
+            ev['day_short'] = ''
 
     # Pending inbox count
     inbox_q = _db().table('squad_email_inbox').select('id', count='exact').eq('status', 'pending')
@@ -111,6 +122,81 @@ def dashboard():
         players=players,
         now=now,
     )
+
+
+# QLD school holiday periods — used to skip training generation
+# Format: (start_date, end_date) inclusive
+QLD_SCHOOL_HOLIDAYS_2026 = [
+    (date(2026, 3, 28), date(2026, 4, 12)),   # Easter / Autumn break
+    (date(2026, 6, 27), date(2026, 7, 12)),   # Winter break
+    (date(2026, 9, 19), date(2026, 10, 4)),   # Spring break
+    (date(2026, 12, 5), date(2027, 1, 26)),   # Summer break
+]
+
+def _in_school_holidays(d: date, extra_holidays: list = None) -> bool:
+    periods = QLD_SCHOOL_HOLIDAYS_2026 + (extra_holidays or [])
+    return any(start <= d <= end for start, end in periods)
+
+
+@squad_bp.route('/squad/events/generate-training', methods=['POST'])
+@login_required
+def generate_training():
+    """Generate recurring weekly training sessions, skipping school holidays."""
+    user_id = session.get('user_id')
+    squad = _get_squad_for_user(user_id)
+    if not squad:
+        return redirect(url_for('squad.dashboard'))
+
+    squad_id     = squad['id']
+    weekday      = int(request.form.get('weekday', 2))     # 0=Mon…6=Sun, default Wed
+    time_str     = request.form.get('time', '18:00').strip()
+    venue        = request.form.get('venue', '').strip() or None
+    start_str    = request.form.get('start_date', '').strip()
+    end_str      = request.form.get('end_date', '').strip()
+    skip_holidays = request.form.get('skip_holidays', 'true') == 'true'
+
+    try:
+        start = date.fromisoformat(start_str)
+        end   = date.fromisoformat(end_str)
+    except (ValueError, TypeError):
+        return redirect(url_for('squad.dashboard'))
+
+    if end < start or (end - start).days > 365:
+        return redirect(url_for('squad.dashboard'))
+
+    # Advance to first matching weekday
+    current = start
+    while current.weekday() != weekday:
+        current += timedelta(days=1)
+
+    now_iso = datetime.now(pytz.UTC).isoformat()
+    created = 0
+
+    while current <= end:
+        if not (skip_holidays and _in_school_holidays(current)):
+            # Check if this event already exists (avoid duplicates)
+            existing = _db().table('squad_events') \
+                .select('id') \
+                .eq('squad_id', squad_id) \
+                .eq('event_date', current.isoformat()) \
+                .eq('event_type', 'training') \
+                .execute()
+            if not existing.data:
+                _db().table('squad_events').insert({
+                    'id':         str(uuid.uuid4()),
+                    'squad_id':   squad_id,
+                    'event_date': current.isoformat(),
+                    'event_time': time_str + ':00' if len(time_str) == 5 else time_str,
+                    'event_type': 'training',
+                    'venue':      venue,
+                    'is_cancelled': False,
+                    'created_at': now_iso,
+                }).execute()
+                created += 1
+
+        current += timedelta(days=7)
+
+    return redirect(url_for('squad.dashboard'))
 
 
 # ── Manager: AI Inbox ─────────────────────────────────────────────────────────
