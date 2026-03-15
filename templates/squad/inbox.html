@@ -90,13 +90,35 @@
   .action-desc { flex: 1; color: #374151; }
 
   /* ── Fixtures list ───────────────────────────────────── */
-  .fixtures-table { width: 100%; border-collapse: collapse; margin-bottom: 14px; font-size: 13px; }
+  .fixtures-table { width: 100%; border-collapse: collapse; margin-bottom: 8px; font-size: 13px; }
   .fixtures-table th {
     text-align: left; padding: 6px 10px; background: #f0fdf4;
     color: #15803d; font-size: 11px; text-transform: uppercase; letter-spacing: .4px;
   }
-  .fixtures-table td { padding: 7px 10px; border-bottom: 1px solid #f3f4f6; color: #374151; }
+  .fixtures-table td { padding: 5px 6px; border-bottom: 1px solid #f3f4f6; color: #374151; }
   .fixtures-table tr:last-child td { border-bottom: none; }
+  .fix-input {
+    width: 100%; padding: 4px 7px; border: 1.5px solid #d1fae5; border-radius: 5px;
+    font-size: 13px; color: #1a2e1a; background: white;
+    font-family: inherit;
+  }
+  .fix-input:focus { outline: none; border-color: #15803d; background: #f0fdf4; }
+  .fix-select {
+    padding: 4px 5px; border: 1.5px solid #d1fae5; border-radius: 5px;
+    font-size: 12px; color: #1a2e1a; background: white; font-family: inherit;
+    width: 100%;
+  }
+  .fix-select:focus { outline: none; border-color: #15803d; }
+  .btn-del-row {
+    background: none; border: none; cursor: pointer; color: #dc2626;
+    font-size: 15px; padding: 2px 4px; line-height: 1;
+  }
+  .btn-del-row:hover { color: #b91c1c; }
+  .btn-add-row {
+    font-size: 12px; color: #15803d; background: #f0fdf4; border: 1px solid #86efac;
+    border-radius: 6px; padding: 4px 12px; cursor: pointer; margin-bottom: 14px;
+  }
+  .btn-add-row:hover { background: #dcfce7; }
 
   /* ── Suggested reply ─────────────────────────────────── */
   .suggested-reply {
@@ -204,29 +226,43 @@
         </div>
         {% endif %}
 
-        <!-- Fixtures table (club_update / fixture_list) -->
+        <!-- Fixtures table (club_update / fixture_list) — editable before approve -->
         {% if parsed.fixtures %}
         <div class="actions-section">
-          <div class="actions-title">📅 Fixtures ({{ parsed.fixtures | length }})</div>
-          <table class="fixtures-table">
+          <div class="actions-title">📅 Fixtures ({{ parsed.fixtures | length }}) — <small style="font-weight:400;text-transform:none;color:#6b7280;">edit before approving, or delete rows you don't want</small></div>
+          <table class="fixtures-table" id="fix-tbl-{{ item.id }}">
             <thead>
               <tr>
-                <th>Date</th><th>Time</th><th>Opponent</th><th>Venue</th><th>H/A</th><th>Type</th>
+                <th>Date</th><th>Time</th><th>Opponent</th><th>Venue</th><th>H/A</th><th>Type</th><th style="width:28px"></th>
               </tr>
             </thead>
             <tbody>
               {% for f in parsed.fixtures %}
               <tr>
-                <td>{{ f.date or '—' }}</td>
-                <td>{{ f.time or '—' }}</td>
-                <td>{{ f.opponent or '—' }}</td>
-                <td>{{ f.venue or '—' }}</td>
-                <td>{% if f.is_home == true %}🏠 H{% elif f.is_home == false %}✈️ A{% else %}—{% endif %}</td>
-                <td>{{ f.type or '—' }}</td>
+                <td><input class="fix-input" data-field="date"     value="{{ f.date or '' }}"     placeholder="YYYY-MM-DD"></td>
+                <td><input class="fix-input" data-field="time"     value="{{ f.time or '' }}"     placeholder="HH:MM" style="width:70px"></td>
+                <td><input class="fix-input" data-field="opponent" value="{{ f.opponent or '' }}" placeholder="Opponent"></td>
+                <td><input class="fix-input" data-field="venue"    value="{{ f.venue or '' }}"    placeholder="Venue"></td>
+                <td>
+                  <select class="fix-select" data-field="is_home">
+                    <option value=""  {% if f.is_home is none or f.is_home == '' %}selected{% endif %}>—</option>
+                    <option value="true"  {% if f.is_home == true  %}selected{% endif %}>🏠 H</option>
+                    <option value="false" {% if f.is_home == false %}selected{% endif %}>✈️ A</option>
+                  </select>
+                </td>
+                <td>
+                  <select class="fix-select" data-field="type">
+                    {% for t in ['game','training','cup','friendly','other'] %}
+                    <option value="{{ t }}" {% if (f.type or 'game') == t %}selected{% endif %}>{{ t }}</option>
+                    {% endfor %}
+                  </select>
+                </td>
+                <td><button type="button" class="btn-del-row" onclick="this.closest('tr').remove()" title="Remove row">×</button></td>
               </tr>
               {% endfor %}
             </tbody>
           </table>
+          <button type="button" class="btn-add-row" onclick="addFixtureRow('fix-tbl-{{ item.id }}')">+ Add row</button>
         </div>
         {% endif %}
 
@@ -379,11 +415,70 @@ function showToast(msg, ok) {
   setTimeout(() => { el.style.display = 'none'; }, 3000);
 }
 
+function collectFixtures(itemId) {
+  const tbl = document.getElementById(`fix-tbl-${itemId}`);
+  if (!tbl) return null;
+  const rows = tbl.querySelectorAll('tbody tr');
+  const fixtures = [];
+  rows.forEach(row => {
+    const get = field => {
+      const el = row.querySelector(`[data-field="${field}"]`);
+      return el ? el.value.trim() : '';
+    };
+    const isHomeVal = get('is_home');
+    fixtures.push({
+      date:      get('date')     || null,
+      time:      get('time')     || null,
+      opponent:  get('opponent') || null,
+      venue:     get('venue')    || null,
+      is_home:   isHomeVal === 'true' ? true : isHomeVal === 'false' ? false : null,
+      type:      get('type')     || 'game',
+    });
+  });
+  return fixtures;
+}
+
+function addFixtureRow(tblId) {
+  const tbl = document.getElementById(tblId);
+  const tbody = tbl.querySelector('tbody');
+  const tr = document.createElement('tr');
+  tr.innerHTML = `
+    <td><input class="fix-input" data-field="date"     placeholder="YYYY-MM-DD"></td>
+    <td><input class="fix-input" data-field="time"     placeholder="HH:MM" style="width:70px"></td>
+    <td><input class="fix-input" data-field="opponent" placeholder="Opponent"></td>
+    <td><input class="fix-input" data-field="venue"    placeholder="Venue"></td>
+    <td>
+      <select class="fix-select" data-field="is_home">
+        <option value="">—</option>
+        <option value="true">🏠 H</option>
+        <option value="false">✈️ A</option>
+      </select>
+    </td>
+    <td>
+      <select class="fix-select" data-field="type">
+        <option value="game">game</option>
+        <option value="training">training</option>
+        <option value="cup">cup</option>
+        <option value="friendly">friendly</option>
+        <option value="other">other</option>
+      </select>
+    </td>
+    <td><button type="button" class="btn-del-row" onclick="this.closest('tr').remove()" title="Remove row">×</button></td>
+  `;
+  tbody.appendChild(tr);
+}
+
 async function approveItem(id, btn) {
   btn.disabled = true;
   btn.textContent = 'Approving…';
+  const fixtures = collectFixtures(id);   // null if no fixture table on this item
+  const body = fixtures !== null ? JSON.stringify({ fixtures }) : '{}';
   try {
-    const res = await fetch(`/squad/inbox/${id}/approve`, { method: 'POST' });
+    const res = await fetch(`/squad/inbox/${id}/approve`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body,
+    });
     const data = await res.json();
     if (res.ok && data.ok) {
       showToast(`✅ Approved — ${data.actions.length} action(s) executed`, true);

@@ -239,8 +239,9 @@ def approve_inbox_item(item_id):
     squad_id = item.get('squad_id')
     actions_executed = []
 
-    # Create events for each fixture in the parsed data
-    fixtures = parsed.get('fixtures', [])
+    # Use edited fixtures from request body if provided, else fall back to parsed data
+    req_json = request.get_json(silent=True) or {}
+    fixtures = req_json.get('fixtures') if 'fixtures' in req_json else parsed.get('fixtures', [])
     for fixture in fixtures:
         if not fixture.get('date'):
             continue
