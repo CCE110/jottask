@@ -213,12 +213,8 @@
             </td>
             <td>
               <span class="vw disp-pos">{{ p.position or '—' }}</span>
-              <select class="ed row-input" data-f="position" style="display:none">
-                <option value="">— Position —</option>
-                {% for pos in ['Goalkeeper','Defender','Midfielder','Forward','Striker'] %}
-                <option value="{{ pos }}" {{ 'selected' if p.position == pos else '' }}>{{ pos }}</option>
-                {% endfor %}
-              </select>
+              <input class="ed row-input" data-f="position" list="position-options"
+                     value="{{ p.position or '' }}" placeholder="Position" style="display:none">
             </td>
             <td>
               <div class="vw row-actions">
@@ -242,14 +238,7 @@
               <td><input type="number" name="shirt_number" placeholder="#" min="1" max="99" style="width:54px"></td>
               <td><input type="text" name="player_name" placeholder="Player name" required></td>
               <td>
-                <select name="position">
-                  <option value="">Position (optional)</option>
-                  <option>Goalkeeper</option>
-                  <option>Defender</option>
-                  <option>Midfielder</option>
-                  <option>Forward</option>
-                  <option>Striker</option>
-                </select>
+                <input type="text" name="position" list="position-options" placeholder="Position (optional)">
               </td>
               <td><button type="submit" class="btn-add">+ Add</button></td>
             </form>
@@ -378,6 +367,27 @@
   </div>
 
 </main>
+
+<datalist id="position-options">
+  <option value="Goalkeeper">
+  <option value="Defender">
+  <option value="Centre Back">
+  <option value="Full Back">
+  <option value="Left Back">
+  <option value="Right Back">
+  <option value="Midfielder">
+  <option value="Central Midfielder">
+  <option value="Defensive Midfielder">
+  <option value="Attacking Midfielder">
+  <option value="Left Midfielder">
+  <option value="Right Midfielder">
+  <option value="Forward">
+  <option value="Striker">
+  <option value="Centre Forward">
+  <option value="Left Wing">
+  <option value="Right Wing">
+  <option value="Winger">
+</datalist>
 
 <div id="toast"></div>
 
