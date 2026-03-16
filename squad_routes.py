@@ -416,6 +416,7 @@ def add_parent():
 
     parent_name  = request.form.get('parent_name', '').strip()
     parent_email = request.form.get('parent_email', '').strip()
+    parent_phone = request.form.get('parent_phone', '').strip()
     player_id    = request.form.get('player_id', '').strip() or None
 
     if not parent_name:
@@ -427,6 +428,7 @@ def add_parent():
         'player_id':    player_id or None,
         'parent_name':  parent_name,
         'parent_email': parent_email or None,
+        'parent_phone': parent_phone or None,
         'is_active':    True,
         'created_at':   datetime.now(pytz.UTC).isoformat(),
     }).execute()
@@ -529,6 +531,61 @@ def remove_parent(parent_id):
         .execute()
 
     return redirect(url_for('squad.team'))
+
+
+@squad_bp.route('/squad/team/players/<player_id>/update', methods=['POST'])
+@login_required
+def update_player(player_id):
+    user_id = session.get('user_id')
+    squad = _get_squad_for_user(user_id)
+    if not squad:
+        return jsonify({'error': 'No squad'}), 404
+
+    data = request.get_json(silent=True) or {}
+    shirt_raw = str(data.get('shirt_number', '')).strip()
+    updates = {
+        'player_name':  data.get('player_name', '').strip() or None,
+        'shirt_number': int(shirt_raw) if shirt_raw.isdigit() else None,
+        'position':     data.get('position', '').strip() or None,
+    }
+    if not updates['player_name']:
+        return jsonify({'error': 'Name required'}), 400
+
+    _db().table('squad_players') \
+        .update(updates) \
+        .eq('id', player_id) \
+        .eq('squad_id', squad['id']) \
+        .execute()
+
+    return jsonify({'ok': True})
+
+
+@squad_bp.route('/squad/team/parents/<parent_id>/update', methods=['POST'])
+@login_required
+def update_parent(parent_id):
+    user_id = session.get('user_id')
+    squad = _get_squad_for_user(user_id)
+    if not squad:
+        return jsonify({'error': 'No squad'}), 404
+
+    data = request.get_json(silent=True) or {}
+    player_id = data.get('player_id', '').strip() or None
+    updates = {
+        'parent_name':  data.get('parent_name', '').strip() or None,
+        'parent_email': data.get('parent_email', '').strip() or None,
+        'parent_phone': data.get('parent_phone', '').strip() or None,
+        'player_id':    player_id,
+    }
+    if not updates['parent_name']:
+        return jsonify({'error': 'Name required'}), 400
+
+    _db().table('squad_parent_links') \
+        .update(updates) \
+        .eq('id', parent_id) \
+        .eq('squad_id', squad['id']) \
+        .execute()
+
+    return jsonify({'ok': True})
 
 
 @squad_bp.route('/squad/team/upload', methods=['POST'])

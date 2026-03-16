@@ -14,7 +14,7 @@
     padding: 0 24px; box-shadow: 0 2px 8px rgba(0,0,0,.25);
   }
   .header-inner {
-    max-width: 1000px; margin: 0 auto;
+    max-width: 1100px; margin: 0 auto;
     display: flex; align-items: center; justify-content: space-between; height: 64px;
   }
   .header-logo { color: white; text-decoration: none; font-size: 20px; font-weight: 700; display:flex;align-items:center;gap:8px; }
@@ -28,16 +28,14 @@
     padding: 6px 12px; border: 1px solid rgba(255,255,255,.3); border-radius: 6px;
   }
 
-  .page { max-width: 1000px; margin: 0 auto; padding: 32px 24px; }
+  .page { max-width: 1100px; margin: 0 auto; padding: 32px 24px; }
 
-  /* ── Section heading ───────────────────────────── */
   .section { margin-bottom: 32px; }
   .section-header {
     display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px;
   }
   .section-title { font-size: 18px; font-weight: 800; color: #15803d; }
 
-  /* ── Card ──────────────────────────────────────── */
   .card { background: white; border-radius: 14px; box-shadow: 0 1px 4px rgba(0,0,0,.07); overflow: hidden; }
 
   /* ── Upload zone ───────────────────────────────── */
@@ -61,44 +59,70 @@
   /* ── Table ──────────────────────────────────────── */
   table { width: 100%; border-collapse: collapse; }
   thead th {
-    text-align: left; padding: 11px 16px; background: #f0fdf4;
+    text-align: left; padding: 10px 12px; background: #f0fdf4;
     color: #15803d; font-size: 11px; text-transform: uppercase; letter-spacing: .4px;
   }
-  tbody td { padding: 11px 16px; border-bottom: 1px solid #f0fdf4; font-size: 14px; color: #374151; }
+  tbody td { padding: 9px 12px; border-bottom: 1px solid #f0fdf4; font-size: 14px; color: #374151; vertical-align: middle; }
   tbody tr:last-child td { border-bottom: none; }
   tbody tr:hover td { background: #f9fef9; }
-  .number { font-weight: 800; color: #15803d; font-size: 17px; }
+  .number { font-weight: 800; color: #15803d; font-size: 16px; }
+
+  /* ── Inline edit inputs ─────────────────────────── */
+  .row-input {
+    width: 100%; padding: 5px 8px; border: 1.5px solid #86efac; border-radius: 6px;
+    font-size: 13px; background: white; color: #1a2e1a; font-family: inherit;
+  }
+  .row-input:focus { outline: none; border-color: #15803d; }
+  select.row-input { padding: 5px 6px; }
 
   /* ── Add row form ────────────────────────────────── */
   .add-row { background: #f0fdf4; }
-  .add-row td { padding: 10px 16px; }
+  .add-row td { padding: 9px 12px; }
   .add-row input, .add-row select {
     width: 100%; padding: 7px 10px; border: 1.5px solid #86efac; border-radius: 7px;
     font-size: 13px; background: white; color: #1a2e1a;
   }
   .add-row input:focus, .add-row select:focus { outline: none; border-color: #15803d; }
+
+  /* ── Buttons ─────────────────────────────────────── */
   .btn-add {
     background: #15803d; color: white; border: none; border-radius: 7px;
-    padding: 8px 16px; font-size: 13px; font-weight: 600; cursor: pointer; white-space: nowrap;
+    padding: 7px 14px; font-size: 13px; font-weight: 600; cursor: pointer; white-space: nowrap;
   }
   .btn-add:hover { background: #166534; }
   .btn-remove {
     background: #fef2f2; color: #dc2626; border: 1px solid #fecaca; border-radius: 6px;
-    padding: 4px 10px; font-size: 12px; font-weight: 600; cursor: pointer;
+    padding: 4px 8px; font-size: 12px; font-weight: 600; cursor: pointer;
   }
   .btn-remove:hover { background: #fee2e2; }
+  .btn-edit {
+    background: #f0fdf4; color: #15803d; border: 1px solid #86efac; border-radius: 6px;
+    padding: 4px 8px; font-size: 12px; font-weight: 600; cursor: pointer;
+  }
+  .btn-edit:hover { background: #dcfce7; }
+  .btn-save {
+    background: #15803d; color: white; border: none; border-radius: 6px;
+    padding: 4px 10px; font-size: 12px; font-weight: 600; cursor: pointer;
+  }
+  .btn-save:hover { background: #166534; }
+  .btn-cancel {
+    background: #f3f4f6; color: #374151; border: 1px solid #e5e7eb; border-radius: 6px;
+    padding: 4px 8px; font-size: 12px; cursor: pointer;
+  }
+  .btn-cancel:hover { background: #e5e7eb; }
   .btn-send {
     background: #eff6ff; color: #1d4ed8; border: 1px solid #bfdbfe; border-radius: 6px;
-    padding: 4px 10px; font-size: 12px; font-weight: 600; cursor: pointer; white-space: nowrap;
+    padding: 4px 8px; font-size: 12px; font-weight: 600; cursor: pointer; white-space: nowrap;
   }
   .btn-send:hover { background: #dbeafe; }
   .btn-send:disabled { opacity: .5; cursor: not-allowed; }
+  .row-actions { display: flex; gap: 5px; align-items: center; flex-wrap: wrap; }
 
   /* ── Magic link ──────────────────────────────────── */
   .magic-link {
     font-size: 11px; color: #6b7280; font-family: monospace;
     background: #f3f4f6; padding: 2px 6px; border-radius: 4px;
-    max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    max-width: 160px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
     display: inline-block; vertical-align: middle; cursor: pointer;
   }
   .magic-link:hover { background: #e5e7eb; }
@@ -170,20 +194,44 @@
             <th style="width:60px">#</th>
             <th>Player Name</th>
             <th>Position</th>
-            <th style="width:80px"></th>
+            <th style="width:160px"></th>
           </tr>
         </thead>
         <tbody>
           {% for p in players %}
-          <tr>
-            <td><span class="number">{{ p.shirt_number if p.shirt_number else '—' }}</span></td>
-            <td><strong>{{ p.player_name }}</strong></td>
-            <td>{{ p.position or '—' }}</td>
+          <tr id="player-{{ p.id }}">
+            <!-- View mode -->
             <td>
-              <form method="POST" action="/squad/team/players/{{ p.id }}/remove"
-                    onsubmit="return confirm('Remove {{ p.player_name }}?')">
-                <button type="submit" class="btn-remove">Remove</button>
-              </form>
+              <span class="vw number">{{ p.shirt_number if p.shirt_number else '—' }}</span>
+              <input class="ed row-input" data-f="shirt_number" type="number" min="1" max="99"
+                     value="{{ p.shirt_number or '' }}" placeholder="#" style="display:none;width:54px">
+            </td>
+            <td>
+              <strong class="vw disp-name">{{ p.player_name }}</strong>
+              <input class="ed row-input" data-f="player_name"
+                     value="{{ p.player_name }}" placeholder="Player name" style="display:none">
+            </td>
+            <td>
+              <span class="vw disp-pos">{{ p.position or '—' }}</span>
+              <select class="ed row-input" data-f="position" style="display:none">
+                <option value="">— Position —</option>
+                {% for pos in ['Goalkeeper','Defender','Midfielder','Forward','Striker'] %}
+                <option value="{{ pos }}" {{ 'selected' if p.position == pos else '' }}>{{ pos }}</option>
+                {% endfor %}
+              </select>
+            </td>
+            <td>
+              <div class="vw row-actions">
+                <button class="btn-edit" onclick="editRow('player','{{ p.id }}')">Edit</button>
+                <form method="POST" action="/squad/team/players/{{ p.id }}/remove" style="display:inline"
+                      onsubmit="return confirm('Remove {{ p.player_name }}?')">
+                  <button type="submit" class="btn-remove">Remove</button>
+                </form>
+              </div>
+              <div class="ed row-actions" style="display:none">
+                <button class="btn-save" onclick="savePlayer('{{ p.id }}')">Save</button>
+                <button class="btn-cancel" onclick="cancelRow('player','{{ p.id }}')">Cancel</button>
+              </div>
             </td>
           </tr>
           {% endfor %}
@@ -231,18 +279,40 @@
           <tr>
             <th>Parent Name</th>
             <th>Email</th>
+            <th>Phone</th>
             <th>Player</th>
             <th>Magic Link</th>
-            <th style="width:160px"></th>
+            <th style="width:180px"></th>
           </tr>
         </thead>
         <tbody>
           {% for pa in parents %}
           {% set player = pa.squad_players %}
-          <tr>
-            <td><strong>{{ pa.parent_name }}</strong></td>
-            <td>{{ pa.parent_email or '—' }}</td>
-            <td>{{ player.player_name if player else '—' }}</td>
+          <tr id="parent-{{ pa.id }}">
+            <td>
+              <strong class="vw disp-pname">{{ pa.parent_name }}</strong>
+              <input class="ed row-input" data-f="parent_name"
+                     value="{{ pa.parent_name }}" placeholder="Parent name" style="display:none">
+            </td>
+            <td>
+              <span class="vw disp-email">{{ pa.parent_email or '—' }}</span>
+              <input class="ed row-input" data-f="parent_email" type="email"
+                     value="{{ pa.parent_email or '' }}" placeholder="Email" style="display:none">
+            </td>
+            <td>
+              <span class="vw disp-phone">{{ pa.parent_phone or '—' }}</span>
+              <input class="ed row-input" data-f="parent_phone" type="tel"
+                     value="{{ pa.parent_phone or '' }}" placeholder="Phone" style="display:none">
+            </td>
+            <td>
+              <span class="vw disp-pplayer">{{ player.player_name if player else '—' }}</span>
+              <select class="ed row-input" data-f="player_id" style="display:none">
+                <option value="">— None —</option>
+                {% for p in players %}
+                <option value="{{ p.id }}" {{ 'selected' if pa.player_id == p.id else '' }}>{{ p.player_name }}</option>
+                {% endfor %}
+              </select>
+            </td>
             <td>
               {% if pa.magic_token %}
               <span class="magic-link" title="{{ app_url }}/p/{{ pa.magic_token }}"
@@ -251,17 +321,24 @@
               </span>
               {% else %}—{% endif %}
             </td>
-            <td style="display:flex;gap:6px;align-items:center;">
-              {% if pa.parent_email and pa.magic_token %}
-              <button class="btn-send" id="send-{{ pa.id }}"
-                      onclick="sendLink('{{ pa.id }}', this)">
-                📧 Send Link
-              </button>
-              {% endif %}
-              <form method="POST" action="/squad/team/parents/{{ pa.id }}/remove"
-                    onsubmit="return confirm('Remove {{ pa.parent_name }}?')">
-                <button type="submit" class="btn-remove">Remove</button>
-              </form>
+            <td>
+              <div class="vw row-actions">
+                <button class="btn-edit" onclick="editRow('parent','{{ pa.id }}')">Edit</button>
+                {% if pa.parent_email and pa.magic_token %}
+                <button class="btn-send" id="send-{{ pa.id }}"
+                        onclick="sendLink('{{ pa.id }}', this)">
+                  📧 Send Link
+                </button>
+                {% endif %}
+                <form method="POST" action="/squad/team/parents/{{ pa.id }}/remove" style="display:inline"
+                      onsubmit="return confirm('Remove {{ pa.parent_name }}?')">
+                  <button type="submit" class="btn-remove">Remove</button>
+                </form>
+              </div>
+              <div class="ed row-actions" style="display:none">
+                <button class="btn-save" onclick="saveParent('{{ pa.id }}')">Save</button>
+                <button class="btn-cancel" onclick="cancelRow('parent','{{ pa.id }}')">Cancel</button>
+              </div>
             </td>
           </tr>
           {% endfor %}
@@ -271,6 +348,7 @@
             <form method="POST" action="/squad/team/parents/add">
               <td><input type="text" name="parent_name" placeholder="Parent name" required></td>
               <td><input type="email" name="parent_email" placeholder="Email (optional)"></td>
+              <td><input type="tel" name="parent_phone" placeholder="Phone (optional)"></td>
               <td>
                 <select name="player_id">
                   <option value="">Link to player (optional)</option>
@@ -298,7 +376,77 @@
 <div id="toast"></div>
 
 <script>
-// File picker
+// ── Inline edit helpers ──────────────────────────────────────────
+
+function editRow(type, id) {
+  const row = document.getElementById(`${type}-${id}`);
+  row.querySelectorAll('.vw').forEach(el => el.style.display = 'none');
+  row.querySelectorAll('.ed').forEach(el => el.style.display = '');
+}
+
+function cancelRow(type, id) {
+  const row = document.getElementById(`${type}-${id}`);
+  row.querySelectorAll('.vw').forEach(el => el.style.display = '');
+  row.querySelectorAll('.ed').forEach(el => el.style.display = 'none');
+}
+
+async function savePlayer(id) {
+  const row = document.getElementById(`player-${id}`);
+  const get = f => row.querySelector(`[data-f="${f}"]`).value.trim();
+  const data = {
+    shirt_number: get('shirt_number'),
+    player_name:  get('player_name'),
+    position:     get('position'),
+  };
+  const res = await fetch(`/squad/team/players/${id}/update`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  });
+  const json = await res.json();
+  if (json.ok) {
+    row.querySelector('.number').textContent   = data.shirt_number || '—';
+    row.querySelector('.disp-name').textContent = data.player_name;
+    row.querySelector('.disp-pos').textContent  = data.position || '—';
+    cancelRow('player', id);
+    showToast('Player saved');
+  } else {
+    showToast(json.error || 'Save failed', false);
+  }
+}
+
+async function saveParent(id) {
+  const row = document.getElementById(`parent-${id}`);
+  const get = f => row.querySelector(`[data-f="${f}"]`).value.trim();
+  // Resolve player name from select option text
+  const playerSel = row.querySelector('[data-f="player_id"]');
+  const playerName = playerSel.options[playerSel.selectedIndex]?.text || '—';
+  const data = {
+    parent_name:  get('parent_name'),
+    parent_email: get('parent_email'),
+    parent_phone: get('parent_phone'),
+    player_id:    get('player_id'),
+  };
+  const res = await fetch(`/squad/team/parents/${id}/update`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  });
+  const json = await res.json();
+  if (json.ok) {
+    row.querySelector('.disp-pname').textContent   = data.parent_name;
+    row.querySelector('.disp-email').textContent   = data.parent_email  || '—';
+    row.querySelector('.disp-phone').textContent   = data.parent_phone  || '—';
+    row.querySelector('.disp-pplayer').textContent = data.player_id ? playerName : '—';
+    cancelRow('parent', id);
+    showToast('Parent saved');
+  } else {
+    showToast(json.error || 'Save failed', false);
+  }
+}
+
+// ── File picker ──────────────────────────────────────────────────
+
 document.getElementById('teamSheetFile').addEventListener('change', function() {
   const file = this.files[0];
   if (!file) return;
@@ -326,13 +474,12 @@ zone.addEventListener('drop', e => {
 // Upload spinner
 document.getElementById('uploadForm').addEventListener('submit', function() {
   const btn = document.getElementById('uploadBtn');
-  const spinner = document.getElementById('uploadSpinner');
   btn.disabled = true;
-  spinner.style.display = 'inline-block';
   btn.innerHTML = '<span style="display:inline-block;width:14px;height:14px;border:2px solid rgba(255,255,255,.4);border-top-color:white;border-radius:50%;animation:spin .7s linear infinite;vertical-align:middle;margin-right:6px;"></span> Parsing…';
 });
 
-// Copy magic link
+// ── Copy magic link ──────────────────────────────────────────────
+
 function copyLink(url, el) {
   navigator.clipboard.writeText(url).then(() => {
     const orig = el.textContent;
@@ -341,7 +488,8 @@ function copyLink(url, el) {
   });
 }
 
-// Send magic link email
+// ── Send magic link email ────────────────────────────────────────
+
 async function sendLink(parentId, btn) {
   btn.disabled = true;
   btn.textContent = '⏳ Sending…';
@@ -362,7 +510,8 @@ async function sendLink(parentId, btn) {
   }
 }
 
-// Toast helper
+// ── Toast ────────────────────────────────────────────────────────
+
 function showToast(msg, ok = true) {
   const t = document.getElementById('toast');
   t.textContent = msg;
