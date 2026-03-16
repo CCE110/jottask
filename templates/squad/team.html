@@ -329,6 +329,12 @@
                         onclick="sendLink('{{ pa.id }}', this)">
                   📧 Send Link
                 </button>
+                {% else %}
+                <button class="btn-send" id="send-{{ pa.id }}" disabled
+                        title="Add an email address first, then Save"
+                        onclick="sendLink('{{ pa.id }}', this)">
+                  📧 Send Link
+                </button>
                 {% endif %}
                 <form method="POST" action="/squad/team/parents/{{ pa.id }}/remove" style="display:inline"
                       onsubmit="return confirm('Remove {{ pa.parent_name }}?')">
@@ -438,6 +444,17 @@ async function saveParent(id) {
     row.querySelector('.disp-email').textContent   = data.parent_email  || '—';
     row.querySelector('.disp-phone').textContent   = data.parent_phone  || '—';
     row.querySelector('.disp-pplayer').textContent = data.player_id ? playerName : '—';
+    // Enable Send Link button now that email is set (page reload not needed)
+    const sendBtn = row.querySelector(`#send-${id}`);
+    if (sendBtn) {
+      if (data.parent_email) {
+        sendBtn.disabled = false;
+        sendBtn.removeAttribute('title');
+      } else {
+        sendBtn.disabled = true;
+        sendBtn.title = 'Add an email address first, then Save';
+      }
+    }
     cancelRow('parent', id);
     showToast('Parent saved');
   } else {
