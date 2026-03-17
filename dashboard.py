@@ -2915,17 +2915,13 @@ def handle_action():
                 """, title=task_title)
 
             elif action == 'delay_1hour':
-                current_time = task_data.get('due_time', '09:00:00')
-                try:
-                    parts = current_time.split(':')
-                    hour = int(parts[0]) + 1
-                    if hour >= 24:
-                        hour = 23
-                    new_time = f"{hour:02d}:{parts[1]}:00"
-                except:
-                    new_time = '10:00:00'
+                aest = pytz.timezone('Australia/Brisbane')
+                new_dt = datetime.now(aest) + timedelta(hours=1)
+                new_time = new_dt.strftime('%H:%M:00')
+                new_date = new_dt.date().isoformat()
 
                 supabase.table('tasks').update({
+                    'due_date': new_date,
                     'due_time': new_time,
                     'reminder_sent_at': None
                 }).eq('id', task_id).execute()
@@ -4211,18 +4207,14 @@ def email_action(token):
         return redirect(url_for('edit_task', task_id=task_id))
 
     elif action == 'delay_1hour':
-        # Delay task by 1 hour
-        current_time = task_data.get('due_time', '09:00:00')
-        try:
-            parts = current_time.split(':')
-            hour = int(parts[0]) + 1
-            if hour >= 24:
-                hour = 23
-            new_time = f"{hour:02d}:{parts[1]}:00"
-        except:
-            new_time = '10:00:00'
+        # Delay task by 1 hour from NOW (not from original due time)
+        aest = pytz.timezone('Australia/Brisbane')
+        new_dt = datetime.now(aest) + timedelta(hours=1)
+        new_time = new_dt.strftime('%H:%M:00')
+        new_date = new_dt.date().isoformat()
 
         supabase.table('tasks').update({
+            'due_date': new_date,
             'due_time': new_time,
             'reminder_sent_at': None  # Allow new reminder
         }).eq('id', task_id).execute()
