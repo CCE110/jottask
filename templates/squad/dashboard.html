@@ -23,6 +23,13 @@
   .header-logo { display: flex; align-items: center; gap: 10px; color: white; text-decoration: none; }
   .header-logo .icon { font-size: 28px; }
   .header-logo .wordmark { font-size: 20px; font-weight: 700; letter-spacing: -0.5px; }
+  .rename-btn { background: none; border: none; cursor: pointer; color: rgba(255,255,255,.55);
+                font-size: 14px; padding: 2px 4px; line-height: 1; margin-left: 2px; }
+  .rename-btn:hover { color: white; }
+  .rename-input { font-size: 18px; font-weight: 700; background: rgba(255,255,255,.15);
+                  border: 1px solid rgba(255,255,255,.4); border-radius: 6px; color: white;
+                  padding: 4px 10px; outline: none; width: 240px; }
+  .rename-input::placeholder { color: rgba(255,255,255,.5); }
   .header-nav { display: flex; gap: 4px; }
   .header-nav a {
     color: rgba(255,255,255,.8); text-decoration: none; padding: 8px 14px;
@@ -147,10 +154,19 @@
 <!-- ── Navigation ─────────────────────────────────────────────────── -->
 <header class="header">
   <div class="header-inner">
-    <a href="/squad/" class="header-logo">
+    <div class="header-logo" style="text-decoration:none;">
       <span class="icon">⚽</span>
-      <span class="wordmark">Squad{% if squad %} — {{ squad.name }}{% endif %}</span>
-    </a>
+      <span class="wordmark" id="squad-name-display">Squad{% if squad %} — {{ squad.name }}{% endif %}</span>
+      {% if squad %}
+      <input class="rename-input" id="squad-name-input" value="{{ squad.name }}"
+             style="display:none" placeholder="Squad name">
+      <button class="rename-btn" id="rename-btn" onclick="startRename()" title="Rename squad">✏️</button>
+      <button class="rename-btn" id="rename-save" style="display:none;color:#86efac;font-weight:700"
+              onclick="saveRename()">Save</button>
+      <button class="rename-btn" id="rename-cancel" style="display:none"
+              onclick="cancelRename()">✕</button>
+      {% endif %}
+    </div>
     <nav class="header-nav">
       <a href="/squad/" class="active">Dashboard</a>
       <a href="/squad/inbox">
@@ -399,6 +415,47 @@
     </div>
   </div>
 </main>
+
+<script>
+function startRename() {
+  document.getElementById('squad-name-display').style.display = 'none';
+  document.getElementById('rename-btn').style.display = 'none';
+  document.getElementById('squad-name-input').style.display = '';
+  document.getElementById('rename-save').style.display = '';
+  document.getElementById('rename-cancel').style.display = '';
+  const inp = document.getElementById('squad-name-input');
+  inp.focus();
+  inp.select();
+  inp.addEventListener('keydown', e => {
+    if (e.key === 'Enter') saveRename();
+    if (e.key === 'Escape') cancelRename();
+  }, { once: true });
+}
+
+function cancelRename() {
+  document.getElementById('squad-name-display').style.display = '';
+  document.getElementById('rename-btn').style.display = '';
+  document.getElementById('squad-name-input').style.display = 'none';
+  document.getElementById('rename-save').style.display = 'none';
+  document.getElementById('rename-cancel').style.display = 'none';
+}
+
+async function saveRename() {
+  const name = document.getElementById('squad-name-input').value.trim();
+  if (!name) return;
+  const res = await fetch('/squad/rename', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name }),
+  });
+  const data = await res.json();
+  if (data.ok) {
+    document.getElementById('squad-name-display').textContent = 'Squad — ' + data.name;
+    document.title = 'Squad — ' + data.name;
+    cancelRename();
+  }
+}
+</script>
 
 </body>
 </html>

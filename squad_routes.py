@@ -331,6 +331,20 @@ def paste_inbox():
 
 # ── Manager: Team Roster ──────────────────────────────────────────────────────
 
+@squad_bp.route('/squad/rename', methods=['POST'])
+@login_required
+def rename_squad():
+    user_id = session.get('user_id')
+    squad = _get_squad_for_user(user_id)
+    if not squad:
+        return jsonify({'error': 'No squad'}), 404
+    name = request.get_json(silent=True, force=True).get('name', '').strip()
+    if not name:
+        return jsonify({'error': 'Name required'}), 400
+    _db().table('squads').update({'name': name}).eq('id', squad['id']).execute()
+    return jsonify({'ok': True, 'name': name})
+
+
 @squad_bp.route('/squad/team')
 @login_required
 def team():
