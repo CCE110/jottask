@@ -14,7 +14,7 @@
     padding: 0 24px; box-shadow: 0 2px 8px rgba(0,0,0,.25);
   }
   .header-inner {
-    max-width: 1100px; margin: 0 auto;
+    max-width: 1200px; margin: 0 auto;
     display: flex; align-items: center; justify-content: space-between; height: 64px;
   }
   .header-logo { color: white; text-decoration: none; font-size: 20px; font-weight: 700; display:flex;align-items:center;gap:8px; }
@@ -28,33 +28,42 @@
     padding: 6px 12px; border: 1px solid rgba(255,255,255,.3); border-radius: 6px;
   }
 
-  .page { max-width: 1100px; margin: 0 auto; padding: 32px 24px; }
-
-  .section { margin-bottom: 32px; }
-  .section-header {
-    display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px;
-  }
-  .section-title { font-size: 18px; font-weight: 800; color: #15803d; }
-
-  .card { background: white; border-radius: 14px; box-shadow: 0 1px 4px rgba(0,0,0,.07); overflow: hidden; }
+  .page { max-width: 1200px; margin: 0 auto; padding: 28px 24px; }
 
   /* ── Upload zone ───────────────────────────────── */
   .upload-zone {
-    border: 2px dashed #86efac; border-radius: 12px; padding: 28px 24px;
+    border: 2px dashed #86efac; border-radius: 12px; padding: 24px;
     text-align: center; background: white; cursor: pointer; transition: all .15s;
+    margin-bottom: 24px;
   }
   .upload-zone:hover, .upload-zone.drag-over { border-color: #15803d; background: #f0fdf4; }
-  .upload-icon { font-size: 36px; display: block; margin-bottom: 8px; }
-  .upload-title { font-size: 15px; font-weight: 700; color: #15803d; margin-bottom: 4px; }
-  .upload-sub { font-size: 13px; color: #6b7280; }
+  .upload-icon { font-size: 32px; display: block; margin-bottom: 6px; }
+  .upload-title { font-size: 14px; font-weight: 700; color: #15803d; margin-bottom: 3px; }
+  .upload-sub { font-size: 12px; color: #6b7280; }
   .upload-input { display: none; }
   .upload-btn {
-    display: inline-block; margin-top: 12px; background: #15803d; color: white;
-    padding: 9px 20px; border-radius: 8px; font-size: 13px; font-weight: 600;
+    display: inline-block; margin-top: 10px; background: #15803d; color: white;
+    padding: 8px 18px; border-radius: 8px; font-size: 13px; font-weight: 600;
     border: none; cursor: pointer;
   }
   .upload-btn:hover { background: #166534; }
-  .file-chosen { margin-top: 8px; font-size: 13px; color: #166534; font-weight: 600; display: none; }
+  .file-chosen { margin-top: 6px; font-size: 12px; color: #166534; font-weight: 600; display: none; }
+
+  /* ── Tabs ───────────────────────────────────────── */
+  .tabs { display: flex; gap: 4px; margin-bottom: 20px; border-bottom: 2px solid #dcfce7; }
+  .tab-btn {
+    padding: 10px 22px; border-radius: 8px 8px 0 0; font-size: 14px; font-weight: 600;
+    border: none; background: transparent; cursor: pointer; color: #4b5563;
+    position: relative; bottom: -2px; border-bottom: 2px solid transparent;
+    transition: all .15s;
+  }
+  .tab-btn.active { color: #15803d; border-bottom-color: #15803d; background: white; }
+  .tab-btn:hover:not(.active) { background: #f0fdf4; color: #15803d; }
+  .tab-pane { display: none; }
+  .tab-pane.active { display: block; }
+
+  /* ── Card ──────────────────────────────────────── */
+  .card { background: white; border-radius: 14px; box-shadow: 0 1px 4px rgba(0,0,0,.07); overflow: hidden; }
 
   /* ── Table ──────────────────────────────────────── */
   table { width: 100%; border-collapse: collapse; }
@@ -67,13 +76,20 @@
   tbody tr:hover td { background: #f9fef9; }
   .number { font-weight: 800; color: #15803d; font-size: 16px; }
 
+  /* ── Parent chips on Players tab ────────────────── */
+  .parent-chips { display: flex; flex-wrap: wrap; gap: 4px; }
+  .parent-chip {
+    font-size: 11px; background: #f0fdf4; color: #15803d; border: 1px solid #bbf7d0;
+    border-radius: 20px; padding: 2px 9px; white-space: nowrap;
+  }
+  .no-parents { font-size: 12px; color: #9ca3af; font-style: italic; }
+
   /* ── Inline edit inputs ─────────────────────────── */
   .row-input {
     width: 100%; padding: 5px 8px; border: 1.5px solid #86efac; border-radius: 6px;
     font-size: 13px; background: white; color: #1a2e1a; font-family: inherit;
   }
   .row-input:focus { outline: none; border-color: #15803d; }
-  select.row-input { padding: 5px 6px; }
 
   /* ── Add row form ────────────────────────────────── */
   .add-row { background: #f0fdf4; }
@@ -109,7 +125,6 @@
     background: #f3f4f6; color: #374151; border: 1px solid #e5e7eb; border-radius: 6px;
     padding: 4px 8px; font-size: 12px; cursor: pointer;
   }
-  .btn-cancel:hover { background: #e5e7eb; }
   .btn-send {
     background: #eff6ff; color: #1d4ed8; border: 1px solid #bfdbfe; border-radius: 6px;
     padding: 4px 8px; font-size: 12px; font-weight: 600; cursor: pointer; white-space: nowrap;
@@ -122,10 +137,14 @@
   .magic-link {
     font-size: 11px; color: #6b7280; font-family: monospace;
     background: #f3f4f6; padding: 2px 6px; border-radius: 4px;
-    max-width: 160px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    max-width: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
     display: inline-block; vertical-align: middle; cursor: pointer;
   }
   .magic-link:hover { background: #e5e7eb; }
+
+  /* ── Section heading ────────────────────────────── */
+  .section-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px; }
+  .section-title { font-size: 17px; font-weight: 800; color: #15803d; }
 
   /* ── Empty ───────────────────────────────────────── */
   .empty { text-align: center; padding: 36px; color: #6b7280; font-size: 14px; }
@@ -137,11 +156,6 @@
     background: #15803d; color: white; padding: 10px 22px; border-radius: 10px;
     font-size: 14px; font-weight: 600; display: none; z-index: 9999;
   }
-
-  /* ── Spinner ─────────────────────────────────────── */
-  .spinner { display:none; width:18px; height:18px; border:2px solid rgba(255,255,255,.4);
-             border-top-color:white; border-radius:50%; animation:spin .7s linear infinite; vertical-align:middle; }
-  @keyframes spin { to { transform:rotate(360deg); } }
 </style>
 </head>
 <body>
@@ -162,49 +176,61 @@
 <main class="page">
 
   <!-- ── Upload Team Sheet ──────────────────────────────────────── -->
-  <div class="section">
-    <div class="section-header">
-      <span class="section-title">📄 Upload Team Sheet</span>
+  <form method="POST" action="/squad/team/upload" enctype="multipart/form-data" id="uploadForm">
+    <div class="upload-zone" id="uploadZone" onclick="document.getElementById('teamSheetFile').click()">
+      <span class="upload-icon">📋</span>
+      <div class="upload-title">Drop a team sheet here or click to upload</div>
+      <div class="upload-sub">Image or CSV — Claude will extract players and parents automatically</div>
+      <input type="file" name="team_sheet" id="teamSheetFile" class="upload-input"
+             accept=".jpg,.jpeg,.png,.gif,.webp,.csv,.txt,.pdf">
+      <div class="file-chosen" id="fileChosen"></div>
+      <button type="submit" class="upload-btn" id="uploadBtn" style="display:none;">
+        🤖 Parse with AI
+      </button>
     </div>
-    <form method="POST" action="/squad/team/upload" enctype="multipart/form-data" id="uploadForm">
-      <div class="upload-zone" id="uploadZone" onclick="document.getElementById('teamSheetFile').click()">
-        <span class="upload-icon">📋</span>
-        <div class="upload-title">Drop a team sheet here or click to upload</div>
-        <div class="upload-sub">Image (photo/screenshot) or CSV/text file — Claude will extract players and parents automatically</div>
-        <input type="file" name="team_sheet" id="teamSheetFile" class="upload-input"
-               accept=".jpg,.jpeg,.png,.gif,.webp,.csv,.txt,.pdf">
-        <div class="file-chosen" id="fileChosen"></div>
-        <button type="submit" class="upload-btn" id="uploadBtn" style="display:none;">
-          <span class="spinner" id="uploadSpinner"></span>
-          🤖 Parse with AI
-        </button>
-      </div>
-    </form>
+  </form>
+
+  <!-- ── Tabs ───────────────────────────────────────────────────── -->
+  <div class="tabs">
+    <button class="tab-btn active" onclick="switchTab('players', this)">⚽ Players ({{ players | length }})</button>
+    <button class="tab-btn"        onclick="switchTab('parents', this)">👨‍👩‍👧 Parents ({{ parents | length }})</button>
   </div>
 
-  <!-- ── Players ─────────────────────────────────────────────────── -->
-  <div class="section">
-    <div class="section-header">
-      <span class="section-title">⚽ Players ({{ players | length }})</span>
-    </div>
+  <!-- ══════════════════════════════════════════════════════════════
+       TAB: PLAYERS
+  ══════════════════════════════════════════════════════════════ -->
+
+  {# Build a lookup: player_id → list of parents #}
+  {% set parent_map = {} %}
+  {% for pa in parents %}
+    {% if pa.player_id %}
+      {% if pa.player_id not in parent_map %}
+        {% set _ = parent_map.update({pa.player_id: []}) %}
+      {% endif %}
+      {% set _ = parent_map[pa.player_id].append(pa) %}
+    {% endif %}
+  {% endfor %}
+
+  <div class="tab-pane active" id="tab-players">
     <div class="card">
       <table>
         <thead>
           <tr>
-            <th style="width:60px">#</th>
+            <th style="width:55px">#</th>
             <th>Player Name</th>
             <th>Position</th>
-            <th style="width:160px"></th>
+            <th>Parents</th>
+            <th style="width:150px"></th>
           </tr>
         </thead>
         <tbody>
           {% for p in players %}
+          {% set linked_parents = parent_map.get(p.id, []) %}
           <tr id="player-{{ p.id }}">
-            <!-- View mode -->
             <td>
               <span class="vw number">{{ p.shirt_number if p.shirt_number else '—' }}</span>
               <input class="ed row-input" data-f="shirt_number" type="number" min="1" max="99"
-                     value="{{ p.shirt_number or '' }}" placeholder="#" style="display:none;width:54px">
+                     value="{{ p.shirt_number or '' }}" placeholder="#" style="display:none;width:50px">
             </td>
             <td>
               <strong class="vw disp-name">{{ p.player_name }}</strong>
@@ -215,6 +241,17 @@
               <span class="vw disp-pos">{{ p.position or '—' }}</span>
               <input class="ed row-input" data-f="position" list="position-options"
                      value="{{ p.position or '' }}" placeholder="Position" style="display:none">
+            </td>
+            <td>
+              <div class="parent-chips">
+                {% if linked_parents %}
+                  {% for pa in linked_parents %}
+                  <span class="parent-chip" title="{{ pa.parent_email or '' }}">{{ pa.parent_name }}</span>
+                  {% endfor %}
+                {% else %}
+                  <span class="no-parents">None linked</span>
+                {% endif %}
+              </div>
             </td>
             <td>
               <div class="vw row-actions">
@@ -235,12 +272,11 @@
           <!-- Add player row -->
           <tr class="add-row">
             <form method="POST" action="/squad/team/players/add">
-              <td><input type="number" name="shirt_number" placeholder="#" min="1" max="99" style="width:54px"></td>
+              <td><input type="number" name="shirt_number" placeholder="#" min="1" max="99" style="width:50px"></td>
               <td><input type="text" name="player_name" placeholder="Player name" required></td>
-              <td>
-                <input type="text" name="position" list="position-options" placeholder="Position (optional)">
-              </td>
-              <td><button type="submit" class="btn-add">+ Add</button></td>
+              <td><input type="text" name="position" list="position-options" placeholder="Position (optional)"></td>
+              <td></td>
+              <td><button type="submit" class="btn-add">+ Add Player</button></td>
             </form>
           </tr>
         </tbody>
@@ -254,13 +290,12 @@
     </div>
   </div>
 
-  <!-- ── Parents ─────────────────────────────────────────────────── -->
-  <div class="section">
-    <div class="section-header">
-      <span class="section-title">👨‍👩‍👧 Parents / Guardians ({{ parents | length }})</span>
-    </div>
+  <!-- ══════════════════════════════════════════════════════════════
+       TAB: PARENTS
+  ══════════════════════════════════════════════════════════════ -->
+  <div class="tab-pane" id="tab-parents">
     <p style="font-size:13px;color:#6b7280;margin-bottom:12px;">
-      Each parent gets their <strong>own</strong> magic link and RSVP — add Mum <em>and</em> Dad as separate entries, both linked to the same player. Click any link to copy it, or use 📧 Send Link to email it directly.
+      Each parent gets their <strong>own</strong> magic link and RSVP — add Mum <em>and</em> Dad as separate entries linked to the same player.
     </p>
     <div class="card">
       <table>
@@ -271,7 +306,7 @@
             <th>Phone</th>
             <th>Player</th>
             <th>Magic Link</th>
-            <th style="width:180px"></th>
+            <th style="width:190px"></th>
           </tr>
         </thead>
         <tbody>
@@ -313,18 +348,11 @@
             <td>
               <div class="vw row-actions">
                 <button class="btn-edit" onclick="editRow('parent','{{ pa.id }}')">Edit</button>
-                {% if pa.parent_email and pa.magic_token %}
                 <button class="btn-send" id="send-{{ pa.id }}"
+                        {% if not (pa.parent_email and pa.magic_token) %}disabled title="Add email first"{% endif %}
                         onclick="sendLink('{{ pa.id }}', this)">
                   📧 Send Link
                 </button>
-                {% else %}
-                <button class="btn-send" id="send-{{ pa.id }}" disabled
-                        title="Add an email address first, then Save"
-                        onclick="sendLink('{{ pa.id }}', this)">
-                  📧 Send Link
-                </button>
-                {% endif %}
                 <form method="POST" action="/squad/team/parents/{{ pa.id }}/remove" style="display:inline"
                       onsubmit="return confirm('Remove {{ pa.parent_name }}?')">
                   <button type="submit" class="btn-remove">Remove</button>
@@ -352,7 +380,7 @@
                   {% endfor %}
                 </select>
               </td>
-              <td colspan="2"><button type="submit" class="btn-add">+ Add</button></td>
+              <td colspan="2"><button type="submit" class="btn-add">+ Add Parent</button></td>
             </form>
           </tr>
         </tbody>
@@ -392,6 +420,25 @@
 <div id="toast"></div>
 
 <script>
+// ── Tab switching ────────────────────────────────────────────────
+
+function switchTab(name, btn) {
+  document.querySelectorAll('.tab-pane').forEach(p => p.classList.remove('active'));
+  document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+  document.getElementById('tab-' + name).classList.add('active');
+  btn.classList.add('active');
+  // Remember active tab in URL hash
+  history.replaceState(null, '', '#' + name);
+}
+
+// Restore tab from hash on load
+window.addEventListener('DOMContentLoaded', () => {
+  const hash = location.hash.replace('#', '');
+  if (hash === 'parents') {
+    document.querySelectorAll('.tab-btn')[1].click();
+  }
+});
+
 // ── Inline edit helpers ──────────────────────────────────────────
 
 function editRow(type, id) {
@@ -409,44 +456,31 @@ function cancelRow(type, id) {
 async function savePlayer(id) {
   const row = document.getElementById(`player-${id}`);
   const get = f => row.querySelector(`[data-f="${f}"]`).value.trim();
-  const data = {
-    shirt_number: get('shirt_number'),
-    player_name:  get('player_name'),
-    position:     get('position'),
-  };
+  const data = { shirt_number: get('shirt_number'), player_name: get('player_name'), position: get('position') };
   const res = await fetch(`/squad/team/players/${id}/update`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(data),
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data),
   });
   const json = await res.json();
   if (json.ok) {
-    row.querySelector('.number').textContent   = data.shirt_number || '—';
+    row.querySelector('.number').textContent    = data.shirt_number || '—';
     row.querySelector('.disp-name').textContent = data.player_name;
     row.querySelector('.disp-pos').textContent  = data.position || '—';
     cancelRow('player', id);
     showToast('Player saved');
-  } else {
-    showToast(json.error || 'Save failed', false);
-  }
+  } else { showToast(json.error || 'Save failed', false); }
 }
 
 async function saveParent(id) {
   const row = document.getElementById(`parent-${id}`);
   const get = f => row.querySelector(`[data-f="${f}"]`).value.trim();
-  // Resolve player name from select option text
   const playerSel = row.querySelector('[data-f="player_id"]');
   const playerName = playerSel.options[playerSel.selectedIndex]?.text || '—';
   const data = {
-    parent_name:  get('parent_name'),
-    parent_email: get('parent_email'),
-    parent_phone: get('parent_phone'),
-    player_id:    get('player_id'),
+    parent_name: get('parent_name'), parent_email: get('parent_email'),
+    parent_phone: get('parent_phone'), player_id: get('player_id'),
   };
   const res = await fetch(`/squad/team/parents/${id}/update`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(data),
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data),
   });
   const json = await res.json();
   if (json.ok) {
@@ -454,63 +488,43 @@ async function saveParent(id) {
     row.querySelector('.disp-email').textContent   = data.parent_email  || '—';
     row.querySelector('.disp-phone').textContent   = data.parent_phone  || '—';
     row.querySelector('.disp-pplayer').textContent = data.player_id ? playerName : '—';
-    // Enable Send Link button now that email is set (page reload not needed)
-    const sendBtn = row.querySelector(`#send-${id}`);
-    if (sendBtn) {
-      if (data.parent_email) {
-        sendBtn.disabled = false;
-        sendBtn.removeAttribute('title');
-      } else {
-        sendBtn.disabled = true;
-        sendBtn.title = 'Add an email address first, then Save';
-      }
-    }
+    const sendBtn = document.getElementById(`send-${id}`);
+    if (sendBtn) { sendBtn.disabled = !data.parent_email; }
     cancelRow('parent', id);
     showToast('Parent saved');
-  } else {
-    showToast(json.error || 'Save failed', false);
-  }
+  } else { showToast(json.error || 'Save failed', false); }
 }
 
-// ── File picker ──────────────────────────────────────────────────
+// ── File picker / drag-drop ──────────────────────────────────────
 
 document.getElementById('teamSheetFile').addEventListener('change', function() {
-  const file = this.files[0];
-  if (!file) return;
+  const file = this.files[0]; if (!file) return;
   document.getElementById('fileChosen').textContent = '📎 ' + file.name;
   document.getElementById('fileChosen').style.display = 'block';
   document.getElementById('uploadBtn').style.display = 'inline-block';
 });
 
-// Drag and drop
 const zone = document.getElementById('uploadZone');
 zone.addEventListener('dragover', e => { e.preventDefault(); zone.classList.add('drag-over'); });
 zone.addEventListener('dragleave', () => zone.classList.remove('drag-over'));
 zone.addEventListener('drop', e => {
-  e.preventDefault();
-  zone.classList.remove('drag-over');
-  const file = e.dataTransfer.files[0];
-  if (!file) return;
+  e.preventDefault(); zone.classList.remove('drag-over');
+  const file = e.dataTransfer.files[0]; if (!file) return;
   const input = document.getElementById('teamSheetFile');
-  const dt = new DataTransfer();
-  dt.items.add(file);
-  input.files = dt.files;
+  const dt = new DataTransfer(); dt.items.add(file); input.files = dt.files;
   input.dispatchEvent(new Event('change'));
 });
 
-// Upload spinner
 document.getElementById('uploadForm').addEventListener('submit', function() {
-  const btn = document.getElementById('uploadBtn');
-  btn.disabled = true;
-  btn.innerHTML = '<span style="display:inline-block;width:14px;height:14px;border:2px solid rgba(255,255,255,.4);border-top-color:white;border-radius:50%;animation:spin .7s linear infinite;vertical-align:middle;margin-right:6px;"></span> Parsing…';
+  const btn = document.getElementById('uploadBtn'); btn.disabled = true;
+  btn.innerHTML = '⏳ Parsing…';
 });
 
 // ── Copy magic link ──────────────────────────────────────────────
 
 function copyLink(url, el) {
   navigator.clipboard.writeText(url).then(() => {
-    const orig = el.textContent;
-    el.textContent = 'Copied!';
+    const orig = el.textContent; el.textContent = 'Copied!';
     setTimeout(() => { el.textContent = orig; }, 1500);
   });
 }
@@ -518,33 +532,21 @@ function copyLink(url, el) {
 // ── Send magic link email ────────────────────────────────────────
 
 async function sendLink(parentId, btn) {
-  btn.disabled = true;
-  btn.textContent = '⏳ Sending…';
+  btn.disabled = true; btn.textContent = '⏳ Sending…';
   try {
     const res = await fetch(`/squad/team/parents/${parentId}/send-link`, { method: 'POST' });
     const data = await res.json();
-    if (res.ok && data.ok) {
-      btn.textContent = '✅ Sent!';
-      showToast('Magic link sent!');
-    } else {
-      btn.textContent = '❌ Failed';
-      btn.disabled = false;
-      showToast(data.error || 'Send failed', false);
-    }
-  } catch (e) {
-    btn.textContent = '❌ Error';
-    btn.disabled = false;
-  }
+    if (res.ok && data.ok) { btn.textContent = '✅ Sent!'; showToast('Magic link sent!'); }
+    else { btn.textContent = '❌ Failed'; btn.disabled = false; showToast(data.error || 'Send failed', false); }
+  } catch (e) { btn.textContent = '❌ Error'; btn.disabled = false; }
 }
 
 // ── Toast ────────────────────────────────────────────────────────
 
 function showToast(msg, ok = true) {
   const t = document.getElementById('toast');
-  t.textContent = msg;
-  t.style.background = ok ? '#15803d' : '#dc2626';
-  t.style.display = 'block';
-  setTimeout(() => { t.style.display = 'none'; }, 2500);
+  t.textContent = msg; t.style.background = ok ? '#15803d' : '#dc2626';
+  t.style.display = 'block'; setTimeout(() => { t.style.display = 'none'; }, 2500);
 }
 </script>
 </body>
