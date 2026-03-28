@@ -288,13 +288,24 @@
     <!-- LEFT COLUMN -->
     <div>
 
-      <!-- Upcoming Events -->
+      <!-- Events Card (Upcoming / Past tabs) -->
       <div class="card" style="margin-bottom:20px;">
         <div class="card-header">
-          <span class="card-title">📅 Upcoming Events</span>
+          <div style="display:flex;gap:6px;align-items:center;">
+            <button id="tab-upcoming" onclick="switchTab('upcoming')"
+              style="background:#166534;color:white;border:none;border-radius:6px;padding:4px 12px;font-size:13px;font-weight:600;cursor:pointer;">
+              📅 Upcoming
+            </button>
+            <button id="tab-past" onclick="switchTab('past')"
+              style="background:none;color:#6b7280;border:1px solid #d1d5db;border-radius:6px;padding:4px 12px;font-size:13px;font-weight:600;cursor:pointer;">
+              🕓 Past{% if past_events %} ({{ past_events|length }}){% endif %}
+            </button>
+          </div>
           <a href="/squad/inbox/paste" class="card-action">+ Add</a>
         </div>
-        <div class="card-body">
+
+        <!-- Upcoming -->
+        <div id="panel-upcoming" class="card-body">
           {% if upcoming_events %}
             {% for ev in upcoming_events %}
             {% set parts = ev.event_date.split('-') %}
@@ -317,9 +328,7 @@
                   {% if ev.event_time %}{{ ev.event_time[:5] }} · {% endif %}
                   {% if ev.venue %}{{ ev.venue }}{% else %}Venue TBD{% endif %}
                 </div>
-                <span class="event-type-badge badge-{{ ev.event_type or 'other' }}">
-                  {{ ev.event_type or 'event' }}
-                </span>
+                <span class="event-type-badge badge-{{ ev.event_type or 'other' }}">{{ ev.event_type or 'event' }}</span>
               </div>
               <form method="POST" action="/squad/events/{{ ev.id }}/delete"
                     onsubmit="return confirm('Remove this event?')">
@@ -335,52 +344,56 @@
             </div>
           {% endif %}
         </div>
-      </div>
 
-      <!-- Past Events -->
-      {% if past_events %}
-      <div class="card" style="margin-top:16px;">
-        <div class="card-header" style="cursor:pointer;user-select:none;"
-             onclick="this.nextElementSibling.style.display=this.nextElementSibling.style.display==='none'?'block':'none';
-                      this.querySelector('.toggle-icon').textContent=this.nextElementSibling.style.display==='none'?'▶':'▼'">
-          <span class="card-title" style="color:#6b7280;">🕓 Past Events ({{ past_events|length }})</span>
-          <span class="toggle-icon" style="color:#9ca3af;font-size:12px;">▶</span>
-        </div>
-        <div class="card-body" style="display:none;">
-          {% for ev in past_events %}
-          {% set parts = ev.event_date.split('-') %}
-          {% set months = ['','Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'] %}
-          <div class="event-item" style="opacity:0.6;">
-            <div class="event-date-block" style="color:#6b7280;">
-              <span class="dow" style="color:#9ca3af;">{{ ev.day_short or '' }}</span>
-              <span class="day" style="color:#6b7280;">{{ parts[2] | int }}</span>
-              <span class="mon" style="color:#9ca3af;">{{ months[parts[1] | int] }}</span>
-            </div>
-            <div class="event-info">
-              <div class="event-title" style="color:#6b7280;">
-                {% if ev.opponent %}
-                  {% if ev.is_home %}vs {{ ev.opponent }}{% else %}@ {{ ev.opponent }}{% endif %}
-                {% else %}
-                  {{ ev.event_type | title if ev.event_type else 'Event' }}
-                {% endif %}
+        <!-- Past -->
+        <div id="panel-past" class="card-body" style="display:none;">
+          {% if past_events %}
+            {% for ev in past_events %}
+            {% set parts = ev.event_date.split('-') %}
+            {% set months = ['','Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'] %}
+            <div class="event-item" style="opacity:0.65;">
+              <div class="event-date-block">
+                <span class="dow" style="color:#9ca3af;">{{ ev.day_short or '' }}</span>
+                <span class="day" style="color:#6b7280;">{{ parts[2] | int }}</span>
+                <span class="mon" style="color:#9ca3af;">{{ months[parts[1] | int] }}</span>
               </div>
-              <div class="event-meta">
-                {% if ev.event_time %}{{ ev.event_time[:5] }} · {% endif %}
-                {% if ev.venue %}{{ ev.venue }}{% else %}Venue TBD{% endif %}
+              <div class="event-info">
+                <div class="event-title" style="color:#6b7280;">
+                  {% if ev.opponent %}
+                    {% if ev.is_home %}vs {{ ev.opponent }}{% else %}@ {{ ev.opponent }}{% endif %}
+                  {% else %}
+                    {{ ev.event_type | title if ev.event_type else 'Event' }}
+                  {% endif %}
+                </div>
+                <div class="event-meta">
+                  {% if ev.event_time %}{{ ev.event_time[:5] }} · {% endif %}
+                  {% if ev.venue %}{{ ev.venue }}{% else %}Venue TBD{% endif %}
+                </div>
+                <span class="event-type-badge badge-{{ ev.event_type or 'other' }}" style="opacity:0.6;">{{ ev.event_type or 'event' }}</span>
               </div>
-              <span class="event-type-badge badge-{{ ev.event_type or 'other' }}" style="opacity:0.6;">
-                {{ ev.event_type or 'event' }}
-              </span>
+              <form method="POST" action="/squad/events/{{ ev.id }}/delete"
+                    onsubmit="return confirm('Remove this event?')">
+                <button type="submit" class="event-delete" title="Remove event">✕</button>
+              </form>
             </div>
-            <form method="POST" action="/squad/events/{{ ev.id }}/delete"
-                  onsubmit="return confirm('Remove this event?')">
-              <button type="submit" class="event-delete" title="Remove event">✕</button>
-            </form>
-          </div>
-          {% endfor %}
+            {% endfor %}
+          {% else %}
+            <div class="empty"><span class="empty-icon">🕓</span>No past events recorded.</div>
+          {% endif %}
         </div>
       </div>
-      {% endif %}
+      <script>
+      function switchTab(tab) {
+        document.getElementById('panel-upcoming').style.display = tab==='upcoming' ? 'block' : 'none';
+        document.getElementById('panel-past').style.display    = tab==='past'     ? 'block' : 'none';
+        document.getElementById('tab-upcoming').style.background = tab==='upcoming' ? '#166534' : 'none';
+        document.getElementById('tab-upcoming').style.color      = tab==='upcoming' ? 'white'   : '#6b7280';
+        document.getElementById('tab-upcoming').style.border     = tab==='upcoming' ? 'none'    : '1px solid #d1d5db';
+        document.getElementById('tab-past').style.background = tab==='past' ? '#166534' : 'none';
+        document.getElementById('tab-past').style.color      = tab==='past' ? 'white'   : '#6b7280';
+        document.getElementById('tab-past').style.border     = tab==='past' ? 'none'    : '1px solid #d1d5db';
+      }
+      </script>
 
       <!-- Recent Inbox -->
       {% if recent_inbox %}
