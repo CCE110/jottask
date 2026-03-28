@@ -330,6 +330,22 @@ def paste_inbox():
     return redirect(url_for('squad.inbox'))
 
 
+# ── Events ────────────────────────────────────────────────────────────────────
+
+@squad_bp.route('/squad/events/<event_id>/delete', methods=['POST'])
+@login_required
+def delete_event(event_id):
+    user_id = session.get('user_id')
+    squad = _get_squad_for_user(user_id)
+    if not squad:
+        return redirect(url_for('squad.dashboard'))
+    # Verify event belongs to this squad before deleting
+    result = _db().table('squad_events').select('id, squad_id').eq('id', event_id).maybe_single().execute()
+    if result.data and result.data['squad_id'] == squad['id']:
+        _db().table('squad_events').delete().eq('id', event_id).execute()
+    return redirect(url_for('squad.dashboard'))
+
+
 # ── Manager: Team Roster ──────────────────────────────────────────────────────
 
 @squad_bp.route('/squad/rename', methods=['POST'])
