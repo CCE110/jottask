@@ -320,13 +320,19 @@
                 <div class="event-title">
                   {% if ev.opponent %}
                     {% if ev.is_home %}vs {{ ev.opponent }}{% else %}@ {{ ev.opponent }}{% endif %}
+                  {% elif ev.event_type == 'training' %}
+                    {{ squad.name }} Training
+                  {% elif ev.event_type == 'other' %}
+                    {{ ev.notes or ev.venue or 'Event' }}
                   {% else %}
                     {{ ev.event_type | title if ev.event_type else 'Event' }}
                   {% endif %}
                 </div>
                 <div class="event-meta">
-                  {% if ev.event_time %}{{ ev.event_time[:5] }} · {% endif %}
-                  {% if ev.venue %}{{ ev.venue }}{% else %}Venue TBD{% endif %}
+                  {% if ev.event_time %}{{ ev.event_time[:5] }}{% endif %}
+                  {% if ev.event_time and ev.venue %} · {% endif %}
+                  {% if ev.venue %}{{ ev.venue }}{% endif %}
+                  {% if not ev.event_time and not ev.venue %}Venue TBD{% endif %}
                 </div>
                 <span class="event-type-badge badge-{{ ev.event_type or 'other' }}">{{ ev.event_type or 'event' }}</span>
               </div>
@@ -361,13 +367,19 @@
                 <div class="event-title" style="color:#6b7280;">
                   {% if ev.opponent %}
                     {% if ev.is_home %}vs {{ ev.opponent }}{% else %}@ {{ ev.opponent }}{% endif %}
+                  {% elif ev.event_type == 'training' %}
+                    {{ squad.name }} Training
+                  {% elif ev.event_type == 'other' %}
+                    {{ ev.notes or ev.venue or 'Event' }}
                   {% else %}
                     {{ ev.event_type | title if ev.event_type else 'Event' }}
                   {% endif %}
                 </div>
                 <div class="event-meta">
-                  {% if ev.event_time %}{{ ev.event_time[:5] }} · {% endif %}
-                  {% if ev.venue %}{{ ev.venue }}{% else %}Venue TBD{% endif %}
+                  {% if ev.event_time %}{{ ev.event_time[:5] }}{% endif %}
+                  {% if ev.event_time and ev.venue %} · {% endif %}
+                  {% if ev.venue %}{{ ev.venue }}{% endif %}
+                  {% if not ev.event_time and not ev.venue %}Venue TBD{% endif %}
                 </div>
                 <span class="event-type-badge badge-{{ ev.event_type or 'other' }}" style="opacity:0.6;">{{ ev.event_type or 'event' }}</span>
               </div>
