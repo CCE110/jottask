@@ -59,7 +59,8 @@ Return this exact JSON structure:
       "opponent": "opponent team name or null",
       "venue": "full venue name/address or null",
       "is_home": true or false or null,
-      "type": "game" | "training" | "cup" | "other"
+      "type": "game" | "training" | "cup" | "other",
+      "notes": "for 'other' type: brief description of what this event is (e.g. 'Presentation Night', 'Photo Day', 'Fundraiser'); null for games and training"
     }
   ],
   "cancellations": [
@@ -186,7 +187,8 @@ Return this exact JSON structure:
       "venue": "venue name or null",
       "is_home": true | false | null,
       "type": "game" | "training" | "cup" | "friendly" | "other",
-      "round": "round number or description or null"
+      "round": "round number or description or null",
+      "notes": "for 'other' type: brief description of what this event is (e.g. 'Presentation Night', 'Photo Day'); null for games and training"
     }
   ],
   "proposed_actions": [
@@ -239,7 +241,8 @@ Return ONLY valid JSON — no markdown fences, no explanation:
       "opponent": "string or null",
       "venue": "string or null",
       "is_home": true | false | null,
-      "type": "game" | "training" | "other"
+      "type": "game" | "training" | "other",
+      "notes": "for 'other' type: brief description of what this event is; null for games and training"
     }
   ],
   "cancellations": [],

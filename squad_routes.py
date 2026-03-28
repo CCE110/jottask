@@ -137,10 +137,15 @@ def dashboard():
             .execute()
         players = pl.data or []
 
-    # Live iCal subscription URL
+    # Live iCal subscription URL — auto-generate token if missing
     webcal_url = None
     ical_https_url = None
-    if squad and squad.get('cal_token'):
+    if squad:
+        if not squad.get('cal_token'):
+            import secrets
+            token = secrets.token_hex(16)
+            _db().table('squads').update({'cal_token': token}).eq('id', squad['id']).execute()
+            squad['cal_token'] = token
         base = os.environ.get('APP_URL', 'https://www.jottask.app').rstrip('/')
         ical_https_url = f"{base}/squad/cal/{squad['cal_token']}.ics"
         webcal_url = ical_https_url.replace('https://', 'webcal://')
@@ -289,6 +294,8 @@ def approve_inbox_item(item_id):
                 'venue':           fixture.get('venue'),
                 'is_home':         fixture.get('is_home'),
                 'event_type':      fixture.get('type', 'game'),
+                'notes':           fixture.get('notes'),
+                'round':           fixture.get('round'),
                 'source_inbox_id': item_id,
                 'created_at':      datetime.now(pytz.UTC).isoformat(),
             }).execute()
