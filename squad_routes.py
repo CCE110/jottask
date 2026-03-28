@@ -87,6 +87,28 @@ def dashboard():
             ev['day_name'] = ''
             ev['day_short'] = ''
 
+    # Past events (most recent first, last 20)
+    past_events = []
+    if squad_id:
+        pe = _db().table('squad_events') \
+            .select('*') \
+            .eq('squad_id', squad_id) \
+            .eq('is_cancelled', False) \
+            .lt('event_date', today) \
+            .order('event_date', desc=True) \
+            .order('event_time', desc=True) \
+            .limit(20) \
+            .execute()
+        past_events = pe.data or []
+    for ev in past_events:
+        try:
+            d = date.fromisoformat(str(ev['event_date'])[:10])
+            ev['day_name'] = d.strftime('%A')
+            ev['day_short'] = d.strftime('%a')
+        except Exception:
+            ev['day_name'] = ''
+            ev['day_short'] = ''
+
     # Pending inbox count
     inbox_q = _db().table('squad_email_inbox').select('id', count='exact').eq('status', 'pending')
     if squad_id:
@@ -118,6 +140,7 @@ def dashboard():
     return render_template('squad/dashboard.html',
         squad=squad,
         upcoming_events=upcoming_events,
+        past_events=past_events,
         pending_count=pending_count,
         recent_inbox=recent_inbox,
         players=players,

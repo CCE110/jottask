@@ -337,6 +337,51 @@
         </div>
       </div>
 
+      <!-- Past Events -->
+      {% if past_events %}
+      <div class="card" style="margin-top:16px;">
+        <div class="card-header" style="cursor:pointer;user-select:none;"
+             onclick="this.nextElementSibling.style.display=this.nextElementSibling.style.display==='none'?'block':'none';
+                      this.querySelector('.toggle-icon').textContent=this.nextElementSibling.style.display==='none'?'▶':'▼'">
+          <span class="card-title" style="color:#6b7280;">🕓 Past Events ({{ past_events|length }})</span>
+          <span class="toggle-icon" style="color:#9ca3af;font-size:12px;">▶</span>
+        </div>
+        <div class="card-body" style="display:none;">
+          {% for ev in past_events %}
+          {% set parts = ev.event_date.split('-') %}
+          {% set months = ['','Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'] %}
+          <div class="event-item" style="opacity:0.6;">
+            <div class="event-date-block" style="color:#6b7280;">
+              <span class="dow" style="color:#9ca3af;">{{ ev.day_short or '' }}</span>
+              <span class="day" style="color:#6b7280;">{{ parts[2] | int }}</span>
+              <span class="mon" style="color:#9ca3af;">{{ months[parts[1] | int] }}</span>
+            </div>
+            <div class="event-info">
+              <div class="event-title" style="color:#6b7280;">
+                {% if ev.opponent %}
+                  {% if ev.is_home %}vs {{ ev.opponent }}{% else %}@ {{ ev.opponent }}{% endif %}
+                {% else %}
+                  {{ ev.event_type | title if ev.event_type else 'Event' }}
+                {% endif %}
+              </div>
+              <div class="event-meta">
+                {% if ev.event_time %}{{ ev.event_time[:5] }} · {% endif %}
+                {% if ev.venue %}{{ ev.venue }}{% else %}Venue TBD{% endif %}
+              </div>
+              <span class="event-type-badge badge-{{ ev.event_type or 'other' }}" style="opacity:0.6;">
+                {{ ev.event_type or 'event' }}
+              </span>
+            </div>
+            <form method="POST" action="/squad/events/{{ ev.id }}/delete"
+                  onsubmit="return confirm('Remove this event?')">
+              <button type="submit" class="event-delete" title="Remove event">✕</button>
+            </form>
+          </div>
+          {% endfor %}
+        </div>
+      </div>
+      {% endif %}
+
       <!-- Recent Inbox -->
       {% if recent_inbox %}
       <div class="card">
