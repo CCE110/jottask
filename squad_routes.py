@@ -3,6 +3,7 @@ Squad Routes
 Flask blueprint for Squad — AI-native youth soccer team management.
 
 Blueprint prefix: none (routes use explicit /squad/ and /p/ prefixes)
+Routes: /squad/, /squad/inbox, /squad/inbox/paste, /squad/team, /p/<token>
 """
 
 import json
