@@ -448,12 +448,23 @@
              text-decoration:none;font-weight:600;font-size:14px;">
             👥 Team Roster
           </a>
-          {% if squad and squad.cal_token %}
-          <a href="/squad/cal/{{ squad.cal_token }}.ics" style="display:block;background:#f0fdf4;
-             color:#15803d;border:1px solid #bbf7d0;text-align:center;padding:11px;
-             border-radius:9px;text-decoration:none;font-weight:600;font-size:14px;">
-            📆 Download Calendar (.ics)
+          {% if webcal_url %}
+          <a href="{{ webcal_url }}" style="display:block;background:#0ea5e9;color:white;
+             text-align:center;padding:11px;border-radius:9px;text-decoration:none;
+             font-weight:600;font-size:14px;">
+            📲 Subscribe on iPhone / iPad
           </a>
+          <div style="display:flex;gap:6px;align-items:center;">
+            <input id="ical-url" type="text" readonly value="{{ ical_https_url }}"
+               style="flex:1;font-size:11px;padding:7px 9px;border:1px solid #d1d5db;
+                      border-radius:7px;background:#f9fafb;color:#6b7280;min-width:0;">
+            <button onclick="navigator.clipboard.writeText('{{ ical_https_url }}');this.textContent='✓ Copied!';setTimeout(()=>this.textContent='Copy',2000);"
+               style="white-space:nowrap;padding:7px 11px;background:#f0fdf4;color:#15803d;
+                      border:1px solid #bbf7d0;border-radius:7px;font-size:12px;
+                      font-weight:600;cursor:pointer;">
+              Copy
+            </button>
+          </div>
           {% endif %}
         </div>
       </div>

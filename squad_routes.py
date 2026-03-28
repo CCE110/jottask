@@ -137,6 +137,14 @@ def dashboard():
             .execute()
         players = pl.data or []
 
+    # Live iCal subscription URL
+    webcal_url = None
+    ical_https_url = None
+    if squad and squad.get('cal_token'):
+        base = os.environ.get('APP_URL', 'https://www.jottask.app').rstrip('/')
+        ical_https_url = f"{base}/squad/cal/{squad['cal_token']}.ics"
+        webcal_url = ical_https_url.replace('https://', 'webcal://')
+
     return render_template('squad/dashboard.html',
         squad=squad,
         upcoming_events=upcoming_events,
@@ -145,6 +153,8 @@ def dashboard():
         recent_inbox=recent_inbox,
         players=players,
         now=now,
+        webcal_url=webcal_url,
+        ical_https_url=ical_https_url,
     )
 
 
