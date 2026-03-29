@@ -601,7 +601,7 @@ async function dismissItem(id, btn) {
   <a href="/squad/inbox/paste" class="tab-add" aria-label="Add event">+</a>
   <a href="/squad/inbox" class="active">
     <span class="tab-icon">📬</span>Inbox
-    {% if pending_count > 0 %}<span class="sq-tab-badge">{{ pending_count }}</span>{% endif %}
+    {% if pending_count is defined and pending_count > 0 %}<span class="sq-tab-badge">{{ pending_count }}</span>{% endif %}
   </a>
   <a href="/squad/team#parents">
     <span class="tab-icon">👨‍👩‍👧</span>Parents
