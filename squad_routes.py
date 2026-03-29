@@ -25,12 +25,26 @@ AEST = pytz.timezone('Australia/Brisbane')
 # ── Lazy Supabase init ────────────────────────────────────────────────────────
 
 _supabase = None
+_supabase_admin = None  # service-role client (bypasses RLS) — used for public routes
 
 def _db() -> Client:
     global _supabase
     if _supabase is None:
         _supabase = create_client(os.getenv('SUPABASE_URL'), os.getenv('SUPABASE_KEY'))
     return _supabase
+
+
+def _admin_db() -> Client:
+    """Service-role Supabase client — bypasses RLS for public unauthenticated routes.
+
+    Prefers SUPABASE_SERVICE_KEY if set; falls back to SUPABASE_KEY.
+    If SUPABASE_KEY is already the service-role key this is a no-op.
+    """
+    global _supabase_admin
+    if _supabase_admin is None:
+        key = os.getenv('SUPABASE_SERVICE_KEY') or os.getenv('SUPABASE_KEY')
+        _supabase_admin = create_client(os.getenv('SUPABASE_URL'), key)
+    return _supabase_admin
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -853,25 +867,41 @@ def parent_rsvp(token):
 
 @squad_bp.route('/squad/cal/<token>.ics')
 def squad_cal(token):
-    """Live iCal feed — subscribable in Apple/Google/Outlook Calendar."""
-    squad_result = _db().table('squads') \
-        .select('*') \
-        .eq('cal_token', token) \
-        .maybe_single() \
-        .execute()
+    """Live iCal feed — subscribable in Apple/Google/Outlook Calendar.
+
+    Public endpoint (no login required). Uses _admin_db() which prefers
+    SUPABASE_SERVICE_KEY so RLS doesn't block the unauthenticated lookup.
+    Migration 026 also adds public SELECT policies as a belt-and-braces fix.
+    """
+    import logging
+    try:
+        squad_result = _admin_db().table('squads') \
+            .select('*') \
+            .eq('cal_token', token) \
+            .maybe_single() \
+            .execute()
+    except Exception as e:
+        logging.error(f'[squad_cal] squads lookup error for token {token!r}: {e}')
+        return 'Calendar unavailable', 500
 
     if not squad_result.data:
+        logging.warning(f'[squad_cal] no squad found for cal_token {token!r}')
         return 'Calendar not found', 404
 
     squad    = squad_result.data
     squad_id = squad['id']
 
-    events_result = _db().table('squad_events') \
-        .select('*') \
-        .eq('squad_id', squad_id) \
-        .order('event_date') \
-        .execute()
-    events = events_result.data or []
+    try:
+        events_result = _admin_db().table('squad_events') \
+            .select('*') \
+            .eq('squad_id', squad_id) \
+            .eq('is_cancelled', False) \
+            .order('event_date') \
+            .execute()
+        events = events_result.data or []
+    except Exception as e:
+        logging.error(f'[squad_cal] events lookup error for squad {squad_id}: {e}')
+        events = []
 
     from squad_cal import generate_ical
     ical_bytes = generate_ical(squad, events)
