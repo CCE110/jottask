@@ -365,21 +365,67 @@ def paste_inbox():
 
     user_id = session.get('user_id')
     squad = _get_squad_for_user(user_id)
+    squad_id = squad['id'] if squad else None
 
-    record = {
+    fixtures = parsed.get('fixtures', [])
+    cancellations = parsed.get('cancellations', [])
+
+    # ── Fast path: auto-save when the paste is simple (1–3 events, no
+    #    cancellations, every fixture has a date). No inbox step needed.
+    simple = (
+        1 <= len(fixtures) <= 3
+        and not cancellations
+        and all(f.get('date') for f in fixtures)
+    )
+
+    if simple and squad_id:
+        saved = []
+        for fixture in fixtures:
+            _db().table('squad_events').insert({
+                'id':         str(uuid.uuid4()),
+                'squad_id':   squad_id,
+                'event_date': fixture['date'],
+                'event_time': fixture.get('time'),
+                'opponent':   fixture.get('opponent'),
+                'venue':      fixture.get('venue'),
+                'is_home':    fixture.get('is_home'),
+                'event_type': fixture.get('type', 'game'),
+                'notes':      fixture.get('notes'),
+                'round':      fixture.get('round'),
+                'created_at': datetime.now(pytz.UTC).isoformat(),
+            }).execute()
+            saved.append(fixture['date'])
+        # Still log to inbox (status=approved) so there's an audit trail
+        _db().table('squad_email_inbox').insert({
+            'id':            str(uuid.uuid4()),
+            'squad_id':      squad_id,
+            'email_from':    f'pasted:{source}',
+            'email_subject': f'Pasted {source} — {datetime.now(AEST).strftime("%d %b %Y %H:%M")}',
+            'email_body':    text[:10000],
+            'email_date':    datetime.now(pytz.UTC).isoformat(),
+            'email_hash':    str(uuid.uuid4()),
+            'email_type':    parsed.get('email_type', 'club_update'),
+            'parsed_data':   parsed,
+            'status':        'approved',
+            'created_at':    datetime.now(pytz.UTC).isoformat(),
+        }).execute()
+        return redirect(url_for('squad.dashboard'))
+
+    # ── Complex paste (many fixtures, cancellations, or missing dates) ──
+    # Send to inbox for manual review before committing.
+    _db().table('squad_email_inbox').insert({
         'id':            str(uuid.uuid4()),
-        'squad_id':      squad['id'] if squad else None,
+        'squad_id':      squad_id,
         'email_from':    f'pasted:{source}',
         'email_subject': f'Pasted {source} — {datetime.now(AEST).strftime("%d %b %Y %H:%M")}',
         'email_body':    text[:10000],
         'email_date':    datetime.now(pytz.UTC).isoformat(),
-        'email_hash':    str(uuid.uuid4()),   # Always unique for pasted items
+        'email_hash':    str(uuid.uuid4()),
         'email_type':    parsed.get('email_type', 'club_update'),
         'parsed_data':   parsed,
         'status':        'pending',
         'created_at':    datetime.now(pytz.UTC).isoformat(),
-    }
-    _db().table('squad_email_inbox').insert(record).execute()
+    }).execute()
 
     return redirect(url_for('squad.inbox'))
 
