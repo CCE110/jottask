@@ -275,9 +275,10 @@ def parse_pasted_text(anthropic: Anthropic, source: str, text: str) -> dict:
 
     Returns structured dict.
     """
-    from datetime import date
+    from datetime import datetime
     import pytz
-    today_str = date.today().isoformat()  # e.g. "2026-03-29"
+    aest = pytz.timezone('Australia/Brisbane')
+    today_str = datetime.now(aest).strftime('%Y-%m-%d')  # today in AEST
 
     response = anthropic.messages.create(
         model='claude-opus-4-6',
@@ -286,7 +287,7 @@ def parse_pasted_text(anthropic: Anthropic, source: str, text: str) -> dict:
         messages=[{
             'role': 'user',
             'content': (
-                f"Today's date is {today_str}. "
+                f"Today's date is {today_str} (AEST). "
                 f"All dates must be on or after {today_str}.\n\n"
                 f"Source: {source}\n\nMessage:\n{text[:6000]}"
             )
