@@ -11,7 +11,7 @@ import uuid as uuid_module
 from datetime import date, datetime, timedelta
 
 import pytz
-from icalendar import Calendar, Event, vText
+from icalendar import Alarm, Calendar, Event, vText
 
 AEST = pytz.timezone('Australia/Brisbane')
 
@@ -129,6 +129,15 @@ def generate_ical(squad: dict, events: list) -> bytes:
         # Mark cancelled events
         if row.get('is_cancelled'):
             event.add('status', 'CANCELLED')
+
+        # ── Alarms ───────────────────────────────────────────────────────────
+        if not row.get('is_cancelled'):
+            for trigger in ('-P1D', '-PT2H'):
+                alarm = Alarm()
+                alarm.add('action', 'DISPLAY')
+                alarm.add('description', summary)
+                alarm.add('trigger', timedelta(days=-1) if trigger == '-P1D' else timedelta(hours=-2))
+                event.add_component(alarm)
 
         cal.add_component(event)
 
