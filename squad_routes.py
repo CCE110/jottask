@@ -432,6 +432,33 @@ def paste_inbox():
 
 # ── Events ────────────────────────────────────────────────────────────────────
 
+@squad_bp.route('/squad/events/<event_id>/update', methods=['POST'])
+@login_required
+def update_event(event_id):
+    user_id = session.get('user_id')
+    squad = _get_squad_for_user(user_id)
+    if not squad:
+        return jsonify({'error': 'No squad'}), 403
+
+    # Verify event belongs to this squad
+    check = _db().table('squad_events').select('id, squad_id') \
+        .eq('id', event_id).maybe_single().execute()
+    if not check.data or check.data['squad_id'] != squad['id']:
+        return jsonify({'error': 'Not found'}), 404
+
+    data = request.get_json(silent=True) or {}
+    update = {}
+    for field in ('event_date', 'event_time', 'opponent', 'venue', 'is_home', 'event_type', 'notes', 'round'):
+        if field in data:
+            update[field] = data[field] or None
+
+    if not update:
+        return jsonify({'error': 'Nothing to update'}), 400
+
+    _db().table('squad_events').update(update).eq('id', event_id).execute()
+    return jsonify({'ok': True})
+
+
 @squad_bp.route('/squad/events/<event_id>/delete', methods=['POST'])
 @login_required
 def delete_event(event_id):

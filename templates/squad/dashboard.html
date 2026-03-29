@@ -89,18 +89,62 @@
 
   /* ── Event list ───────────────────────────────────────── */
   .event-item { position: relative; }
-  .event-delete {
-    position: absolute; top: 50%; right: 0; transform: translateY(-50%);
-    background: none; border: none; cursor: pointer;
-    color: #d1d5db; font-size: 16px; padding: 6px 8px; border-radius: 6px;
-    line-height: 1; opacity: 0; transition: opacity .15s, color .15s;
+  .event-actions {
+    display: flex; flex-direction: column; gap: 4px; align-items: center;
+    opacity: 0; transition: opacity .15s;
   }
-  .event-item:hover .event-delete { opacity: 1; }
+  .event-item:hover .event-actions { opacity: 1; }
+  .event-edit, .event-delete {
+    background: none; border: none; cursor: pointer;
+    font-size: 15px; padding: 5px 7px; border-radius: 6px; line-height: 1;
+  }
+  .event-edit  { color: #9ca3af; }
+  .event-edit:hover  { color: #15803d; background: #f0fdf4; }
+  .event-delete { color: #d1d5db; }
   .event-delete:hover { color: #ef4444; background: #fef2f2; }
   .event-item {
     display: flex; align-items: flex-start; gap: 14px;
     padding: 12px 0; border-bottom: 1px solid #f0fdf4;
   }
+
+  /* ── Edit bottom sheet ─────────────────────────────────── */
+  .edit-sheet-backdrop {
+    display: none; position: fixed; inset: 0;
+    background: rgba(0,0,0,.4); z-index: 10000;
+  }
+  .edit-sheet-backdrop.open { display: block; }
+  .edit-sheet {
+    position: fixed; left: 0; right: 0; bottom: 0;
+    background: white; border-radius: 18px 18px 0 0;
+    padding: 20px 20px calc(20px + env(safe-area-inset-bottom));
+    z-index: 10001; max-height: 90vh; overflow-y: auto;
+    transform: translateY(100%); transition: transform .3s ease;
+  }
+  .edit-sheet.open { transform: translateY(0); }
+  .edit-sheet-handle {
+    width: 36px; height: 4px; background: #d1d5db;
+    border-radius: 2px; margin: 0 auto 16px;
+  }
+  .edit-sheet h3 { font-size: 17px; font-weight: 700; color: #15803d; margin-bottom: 16px; }
+  .edit-field { margin-bottom: 12px; }
+  .edit-field label { display: block; font-size: 11px; font-weight: 700;
+                      color: #6b7280; text-transform: uppercase;
+                      letter-spacing: .4px; margin-bottom: 4px; }
+  .edit-field input, .edit-field select {
+    width: 100%; padding: 10px 12px; border: 1.5px solid #d1fae5;
+    border-radius: 9px; font-size: 15px; color: #1a2e1a;
+    background: white; -webkit-appearance: none;
+  }
+  .edit-field input:focus, .edit-field select:focus {
+    outline: none; border-color: #15803d; box-shadow: 0 0 0 3px rgba(21,128,61,.12);
+  }
+  .edit-row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  .edit-save {
+    width: 100%; margin-top: 6px; padding: 14px;
+    background: #15803d; color: white; border: none;
+    border-radius: 12px; font-size: 16px; font-weight: 700; cursor: pointer;
+  }
+  .edit-save:active { background: #166534; }
   .event-item:last-child { border-bottom: none; }
   .event-date-block {
     min-width: 56px; text-align: center; background: #dcfce7;
@@ -198,6 +242,7 @@
   /* Event items */
   .event-item { padding: 14px 0 !important; }
   .event-title { font-size: 15px !important; }
+  .event-actions { opacity: 1 !important; }
   .event-delete { opacity: 1 !important; }
 
   /* Player chips */
@@ -423,7 +468,8 @@
                 <span class="day">{{ parts[2] | int }}</span>
                 <span class="mon">{{ months[parts[1] | int] }}</span>
               </div>
-              <div class="event-info">
+              <div class="event-info" style="cursor:pointer"
+                   onclick="openEditSheet('{{ ev.id }}','{{ ev.event_date }}','{{ ev.event_time[:5] if ev.event_time else '' }}','{{ ev.opponent or '' }}','{{ ev.venue or '' }}','{{ 'true' if ev.is_home is sameas true else ('false' if ev.is_home is sameas false else '') }}','{{ ev.event_type or 'game' }}')">
                 <div class="event-title">
                   {% if ev.opponent %}
                     {% if ev.is_home %}vs {{ ev.opponent }}{% else %}@ {{ ev.opponent }}{% endif %}
@@ -443,10 +489,14 @@
                 </div>
                 <span class="event-type-badge badge-{{ ev.event_type or 'other' }}">{{ ev.event_type or 'event' }}</span>
               </div>
-              <form method="POST" action="/squad/events/{{ ev.id }}/delete"
-                    onsubmit="return confirm('Remove this event?')">
-                <button type="submit" class="event-delete" title="Remove event">✕</button>
-              </form>
+              <div class="event-actions">
+                <button class="event-edit" title="Edit event"
+                        onclick="openEditSheet('{{ ev.id }}','{{ ev.event_date }}','{{ ev.event_time[:5] if ev.event_time else '' }}','{{ ev.opponent or '' }}','{{ ev.venue or '' }}','{{ 'true' if ev.is_home is sameas true else ('false' if ev.is_home is sameas false else '') }}','{{ ev.event_type or 'game' }}')">✏️</button>
+                <form method="POST" action="/squad/events/{{ ev.id }}/delete"
+                      onsubmit="return confirm('Remove this event?')">
+                  <button type="submit" class="event-delete" title="Remove event">✕</button>
+                </form>
+              </div>
             </div>
             {% endfor %}
           {% else %}
@@ -617,6 +667,51 @@
   </div>
 </main>
 
+<!-- ── Edit event bottom sheet ────────────────────────────────────────── -->
+<div class="edit-sheet-backdrop" id="editBackdrop" onclick="closeEditSheet()"></div>
+<div class="edit-sheet" id="editSheet">
+  <div class="edit-sheet-handle"></div>
+  <h3>Edit Event</h3>
+  <input type="hidden" id="editEventId">
+  <div class="edit-row">
+    <div class="edit-field">
+      <label>Date</label>
+      <input type="date" id="editDate">
+    </div>
+    <div class="edit-field">
+      <label>Time</label>
+      <input type="time" id="editTime">
+    </div>
+  </div>
+  <div class="edit-field">
+    <label>Type</label>
+    <select id="editType">
+      <option value="game">Game</option>
+      <option value="training">Training</option>
+      <option value="cup">Cup</option>
+      <option value="friendly">Friendly</option>
+      <option value="other">Other</option>
+    </select>
+  </div>
+  <div class="edit-field">
+    <label>Opponent</label>
+    <input type="text" id="editOpponent" placeholder="e.g. Oxley United">
+  </div>
+  <div class="edit-field">
+    <label>Venue</label>
+    <input type="text" id="editVenue" placeholder="e.g. Runcorn Fields">
+  </div>
+  <div class="edit-field">
+    <label>Home / Away</label>
+    <select id="editIsHome">
+      <option value="">Unknown</option>
+      <option value="true">Home</option>
+      <option value="false">Away</option>
+    </select>
+  </div>
+  <button class="edit-save" onclick="saveEvent()">Save Changes</button>
+</div>
+
 <!-- ── iOS bottom tab bar ──────────────────────────────────────────── -->
 <nav class="sq-tab-bar">
   <a href="/squad/" class="active">
@@ -636,6 +731,50 @@
 </nav>
 
 <script>
+function openEditSheet(id, date, time, opponent, venue, isHome, type) {
+  document.getElementById('editEventId').value  = id;
+  document.getElementById('editDate').value     = date;
+  document.getElementById('editTime').value     = time;
+  document.getElementById('editOpponent').value = opponent;
+  document.getElementById('editVenue').value    = venue;
+  document.getElementById('editIsHome').value   = isHome;
+  document.getElementById('editType').value     = type;
+  document.getElementById('editBackdrop').classList.add('open');
+  requestAnimationFrame(() => document.getElementById('editSheet').classList.add('open'));
+}
+
+function closeEditSheet() {
+  document.getElementById('editSheet').classList.remove('open');
+  document.getElementById('editBackdrop').classList.remove('open');
+}
+
+async function saveEvent() {
+  const id = document.getElementById('editEventId').value;
+  const body = {
+    event_date: document.getElementById('editDate').value,
+    event_time: document.getElementById('editTime').value || null,
+    opponent:   document.getElementById('editOpponent').value || null,
+    venue:      document.getElementById('editVenue').value || null,
+    is_home:    document.getElementById('editIsHome').value === 'true' ? true :
+                document.getElementById('editIsHome').value === 'false' ? false : null,
+    event_type: document.getElementById('editType').value,
+  };
+  const btn = document.querySelector('.edit-save');
+  btn.textContent = 'Saving…'; btn.disabled = true;
+  const res = await fetch(`/squad/events/${id}/update`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (res.ok) {
+    closeEditSheet();
+    location.reload();
+  } else {
+    btn.textContent = 'Save Changes'; btn.disabled = false;
+    alert('Save failed — please try again.');
+  }
+}
+
 function startRename() {
   document.getElementById('squad-name-display').style.display = 'none';
   document.getElementById('rename-btn').style.display = 'none';
