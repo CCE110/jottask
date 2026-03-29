@@ -1,7 +1,10 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-<meta charset="UTF-8">
+<meta charset="UTF-8"><meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<link rel="apple-touch-icon" href="/static/squad-icon.png">
+
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>{{ squad_name }} — {{ player_name }}</title>
 <meta name="theme-color" content="#15803d">
@@ -100,6 +103,96 @@
     font-size: 14px; font-weight: 600; display: none; z-index: 9999;
     box-shadow: 0 4px 16px rgba(0,0,0,.25);
   }
+</style>
+
+<style id="squad-mobile">
+@media (max-width: 768px) {
+  /* App shell */
+  body { background: #f0fdf4; -webkit-text-size-adjust: 100%; }
+  
+  /* Slim header on mobile */
+  .header-inner { height: 52px !important; }
+  .header-nav { display: none !important; }
+  .header-right { display: none !important; }
+  .header-logo .wordmark { font-size: 17px !important; }
+  .header-logo .icon { font-size: 22px !important; }
+  
+  /* Full width page, no side padding */
+  .page { padding: 16px 12px 90px 12px !important; }
+  
+  /* Cards full width */
+  .card { border-radius: 12px !important; margin-bottom: 12px; }
+  .card-body { padding: 12px 14px !important; }
+  .card-header { padding: 12px 14px !important; }
+  
+  /* Grid single column */
+  .grid { grid-template-columns: 1fr !important; gap: 0 !important; }
+  
+  /* Touch targets */
+  button, .btn, a.btn, input[type=submit] { min-height: 44px !important; }
+  
+  /* Event items more spacious */
+  .event-item { padding: 14px 0 !important; }
+  .event-title { font-size: 15px !important; }
+  
+  /* Player rows */
+  .player-row { padding: 12px 14px !important; min-height: 52px; }
+  
+  /* Hide delete on mobile - use long press instead */
+  .event-delete { opacity: 1 !important; }
+  
+  /* Forms full width */
+  input, select, textarea { font-size: 16px !important; }
+  
+  /* Table overflow */
+  table { font-size: 13px !important; }
+  .table-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+}
+
+/* Bottom tab bar - always present on mobile */
+.sq-tab-bar {
+  display: none;
+}
+@media (max-width: 768px) {
+  .sq-tab-bar {
+    display: flex;
+    position: fixed;
+    bottom: 0; left: 0; right: 0;
+    background: white;
+    border-top: 1px solid #e5e7eb;
+    padding-bottom: env(safe-area-inset-bottom);
+    z-index: 9999;
+    box-shadow: 0 -2px 10px rgba(0,0,0,.08);
+  }
+  .sq-tab-bar a {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: 8px 0 6px;
+    text-decoration: none;
+    color: #9ca3af;
+    font-size: 10px;
+    font-weight: 500;
+    gap: 3px;
+    min-height: 54px;
+    transition: color .15s;
+  }
+  .sq-tab-bar a.active { color: #15803d; }
+  .sq-tab-bar a .tab-icon { font-size: 22px; line-height: 1; }
+  .sq-tab-bar a.tab-add {
+    color: white;
+    background: #15803d;
+    border-radius: 16px;
+    margin: 6px 8px;
+    padding: 0;
+    min-height: 44px;
+    font-size: 26px;
+    font-weight: 300;
+    flex: 0 0 52px;
+  }
+}
 </style>
 </head>
 <body>

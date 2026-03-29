@@ -34,9 +34,10 @@ def generate_ical(squad: dict, events: list) -> bytes:
     cal.add('version', '2.0')
     cal.add('calscale', 'GREGORIAN')
     cal.add('method', 'PUBLISH')
-    cal.add('x-wr-calname', vText(f'{squad_name} Fixtures'))
+    cal.add('x-wr-calname', vText(f'⚽ {squad_name} Fixtures'))
     cal.add('x-wr-timezone', 'Australia/Brisbane')
-    cal.add('x-wr-caldesc', vText(f'Fixtures and training schedule for {squad_name}'))
+    cal.add('x-wr-caldesc', vText(squad_name))
+    cal.add('x-apple-calendar-color', vText('#15803d'))
     cal.add('refresh-interval;value=duration', 'PT1H')  # Hint clients to refresh hourly
 
     now_utc = datetime.now(pytz.UTC)

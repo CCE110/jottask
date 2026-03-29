@@ -1,7 +1,10 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-<meta charset="UTF-8">
+<meta charset="UTF-8"><meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<link rel="apple-touch-icon" href="/static/squad-icon.png">
+
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Squad — {{ squad.name if squad else 'Dashboard' }}</title>
 <style>
@@ -156,6 +159,110 @@
   .page-header { margin-bottom: 24px; }
   .page-header h1 { font-size: 26px; font-weight: 800; color: #15803d; }
   .page-header p  { font-size: 14px; color: #4b5563; margin-top: 4px; }
+</style>
+
+<style id="squad-mobile">
+@media (max-width: 768px) {
+  /* App shell */
+  body { background: #f0fdf4; -webkit-text-size-adjust: 100%; }
+
+  /* Safe area: push header content below status bar */
+  .header { padding-top: env(safe-area-inset-top); }
+
+  /* Slim 44px header */
+  .header-inner { height: 44px !important; }
+  .header-nav { display: none !important; }
+  .header-right { display: none !important; }
+  .rename-btn { display: none !important; }
+  .header-logo .wordmark { font-size: 16px !important; }
+  .header-logo .icon { font-size: 20px !important; }
+
+  /* Full-width page, pad bottom for tab bar + home bar */
+  .page { padding: 16px 0 calc(72px + env(safe-area-inset-bottom)) !important; }
+
+  /* Full-width cards, no horizontal margin */
+  .card { border-radius: 0 !important; margin-bottom: 8px; box-shadow: none !important;
+          border-top: 1px solid #e5e7eb; border-bottom: 1px solid #e5e7eb; }
+  .card-body { padding: 12px 16px !important; }
+  .card-header { padding: 12px 16px !important; }
+
+  /* Inbox alert full-width */
+  .alert-inbox { border-radius: 0 !important; margin: 0 0 8px !important; }
+
+  /* Grid single column */
+  .grid { grid-template-columns: 1fr !important; gap: 0 !important; }
+
+  /* 44px touch targets */
+  button, .btn, a.btn, input[type=submit] { min-height: 44px !important; }
+
+  /* Event items */
+  .event-item { padding: 14px 0 !important; }
+  .event-title { font-size: 15px !important; }
+  .event-delete { opacity: 1 !important; }
+
+  /* Player chips */
+  .player-grid { grid-template-columns: repeat(auto-fill, minmax(100px, 1fr)) !important; }
+
+  /* Prevent iOS font bump on inputs */
+  input, select, textarea { font-size: 16px !important; }
+
+  /* Tables */
+  table { font-size: 13px !important; }
+  .table-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+
+  /* Page header padding */
+  .page-header { padding: 0 16px; }
+
+  /* Generation form padding */
+  #genTrainingBanner, #genForm { margin-left: 0 !important; margin-right: 0 !important;
+                                  border-radius: 0 !important; }
+}
+
+/* ── Bottom tab bar ── */
+.sq-tab-bar { display: none; }
+
+@media (max-width: 768px) {
+  .sq-tab-bar {
+    display: flex;
+    position: fixed;
+    bottom: 0; left: 0; right: 0;
+    background: rgba(255,255,255,.97);
+    -webkit-backdrop-filter: blur(12px);
+    backdrop-filter: blur(12px);
+    border-top: 1px solid rgba(0,0,0,.1);
+    padding-bottom: env(safe-area-inset-bottom);
+    z-index: 9999;
+    box-shadow: 0 -1px 0 rgba(0,0,0,.08);
+  }
+  .sq-tab-bar a {
+    flex: 1;
+    display: flex; flex-direction: column;
+    align-items: center; justify-content: center;
+    padding: 8px 2px 4px;
+    text-decoration: none;
+    color: #9ca3af;
+    font-size: 10px; font-weight: 500;
+    gap: 3px; min-height: 54px;
+    -webkit-tap-highlight-color: transparent;
+    transition: color .15s;
+  }
+  .sq-tab-bar a.active { color: #15803d; }
+  .sq-tab-bar a .tab-icon { font-size: 24px; line-height: 1; }
+  .sq-tab-bar a.tab-add {
+    color: white; background: #15803d;
+    border-radius: 14px; margin: 7px 6px;
+    padding: 0; min-height: 44px; font-size: 28px; font-weight: 300;
+    flex: 0 0 50px; line-height: 1;
+  }
+  /* Badge on Inbox tab */
+  .sq-tab-badge {
+    position: absolute; top: 6px; right: calc(50% - 20px);
+    background: #ef4444; color: white; border-radius: 999px;
+    font-size: 9px; font-weight: 700; padding: 1px 5px; line-height: 1.4;
+    min-width: 16px; text-align: center;
+  }
+  .sq-tab-bar a { position: relative; }
+}
 </style>
 </head>
 <body>
@@ -509,6 +616,24 @@
     </div>
   </div>
 </main>
+
+<!-- ── iOS bottom tab bar ──────────────────────────────────────────── -->
+<nav class="sq-tab-bar">
+  <a href="/squad/" class="active">
+    <span class="tab-icon">📅</span>Schedule
+  </a>
+  <a href="/squad/team">
+    <span class="tab-icon">👥</span>Team
+  </a>
+  <a href="/squad/inbox/paste" class="tab-add" aria-label="Add event">+</a>
+  <a href="/squad/inbox">
+    <span class="tab-icon">📬</span>Inbox
+    {% if pending_count > 0 %}<span class="sq-tab-badge">{{ pending_count }}</span>{% endif %}
+  </a>
+  <a href="/squad/team#parents">
+    <span class="tab-icon">👨‍👩‍👧</span>Parents
+  </a>
+</nav>
 
 <script>
 function startRename() {

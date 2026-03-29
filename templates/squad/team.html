@@ -1,7 +1,10 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-<meta charset="UTF-8">
+<meta charset="UTF-8"><meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<link rel="apple-touch-icon" href="/static/squad-icon.png">
+
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Squad — Team</title>
 <style>
@@ -156,6 +159,87 @@
     background: #15803d; color: white; padding: 10px 22px; border-radius: 10px;
     font-size: 14px; font-weight: 600; display: none; z-index: 9999;
   }
+</style>
+
+<style id="squad-mobile">
+@media (max-width: 768px) {
+  body { background: #f0fdf4; -webkit-text-size-adjust: 100%; }
+
+  /* Safe area: push header below status bar / Dynamic Island */
+  .header { padding-top: env(safe-area-inset-top); }
+
+  /* Slim 44px nav */
+  .header-inner { height: 44px !important; }
+  .header-nav { display: none !important; }
+  .back-link { display: none !important; }
+  .header-logo { font-size: 16px !important; }
+
+  /* Full-width page, pad bottom for tab bar + home bar */
+  .page { padding: 16px 0 calc(72px + env(safe-area-inset-bottom)) !important; }
+
+  /* Full-width card panels */
+  .card { border-radius: 0 !important; margin-bottom: 8px;
+          box-shadow: none !important;
+          border-top: 1px solid #e5e7eb; border-bottom: 1px solid #e5e7eb; }
+
+  /* Upload zone padded */
+  .upload-zone { border-radius: 0 !important; margin: 0 0 8px !important; }
+
+  /* Tabs touch-friendly */
+  .tab-btn { min-height: 44px !important; padding: 0 16px !important; font-size: 14px !important; }
+
+  /* 44px touch targets across the board */
+  button, .btn, a.btn, input[type=submit],
+  .btn-edit, .btn-send, .btn-del, .btn-add { min-height: 44px !important; }
+
+  /* Prevent iOS font bump */
+  input, select, textarea { font-size: 16px !important; }
+
+  /* Scrollable tables */
+  .card { overflow-x: auto; }
+  table { font-size: 13px !important; min-width: 540px; }
+  tbody td { padding: 10px 10px !important; }
+}
+
+/* ── Bottom tab bar ── */
+.sq-tab-bar { display: none; }
+
+@media (max-width: 768px) {
+  .sq-tab-bar {
+    display: flex;
+    position: fixed;
+    bottom: 0; left: 0; right: 0;
+    background: rgba(255,255,255,.97);
+    -webkit-backdrop-filter: blur(12px);
+    backdrop-filter: blur(12px);
+    border-top: 1px solid rgba(0,0,0,.1);
+    padding-bottom: env(safe-area-inset-bottom);
+    z-index: 9999;
+    box-shadow: 0 -1px 0 rgba(0,0,0,.08);
+  }
+  .sq-tab-bar a {
+    flex: 1; display: flex; flex-direction: column;
+    align-items: center; justify-content: center;
+    padding: 8px 2px 4px; text-decoration: none;
+    color: #9ca3af; font-size: 10px; font-weight: 500;
+    gap: 3px; min-height: 54px; position: relative;
+    -webkit-tap-highlight-color: transparent;
+    transition: color .15s;
+  }
+  .sq-tab-bar a.active { color: #15803d; }
+  .sq-tab-bar a .tab-icon { font-size: 24px; line-height: 1; }
+  .sq-tab-bar a.tab-add {
+    color: white; background: #15803d; border-radius: 14px;
+    margin: 7px 6px; padding: 0; min-height: 44px;
+    font-size: 28px; font-weight: 300; flex: 0 0 50px; line-height: 1;
+  }
+  .sq-tab-badge {
+    position: absolute; top: 6px; right: calc(50% - 20px);
+    background: #ef4444; color: white; border-radius: 999px;
+    font-size: 9px; font-weight: 700; padding: 1px 5px;
+    line-height: 1.4; min-width: 16px; text-align: center;
+  }
+}
 </style>
 </head>
 <body>
@@ -417,6 +501,24 @@
   <option value="Winger">
 </datalist>
 
+<!-- ── iOS bottom tab bar ──────────────────────────────────────────── -->
+<nav class="sq-tab-bar">
+  <a href="/squad/" id="sqtab-schedule">
+    <span class="tab-icon">📅</span>Schedule
+  </a>
+  <a href="/squad/team" id="sqtab-team" class="active">
+    <span class="tab-icon">👥</span>Team
+  </a>
+  <a href="/squad/inbox/paste" class="tab-add" aria-label="Add event">+</a>
+  <a href="/squad/inbox" id="sqtab-inbox">
+    <span class="tab-icon">📬</span>Inbox
+    {% if pending_count is defined and pending_count > 0 %}<span class="sq-tab-badge">{{ pending_count }}</span>{% endif %}
+  </a>
+  <a href="/squad/team#parents" id="sqtab-parents">
+    <span class="tab-icon">👨‍👩‍👧</span>Parents
+  </a>
+</nav>
+
 <div id="toast"></div>
 
 <script>
@@ -427,15 +529,24 @@ function switchTab(name, btn) {
   document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
   document.getElementById('tab-' + name).classList.add('active');
   btn.classList.add('active');
-  // Remember active tab in URL hash
   history.replaceState(null, '', '#' + name);
+  // Sync bottom tab bar
+  const teamTab    = document.getElementById('sqtab-team');
+  const parentsTab = document.getElementById('sqtab-parents');
+  if (teamTab && parentsTab) {
+    teamTab.classList.toggle('active', name !== 'parents');
+    parentsTab.classList.toggle('active', name === 'parents');
+  }
 }
 
-// Restore tab from hash on load
+// Restore tab from hash on load + sync bottom tab bar active state
 window.addEventListener('DOMContentLoaded', () => {
   const hash = location.hash.replace('#', '');
   if (hash === 'parents') {
     document.querySelectorAll('.tab-btn')[1].click();
+    // Highlight Parents in bottom tab bar
+    document.getElementById('sqtab-team').classList.remove('active');
+    document.getElementById('sqtab-parents').classList.add('active');
   }
 });
 
