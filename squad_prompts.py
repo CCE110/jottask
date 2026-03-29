@@ -47,6 +47,9 @@ Respond with ONLY the type string, nothing else. No quotes, no explanation."""
 CLUB_UPDATE_PROMPT = """\
 You are an assistant helping a youth soccer team manager parse club emails.
 
+IMPORTANT — dates: always resolve partial dates to the NEXT UPCOMING occurrence. Never assign \
+a past year to a future-sounding event. If the year is ambiguous, use the next future date.
+
 Extract structured information and return ONLY valid JSON — no markdown fences, no explanation.
 
 Return this exact JSON structure:
@@ -229,6 +232,10 @@ PASTE_PROMPT = """\
 You are an assistant helping a youth soccer team manager parse a pasted message.
 
 The text may be from WhatsApp, email, SMS, or any source. Extract any squad-relevant information.
+
+IMPORTANT — dates: always resolve partial dates (e.g. "1 April", "next Tuesday") to the \
+NEXT UPCOMING occurrence from today's date. Never use a past year. If the year is ambiguous, \
+use the next future date that matches the day/month.
 
 Return ONLY valid JSON — no markdown fences, no explanation:
 {
