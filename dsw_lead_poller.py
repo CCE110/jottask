@@ -113,16 +113,48 @@ def make_task(name, phone, summary, crm_url, os_url):
         tm = TaskManager()
         users = tm.supabase.table("users").select("id").eq("email","rob@cloudcleanenergy.com.au").execute()
         if not users.data: return
-        due = (datetime.now()+timedelta(hours=2)).strftime("%Y-%m-%d")
+        due = (datetime.now()+timedelta(days=1)).strftime("%Y-%m-%d")
         desc = "Phone: "+phone+"\nCRM: "+crm_url+"\nOpenSolar: "+(os_url or "pending")+"\n\n"+summary
-        tm.supabase.table("tasks").insert({"user_id":users.data[0]["id"],"title":"Call "+name+" - New DSW Lead","description":desc,"due_date":due,"due_time":"09:00","priority":"high","status":"pending","category":"DSW Solar","client_name":name}).execute()
-        print("Task created:", name)
-    except Exception as e: print("Task error:", e)
+        result = tm.supabase.table("tasks").insert({"user_id":users.data[0]["id"],"title":"Call "+name+" - New DSW Lead","description":desc,"due_date":due,"due_time":"09:00","priority":"high","status":"pending","category":"DSW Solar","client_name":name}).execute()
+        tid = result.data[0]["id"] if result.data else None
+        print("Task created:", name, "id:", tid)
+        return tid
+    except Exception as e: print("Task error:", e); return None
 
-def send_email(name, phone, addr, src, summary, crm_url, os_url):
+def send_email(name, phone, addr, src, summary, crm_url, os_url, task_id=None):
     now = datetime.now().strftime("%d %b %Y %I:%M %p")
+    import urllib.parse
+    maps_url = "https://maps.google.com/?q=" + urllib.parse.quote(addr)
+    AU = os.getenv("TASK_ACTION_URL", "https://www.jottask.app/action")
+    abtns = ""
+    if task_id:
+        bl = [("Complete",f"{AU}?action=complete&task_id={task_id}","#10B981"),("+1 Hour",f"{AU}?action=delay_1hour&task_id={task_id}","#6B7280"),("+1 Day",f"{AU}?action=delay_1day&task_id={task_id}","#6B7280"),("Tmrw 8am",f"{AU}?action=delay_next_day_8am&task_id={task_id}","#0EA5E9"),("Tmrw 9am",f"{AU}?action=delay_next_day_9am&task_id={task_id}","#0EA5E9"),("Mon 9am",f"{AU}?action=delay_next_monday_9am&task_id={task_id}","#F59E0B")]
+        bh = "".join(f'<a href="{u}" style="display:inline-block;padding:10px 15px;background:{col};color:white;text-decoration:none;border-radius:8px;font-weight:600;font-size:13px">{l}</a>' for l,u,col in bl)
+        abtns = f'<div style="margin:16px 0;display:flex;flex-wrap:wrap;gap:8px">{bh}</div>'
     os_btn = '<a href="'+os_url+'" style="display:inline-block;background:#f59e0b;color:white;padding:10px 20px;border-radius:6px;text-decoration:none;font-weight:bold;margin:5px">&#9728;&#65039; OpenSolar</a>' if os_url else ""
-    html = '<div style="font-family:sans-serif;max-width:620px;margin:0 auto"><div style="background:#1e40af;color:white;padding:20px;border-radius:8px 8px 0 0"><h2 style="margin:0">New DSW Lead</h2><p style="opacity:.8;margin:4px 0 0">'+now+' &middot; '+src+'</p></div><div style="padding:20px;border:1px solid #e2e8f0"><h3 style="color:#1e40af;margin-top:0">'+name+'</h3><p><b>Phone:</b> <a href="tel:'+phone+'">'+phone+'</a></p><p><b>Address:</b> '+addr+'</p><div style="margin:12px 0"><a href="'+crm_url+'" style="display:inline-block;background:#1e40af;color:white;padding:10px 20px;border-radius:6px;text-decoration:none;font-weight:bold;margin:5px">&#128100; Pipereply Contact</a>'+os_btn+'</div><hr style="border:1px solid #e2e8f0"><h4>Lead Summary</h4><div style="background:#f8fafc;padding:15px;border-radius:6px;white-space:pre-line;font-size:14px;line-height:1.6">'+summary+'</div></div><div style="background:#1e40af;padding:12px;border-radius:0 0 8px 8px;text-align:center"><a href="https://jottask.app/dashboard" style="color:white;font-weight:bold;text-decoration:none">Open Jottask</a></div></div>'
+    html = (
+        '<div style="font-family:sans-serif;max-width:620px;margin:0 auto">'
+        '<div style="background:#1e40af;color:white;padding:20px;border-radius:8px 8px 0 0">'
+        '<h2 style="margin:0">New DSW Lead</h2>'
+        '<p style="opacity:.8;margin:4px 0 0">'+now+' &middot; '+src+'</p></div>'
+        '<div style="padding:20px;border:1px solid #e2e8f0">'
+        '<h3 style="color:#1e40af;margin-top:0">'+name+'</h3>'
+        '<div style="margin-bottom:12px">'
+        '<a href="tel:'+phone+'" style="display:inline-block;background:#10B981;color:white;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:700;font-size:15px">Call '+phone+'</a></div>'
+        '<p><a href="'+maps_url+'" style="color:#1e40af;text-decoration:none">'+addr+'</a></p>'
+        '<div style="margin:12px 0">'
+        '<a href="'+crm_url+'" style="display:inline-block;background:#1e40af;color:white;padding:10px 18px;border-radius:8px;text-decoration:none;font-weight:600;font-size:13px;margin:4px">Pipereply</a>'
+        +os_btn+'</div>'
+        '<hr style="border:1px solid #e2e8f0"><h4>Lead Summary</h4>'
+        '<div style="background:#f8fafc;padding:15px;border-radius:6px;white-space:pre-line;font-size:14px;line-height:1.6">'+summary+'</div>'
+        '<hr style="border:1px solid #e2e8f0">'
+        '<p style="font-weight:600;color:#6B7280;font-size:13px">Task Actions</p>'
+        +abtns+
+        '</div>'
+        '<div style="background:#1e40af;padding:12px;border-radius:0 0 8px 8px;text-align:center">'
+        '<a href="https://jottask.app/dashboard" style="color:white;font-weight:bold;text-decoration:none">Open Jottask</a>'
+        '</div></div>'
+    )
     try:
         resend.Emails.send({"from":"Jottask <"+FROM_EMAIL+">","to":[NOTIFY],"subject":"New Lead: "+name+" - Call ASAP","html":html})
         print("Email sent:", name)
@@ -131,7 +163,7 @@ def send_email(name, phone, addr, src, summary, crm_url, os_url):
 def process(contact):
     t0 = time.time()
     cid = contact.get("id")
-    name = contact.get("contactName","Unknown")
+    name = " ".join(w.capitalize() for w in (contact.get("contactName") or "Unknown").split())
     full = get_full(cid)
     phone = full.get("phone") or contact.get("phone","N/A")
     email = full.get("email") or contact.get("email","")
@@ -149,8 +181,8 @@ def process(contact):
     _, os_url = make_opensolar(name, phone, email, address, city, state, postcode)
     if os_url: save_to_crm(cid, os_url, summary)
     mac_contact(name, phone, src)
-    make_task(name, phone, summary, crm_url, os_url)
-    send_email(name, phone, addr, src, summary, crm_url, os_url)
+    task_id = make_task(name, phone, summary, crm_url, os_url)
+    send_email(name, phone, addr, src, summary, crm_url, os_url, task_id)
     print("Done in", round(time.time()-t0,1), "s:", name)
 
 def main():
