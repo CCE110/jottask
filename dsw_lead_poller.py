@@ -113,18 +113,52 @@ def make_task(name, phone, summary, crm_url, os_url):
         tm = TaskManager()
         users = tm.supabase.table("users").select("id").eq("email","rob@cloudcleanenergy.com.au").execute()
         if not users.data: return
-        due = (datetime.now()+timedelta(hours=2)).strftime("%Y-%m-%d")
+        due = (datetime.now()+timedelta(days=1)).strftime("%Y-%m-%d")
         desc = "Phone: "+phone+"\nCRM: "+crm_url+"\nOpenSolar: "+(os_url or "pending")+"\n\n"+summary
         tm.supabase.table("tasks").insert({"user_id":users.data[0]["id"],"title":"Call "+name+" - New DSW Lead","description":desc,"due_date":due,"due_time":"09:00","priority":"high","status":"pending","category":"DSW Solar","client_name":name}).execute()
         print("Task created:", name)
     except Exception as e: print("Task error:", e)
 
-def send_email(name, phone, addr, src, summary, crm_url, os_url):
+def send_email(name, phone, addr, src, summary, crm_url, os_url, task_id=None):
     now = datetime.now().strftime("%d %b %Y %I:%M %p")
-    os_btn = '<a href="'+os_url+'" style="display:inline-block;background:#f59e0b;color:white;padding:10px 20px;border-radius:6px;text-decoration:none;font-weight:bold;margin:5px">&#9728;&#65039; OpenSolar</a>' if os_url else ""
-    html = '<div style="font-family:sans-serif;max-width:620px;margin:0 auto"><div style="background:#1e40af;color:white;padding:20px;border-radius:8px 8px 0 0"><h2 style="margin:0">New DSW Lead</h2><p style="opacity:.8;margin:4px 0 0">'+now+' &middot; '+src+'</p></div><div style="padding:20px;border:1px solid #e2e8f0"><h3 style="color:#1e40af;margin-top:0">'+name+'</h3><p><b>Phone:</b> <a href="tel:'+phone+'">'+phone+'</a></p><p><b>Address:</b> '+addr+'</p><div style="margin:12px 0"><a href="'+crm_url+'" style="display:inline-block;background:#1e40af;color:white;padding:10px 20px;border-radius:6px;text-decoration:none;font-weight:bold;margin:5px">&#128100; Pipereply Contact</a>'+os_btn+'</div><hr style="border:1px solid #e2e8f0"><h4>Lead Summary</h4><div style="background:#f8fafc;padding:15px;border-radius:6px;white-space:pre-line;font-size:14px;line-height:1.6">'+summary+'</div></div><div style="background:#1e40af;padding:12px;border-radius:0 0 8px 8px;text-align:center"><a href="https://jottask.app/dashboard" style="color:white;font-weight:bold;text-decoration:none">Open Jottask</a></div></div>'
+    maps_url = "https://maps.google.com/?q=" + req.utils.quote(addr)
+    os_btn = (f'<a href="{os_url}" style="display:inline-block;background:#f59e0b;color:white;padding:12px 18px;border-radius:8px;text-decoration:none;font-weight:600;font-size:13px;margin:4px">&#9728; OpenSolar</a>') if os_url else ""
+    action_btns = ""
+    ACTION_URL = os.getenv("TASK_ACTION_URL", "https://www.jottask.app/action")
+    if task_id:
+        action_btns = (
+            f'<div style="margin:16px 0;display:flex;flex-wrap:wrap;gap:8px">' +
+            f'<a href="{ACTION_URL}?action=complete&task_id={task_id}" style="display:inline-block;padding:10px 18px;background:#10B981;color:white;text-decoration:none;border-radius:8px;font-weight:600;font-size:13px">Complete</a>' +
+            f'<a href="{ACTION_URL}?action=delay_1hour&task_id={task_id}" style="display:inline-block;padding:10px 18px;background:#6B7280;color:white;text-decoration:none;border-radius:8px;font-weight:600;font-size:13px">+1 Hour</a>' +
+            f'<a href="{ACTION_URL}?action=delay_1day&task_id={task_id}" style="display:inline-block;padding:10px 18px;background:#6B7280;color:white;text-decoration:none;border-radius:8px;font-weight:600;font-size:13px">+1 Day</a>' +
+            f'<a href="{ACTION_URL}?action=delay_next_day_8am&task_id={task_id}" style="display:inline-block;padding:10px 18px;background:#0EA5E9;color:white;text-decoration:none;border-radius:8px;font-weight:600;font-size:13px">&#127749; Tmrw 8am</a>' +
+            f'<a href="{ACTION_URL}?action=delay_next_day_9am&task_id={task_id}" style="display:inline-block;padding:10px 18px;background:#0EA5E9;color:white;text-decoration:none;border-radius:8px;font-weight:600;font-size:13px">&#9728; Tmrw 9am</a>' +
+            f'<a href="{ACTION_URL}?action=delay_next_monday_9am&task_id={task_id}" style="display:inline-block;padding:10px 18px;background:#F59E0B;color:white;text-decoration:none;border-radius:8px;font-weight:600;font-size:13px">&#128198; Mon 9am</a>' +
+            '</div>'
+        )
+    html = (
+        f'<div style="font-family:-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;max-width:620px;margin:0 auto">' +
+        f'<div style="background:linear-gradient(135deg,#1e40af,#1e3a8a);color:white;padding:24px 32px;border-radius:16px 16px 0 0">' +
+        f'<h2 style="margin:0;font-size:22px">New DSW Lead</h2>' +
+        f'<p style="opacity:.85;margin:4px 0 0;font-size:14px">{now} &middot; {src}</p></div>' +
+        f'<div style="background:white;padding:28px 32px;border-radius:0 0 16px 16px;box-shadow:0 4px 6px rgba(0,0,0,.05)">' +
+        f'<h3 style="color:#111827;margin:0 0 16px;font-size:22px">{name}</h3>' +
+        f'<div style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:16px">' +
+        f'<a href="tel:{phone}" style="display:inline-block;background:#10B981;color:white;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:700;font-size:15px">&#128241; Call {phone}</a>' +
+        f'<a href="{crm_url}" style="display:inline-block;background:#1e40af;color:white;padding:12px 18px;border-radius:8px;text-decoration:none;font-weight:600;font-size:13px">&#128100; Pipereply</a>' +
+        f'{os_btn}</div>' +
+        f'<p style="color:#6B7280;font-size:13px;margin:0 0 4px">&#128205; <a href="{maps_url}" style="color:#1e40af;text-decoration:none">{addr}</a></p>' +
+        f'<hr style="border:none;border-top:1px solid #e5e7eb;margin:16px 0">' +
+        f'<h4 style="color:#374151;margin:0 0 8px;font-size:15px">Lead Summary</h4>' +
+        f'<div style="background:#f8fafc;padding:16px;border-radius:8px;white-space:pre-line;color:#374151;font-size:14px;line-height:1.7">{summary}</div>' +
+        f'<hr style="border:none;border-top:1px solid #e5e7eb;margin:16px 0">' +
+        f'<p style="color:#6B7280;font-size:13px;margin:0 0 8px;font-weight:600">Task Actions</p>' +
+        f'{action_btns}' +
+        '<div style="margin-top:16px;text-align:center"><a href="https://jottask.app/dashboard" style="color:#6366F1;font-size:13px;text-decoration:none">Open Jottask</a></div>' +
+        '</div></div>'
+    )
     try:
-        resend.Emails.send({"from":"Jottask <"+FROM_EMAIL+">","to":[NOTIFY],"subject":"New Lead: "+name+" - Call ASAP","html":html})
+        resend.Emails.send({"from": f"Jottask <{FROM_EMAIL}>", "to": [NOTIFY], "subject": f"New Lead: {name} - Call ASAP", "html": html})
         print("Email sent:", name)
     except Exception as e: print("Email error:", e)
 
@@ -150,7 +184,7 @@ def process(contact):
     if os_url: save_to_crm(cid, os_url, summary)
     mac_contact(name, phone, src)
     make_task(name, phone, summary, crm_url, os_url)
-    send_email(name, phone, addr, src, summary, crm_url, os_url)
+    send_email(name, phone, addr, src, summary, crm_url, os_url, task_id)
     print("Done in", round(time.time()-t0,1), "s:", name)
 
 def main():
