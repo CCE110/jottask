@@ -107,7 +107,7 @@ def mac_contact(name, phone, src):
     r = subprocess.run(["osascript","-e",script], capture_output=True, text=True)
     print("Contact:", first, last, r.returncode)
 
-def make_task(name, phone, summary, crm_url, os_url):
+def task_id = make_task(name, phone, summary, crm_url, os_url):
     try:
         from task_manager import TaskManager
         tm = TaskManager()
@@ -183,7 +183,7 @@ def process(contact):
     _, os_url = make_opensolar(name, phone, email, address, city, state, postcode)
     if os_url: save_to_crm(cid, os_url, summary)
     mac_contact(name, phone, src)
-    make_task(name, phone, summary, crm_url, os_url)
+    task_id = make_task(name, phone, summary, crm_url, os_url)
     send_email(name, phone, addr, src, summary, crm_url, os_url, task_id)
     print("Done in", round(time.time()-t0,1), "s:", name)
 
