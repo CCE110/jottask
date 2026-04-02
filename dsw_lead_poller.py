@@ -143,7 +143,7 @@ def process(contact):
     custom = full.get("customFields",[]) or []
     src = source(full)
     addr = ", ".join(filter(None,[address,city,state,postcode]))
-    crm_url = CRM_BASE+"/"+cid
+    crm_url = CRM_BASE+"/detail/"+cid
     print("Processing:", name, "|", phone, "|", src)
     summary = summarise(name, phone, addr, src, notes, custom)
     _, os_url = make_opensolar(name, phone, email, address, city, state, postcode)
