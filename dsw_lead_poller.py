@@ -34,9 +34,7 @@ def save_processed(ids):
 
 
 def get_recent_contacts():
-    since = (datetime.utcnow() - timedelta(minutes=30)).strftime("%Y-%m-%dT%H:%M:%SZ")
     resp = requests.get(f"{BASE_URL}/contacts/", headers=HEADERS, params={
-        "locationId": LOCATION_ID, "startAfterDate": since,
     })
     if resp.status_code != 200:
         print(f"Error: {resp.status_code} {resp.text[:200]}")
