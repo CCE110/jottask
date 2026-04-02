@@ -90,12 +90,21 @@ def make_opensolar(name, phone, email, address, city, state, postcode):
     except Exception as e: print("OpenSolar exc:", e); return None, None
 
 def save_to_crm(cid, os_url, summary):
-    r = req.get(f"{BASE}/contacts/{cid}", headers=H)
-    orig = (r.json().get("contact", r.json()).get("notes","") or "") if r.ok else ""
-    notes = f"OpenSolar: {os_url}\n\n{summary}"
-    if orig: notes += f"\n\n---\n{orig[:300]}"
-    r2 = req.put(f"{BASE}/contacts/{cid}", headers=H, json={"notes": notes})
-    print("CRM notes updated:", r2.status_code)
+    note_body = "OpenSolar: " + os_url + "\n\n" + summary
+    r_notes = req.get(f"{BASE}/contacts/{cid}/notes", headers=H)
+    existing_id = None
+    if r_notes.ok:
+        for note in (r_notes.json().get("notes") or []):
+            if "OpenSolar" in (note.get("body") or ""):
+                existing_id = note.get("id")
+                break
+    if existing_id:
+        r2 = req.put(f"{BASE}/contacts/{cid}/notes/{existing_id}", headers=H, json={"body": note_body})
+        print("CRM note updated:", r2.status_code)
+    else:
+        r2 = req.post(f"{BASE}/contacts/{cid}/notes", headers=H, json={"body": note_body})
+        print("CRM note created:", r2.status_code)
+
 
 def mac_contact(name, phone, src):
     parts = name.strip().split()
