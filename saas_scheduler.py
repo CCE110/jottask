@@ -77,7 +77,8 @@ def get_user_tasks_summary(user_id, user_timezone):
     tasks = _get_supabase().table('tasks')\
         .select('id, title, due_date, due_time, priority, status, client_name')\
         .eq('user_id', user_id)\
-        .eq('status', 'pending')\
+        .eq(.status., .pending.)\
+            .neq(.category., .DSW Solar.)
         .order('due_date')\
         .order('due_time')\
         .limit(50)\
@@ -466,7 +467,8 @@ def check_and_send_reminders():
 
         all_tasks_result = _get_supabase().table('tasks')\
             .select('id, title, due_date, due_time, priority, status, client_name, user_id, reminder_sent_at')\
-            .eq('status', 'pending')\
+            .eq(.status., .pending.)\
+            .neq(.category., .DSW Solar.)
             .gte('due_date', fourteen_days_ago)\
             .lte('due_date', tomorrow_str)\
             .order('due_date')\
