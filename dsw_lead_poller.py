@@ -79,7 +79,7 @@ def make_opensolar(name, phone, email, address, city, state, postcode):
         last = " ".join(parts[1:]) if len(parts)>1 else ""
         full_addr = ", ".join(filter(None, [address, city, state, postcode]))
         payload = {"address": full_addr, "contacts_data": [{"type":2,"first_name":first,"family_name":last,"phone":phone or "","email":email or ""}]}
-        th = {"Authorization": f"Token {conn.token}", "Content-Type": "application/json"}
+        th = {"Authorization": f"Bearer {conn.token}", "Content-Type": "application/json"}
         r = req.post(f"https://api.opensolar.com/api/orgs/{conn.org_id}/projects/", headers=th, json=payload, timeout=20)
         if r.ok:
             pid = r.json().get("id","")
@@ -114,7 +114,7 @@ def make_task(name, phone, summary, crm_url, os_url):
         if not users.data: return
         due = (datetime.now()+timedelta(hours=2)).strftime("%Y-%m-%d")
         desc = "Phone: "+phone+"\nCRM: "+crm_url+"\nOpenSolar: "+(os_url or "pending")+"\n\n"+summary
-        tm.supabase.table("tasks").insert({"user_id":users.data[0]["id"],"title":"Call "+name+" - New DSW Lead","description":desc,"due_date":due,"due_time":"09:00","priority":"high","status":"pending","category":"DSW Solar","client_name":name,"source":"dsw_lead_poller"}).execute()
+        tm.supabase.table("tasks").insert({"user_id":users.data[0]["id"],"title":"Call "+name+" - New DSW Lead","description":desc,"due_date":due,"due_time":"09:00","priority":"high","status":"pending","category":"DSW Solar","client_name":name}).execute()
         print("Task created:", name)
     except Exception as e: print("Task error:", e)
 
