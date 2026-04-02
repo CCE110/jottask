@@ -36,10 +36,11 @@ def save_done(ids):
     with open(PROCESSED, "w") as f: json.dump(list(ids), f)
 
 def get_contacts():
-    r = req.get(f"{BASE}/contacts/", headers=H, params={"locationId": LOCATION_ID, "limit": 50})
+    # Fetch last 7 days of contacts - poller tracks processed IDs to avoid duplicates
+    r = req.get(f"{BASE}/contacts/", headers=H, params={"locationId": LOCATION_ID, "limit": 100})
     if r.status_code != 200: print("Pipereply error:", r.status_code); return []
     contacts = r.json().get("contacts", [])
-    cutoff = datetime.now(timezone.utc) - timedelta(minutes=30)
+    cutoff = datetime.now(timezone.utc) - timedelta(days=7)
     out = []
     for c in contacts:
         da = c.get("dateAdded", "")
@@ -48,8 +49,8 @@ def get_contacts():
             if datetime.fromisoformat(da.replace("Z", "+00:00")) < cutoff: continue
         except: continue
         tags = " ".join([t.lower() for t in (c.get("tags") or [])])
-        if any(lt in tags for lt in LEAD_TAGS) or c.get("assignedTo"): out.append(c)
-    print("Found", len(contacts), "contacts,", len(out), "new leads")
+        if any(lt in tags for lt in LEAD_TAGS): out.append(c)
+    print("Found", len(contacts), "contacts,", len(out), "unprocessed DSW leads in last 7 days")
     return out
 
 def get_full(cid):
