@@ -7,7 +7,7 @@ from dotenv import load_dotenv
 from anthropic import Anthropic
 import resend
 
-load_dotenv()
+load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env"))
 
 TOKEN = os.getenv("PIPEREPLY_TOKEN")
 LOCATION_ID = os.getenv("PIPEREPLY_LOCATION_ID")
@@ -35,6 +35,7 @@ def save_processed(ids):
 
 def get_recent_contacts():
     resp = requests.get(f"{BASE_URL}/contacts/", headers=HEADERS, params={
+        "locationId": LOCATION_ID, "limit": 20
     })
     if resp.status_code != 200:
         print(f"Error: {resp.status_code} {resp.text[:200]}")
