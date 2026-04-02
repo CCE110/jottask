@@ -36,8 +36,7 @@ def save_processed(ids):
 def get_recent_contacts():
     since = (datetime.utcnow() - timedelta(minutes=30)).strftime("%Y-%m-%dT%H:%M:%SZ")
     resp = requests.get(f"{BASE_URL}/contacts/", headers=HEADERS, params={
-        "locationId": LOCATION_ID, "startAfter": since,
-        "limit": 20, "sortBy": "date_added", "sortDirection": "desc"
+        "locationId": LOCATION_ID, "startAfterDate": since,
     })
     if resp.status_code != 200:
         print(f"Error: {resp.status_code} {resp.text[:200]}")
@@ -49,9 +48,22 @@ def get_recent_contacts():
 
 
 def is_rob_lead(c):
-    assigned = (c.get("assignedTo") or "").lower()
     tags = c.get("tags") or []
-    return "rob" in assigned or any("rob" in t.lower() for t in tags)
+    # SolarQuotes leads are tagged solar_quotes_lead
+    # Also check if recently added (within 30 min)
+    from datetime import timezone
+    date_added = c.get("dateAdded", "")
+    if not date_added:
+        return False
+    try:
+        added = datetime.fromisoformat(date_added.replace("Z", "+00:00"))
+        cutoff = datetime.now(timezone.utc) - timedelta(minutes=30)
+        is_recent = added > cutoff
+    except:
+        is_recent = False
+    has_solar_tag = any("solar_quotes_lead" in t.lower() for t in tags)
+    assigned = (c.get("assignedTo") or "")
+    return is_recent and (has_solar_tag or bool(assigned))
 
 
 def summarise(contact):
