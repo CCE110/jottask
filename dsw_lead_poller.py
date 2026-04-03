@@ -137,7 +137,7 @@ def send_email(name, phone, addr, src, summary, crm_url, os_url, task_id=None):
     now = datetime.now().strftime("%d %b %Y %I:%M %p")
     import urllib.parse
     maps_url = "https://maps.google.com/?q=" + urllib.parse.quote(addr)
-    AU = os.getenv("TASK_ACTION_URL", "https://www.jottask.app/action")
+    AU = "https://www.jottask.app/action"
     abtns = ""
     if task_id:
         bl = [("Complete",f"{AU}?action=complete&task_id={task_id}","#10B981"),("+1 Hour",f"{AU}?action=delay_1hour&task_id={task_id}","#6B7280"),("+1 Day",f"{AU}?action=delay_1day&task_id={task_id}","#6B7280"),("Tmrw 8am",f"{AU}?action=delay_next_day_8am&task_id={task_id}","#0EA5E9"),("Tmrw 9am",f"{AU}?action=delay_next_day_9am&task_id={task_id}","#0EA5E9"),("Mon 9am",f"{AU}?action=delay_next_monday_9am&task_id={task_id}","#F59E0B")]
