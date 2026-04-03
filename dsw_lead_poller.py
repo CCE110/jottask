@@ -106,6 +106,22 @@ def make_opensolar(name, phone, email, address, city, state, postcode):
         print("OpenSolar error:", r.status_code, r.text[:100]); return None, None
     except Exception as e: print("OpenSolar exc:", e); return None, None
 
+def get_os_url_from_crm(cid):
+    """Parse the OpenSolar URL from the contact's CRM note (line starting with 'OpenSolar: ')."""
+    try:
+        r = req.get(f"{BASE}/contacts/{cid}/notes", headers=H, timeout=10)
+        if not r.ok:
+            return None
+        for note in (r.json().get("notes") or []):
+            for line in (note.get("body") or "").splitlines():
+                if line.startswith("OpenSolar: "):
+                    url = line[len("OpenSolar: "):].strip()
+                    if url.startswith("http"):
+                        return url
+    except Exception as e:
+        print(f"get_os_url_from_crm error: {e}")
+    return None
+
 def save_to_crm(cid, os_url, summary):
     note_body = "OpenSolar: " + os_url + chr(10) + chr(10) + summary
     r_notes = req.get(f"{BASE}/contacts/{cid}/notes", headers=H)
@@ -173,7 +189,7 @@ def send_email(name, phone, addr, src, summary, crm_url, os_url, task_id=None, l
         ]
         sh = "".join(f'<a href="{AU}?action=set_status&status={s}&task_id={task_id}" style="display:inline-block;padding:8px 12px;background:{col};color:white;text-decoration:none;border-radius:8px;font-weight:600;font-size:12px">{l}</a>' for l,s,col in statuses)
         sbtns = f'<div style="margin:8px 0;display:flex;flex-wrap:wrap;gap:6px">{sh}</div>'
-    os_btn = '<a href="'+os_url+'" style="display:inline-block;background:#f59e0b;color:white;padding:10px 20px;border-radius:6px;text-decoration:none;font-weight:bold;margin:5px">&#9728;&#65039; OpenSolar</a>' if os_url else ""
+    os_btn = '<a href="'+os_url+'" style="display:inline-block;background:#f59e0b;color:white;padding:10px 16px;border-radius:8px;text-decoration:none;font-weight:600;font-size:13px">&#9728;&#65039; OpenSolar</a>' if os_url else ""
     badge_text = STATUS_LABELS.get(lead_status, '🔵 NEW LEAD') if lead_status else '🔵 NEW LEAD'
     html = (
         '<div style="font-family:sans-serif;max-width:620px;margin:0 auto">'
@@ -185,11 +201,10 @@ def send_email(name, phone, addr, src, summary, crm_url, os_url, task_id=None, l
         '<p style="opacity:.8;margin:4px 0 0">'+now+' &middot; '+src+'</p></div>'
         '<div style="padding:20px;border:1px solid #e2e8f0">'
         '<h3 style="color:#1e40af;margin-top:0">'+name+'</h3>'
-        '<div style="margin-bottom:12px">'
-        '<a href="tel:'+phone+'" style="display:inline-block;background:#10B981;color:white;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:700;font-size:15px">Call '+phone+'</a></div>'
         '<p><a href="'+maps_url+'" style="color:#1e40af;text-decoration:none">'+addr+'</a></p>'
-        '<div style="margin:12px 0">'
-        '<a href="'+crm_url+'" style="display:inline-block;background:#1e40af;color:white;padding:10px 18px;border-radius:8px;text-decoration:none;font-weight:600;font-size:13px;margin:4px">Pipereply</a>'
+        '<div style="margin:12px 0;display:flex;flex-direction:row;gap:8px;flex-wrap:nowrap">'
+        '<a href="tel:'+phone+'" style="display:inline-block;background:#10B981;color:white;padding:10px 16px;border-radius:8px;text-decoration:none;font-weight:600;font-size:13px">Call '+phone+'</a>'
+        '<a href="'+crm_url+'" style="display:inline-block;background:#1e40af;color:white;padding:10px 16px;border-radius:8px;text-decoration:none;font-weight:600;font-size:13px">Pipereply</a>'
         +os_btn+'</div>'
         '<hr style="border:1px solid #e2e8f0"><h4>Lead Summary</h4>'
         '<div style="background:#f8fafc;padding:15px;border-radius:6px;white-space:pre-line;font-size:14px;line-height:1.6">'+summary+'</div>'
@@ -234,8 +249,8 @@ def process(contact, task_id=None, lead_status=None):
         mac_contact(name, phone, src)
         task_id = make_task(name, phone, summary, crm_url, os_url)
     else:
-        # Reminder resend: skip setup steps already done for this lead
-        os_url = None
+        # Reminder resend: look up OpenSolar URL from existing CRM note
+        os_url = get_os_url_from_crm(cid)
     send_email(name, phone, addr, src, summary, crm_url, os_url, task_id, lead_status)
     print("Done in", round(time.time()-t0,1), "s:", name)
 
