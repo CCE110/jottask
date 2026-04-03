@@ -15,20 +15,6 @@ BASE = "https://services.leadconnectorhq.com"
 CRM_BASE = "https://app.pipereply.com/v2/location/0k6Ix1hW5QoHuUh2YSru/contacts"
 LEAD_TAGS = ["solar_quotes_lead","sem","website","facebook","google","referral"]
 H = {"Authorization": f"Bearer {TOKEN}", "Content-Type": "application/json", "Version": "2021-07-28"}
-STATUS_LABELS = {
-    'new_lead':           '🔵 NEW LEAD',
-    'intro_call':         '📞 INTRO CALL',
-    'site_visit_booked':  '📅 SITE VISIT BOOKED',
-    'awaiting_docs':      '📋 AWAITING DOCS',
-    'build_quote':        '🔨 BUILD QUOTE',
-    'quote_submitted':    '📤 QUOTE SENT',
-    'quote_followup':     '🔔 QUOTE FOLLOW UP',
-    'revise_quote':       '✏️ REVISE QUOTE',
-    'customer_deciding':  '🤔 DECIDING',
-    'nurture':            '💧 NURTURE',
-    'won':                '🎉 WON',
-    'lost':               '❌ LOST',
-}
 claude = Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
 resend.api_key = os.getenv("RESEND_API_KEY")
 _os = None
@@ -147,7 +133,7 @@ def make_task(name, phone, summary, crm_url, os_url):
         return tid
     except Exception as e: print("Task error:", e); return None
 
-def send_email(name, phone, addr, src, summary, crm_url, os_url, task_id=None, lead_status=None):
+def send_email(name, phone, addr, src, summary, crm_url, os_url, task_id=None):
     now = datetime.now().strftime("%d %b %Y %I:%M %p")
     import urllib.parse
     maps_url = "https://maps.google.com/?q=" + urllib.parse.quote(addr)
@@ -174,22 +160,19 @@ def send_email(name, phone, addr, src, summary, crm_url, os_url, task_id=None, l
         sh = "".join(f'<a href="{AU}?action=set_status&status={s}&task_id={task_id}" style="display:inline-block;padding:8px 12px;background:{col};color:white;text-decoration:none;border-radius:8px;font-weight:600;font-size:12px">{l}</a>' for l,s,col in statuses)
         sbtns = f'<div style="margin:8px 0;display:flex;flex-wrap:wrap;gap:6px">{sh}</div>'
     os_btn = '<a href="'+os_url+'" style="display:inline-block;background:#f59e0b;color:white;padding:10px 20px;border-radius:6px;text-decoration:none;font-weight:bold;margin:5px">&#9728;&#65039; OpenSolar</a>' if os_url else ""
-    badge_text = STATUS_LABELS.get(lead_status, '🔵 NEW LEAD') if lead_status else '🔵 NEW LEAD'
     html = (
         '<div style="font-family:sans-serif;max-width:620px;margin:0 auto">'
         '<div style="background:#1e40af;color:white;padding:20px;border-radius:8px 8px 0 0">'
-        '<div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap">'
-        '<h2 style="margin:0">New DSW Lead</h2>'
-        '<span style="background:rgba(255,255,255,0.25);padding:4px 14px;border-radius:20px;font-size:12px;font-weight:700;letter-spacing:0.5px">'+badge_text+'</span>'
-        '</div>'
+        '<div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap">'        '<h2 style="margin:0">New DSW Lead</h2>'        '<span style="background:rgba(255,255,255,0.25);padding:4px 14px;border-radius:20px;font-size:12px;font-weight:700;letter-spacing:0.5px">🔵 NEW LEAD</span>'        '</div>'
         '<p style="opacity:.8;margin:4px 0 0">'+now+' &middot; '+src+'</p></div>'
         '<div style="padding:20px;border:1px solid #e2e8f0">'
         '<h3 style="color:#1e40af;margin-top:0">'+name+'</h3>'
-        '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:12px">'
-        '<a href="tel:'+phone+'" style="display:inline-block;background:#10B981;color:white;padding:10px 20px;border-radius:8px;text-decoration:none;font-weight:700;font-size:14px">Call '+phone+'</a>'
-        '<a href="'+crm_url+'" style="display:inline-block;background:#1e40af;color:white;padding:10px 18px;border-radius:8px;text-decoration:none;font-weight:600;font-size:13px">Pipereply</a>'
+        '<div style="margin-bottom:12px">'
+        '<a href="tel:'+phone+'" style="display:inline-block;background:#10B981;color:white;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:700;font-size:15px">Call '+phone+'</a></div>'
+        '<p><a href="'+maps_url+'" style="color:#1e40af;text-decoration:none">'+addr+'</a></p>'
+        '<div style="margin:12px 0">'
+        '<a href="'+crm_url+'" style="display:inline-block;background:#1e40af;color:white;padding:10px 18px;border-radius:8px;text-decoration:none;font-weight:600;font-size:13px;margin:4px">Pipereply</a>'
         +os_btn+'</div>'
-        '<p style="margin:0 0 12px"><a href="'+maps_url+'" style="color:#1e40af;text-decoration:none">'+addr+'</a></p>'
         '<hr style="border:1px solid #e2e8f0"><h4>Lead Summary</h4>'
         '<div style="background:#f8fafc;padding:15px;border-radius:6px;white-space:pre-line;font-size:14px;line-height:1.6">'+summary+'</div>'
         '<hr style="border:1px solid #e2e8f0">'
@@ -207,7 +190,7 @@ def send_email(name, phone, addr, src, summary, crm_url, os_url, task_id=None, l
         print("Email sent:", name)
     except Exception as e: print("Email error:", e)
 
-def process(contact, task_id=None, lead_status=None):
+def process(contact):
     t0 = time.time()
     cid = contact.get("id")
     name = " ".join(w.capitalize() for w in (contact.get("contactName") or "Unknown").split())
@@ -225,17 +208,11 @@ def process(contact, task_id=None, lead_status=None):
     crm_url = CRM_BASE+"/detail/"+cid
     print("Processing:", name, "|", phone, "|", src)
     summary = summarise(name, phone, addr, src, notes, custom)
-    is_reminder = task_id is not None
-    if not is_reminder:
-        # New lead: create OpenSolar project, Mac contact, and Jottask task
-        _, os_url = make_opensolar(name, phone, email, address, city, state, postcode)
-        if os_url: save_to_crm(cid, os_url, summary)
-        mac_contact(name, phone, src)
-        task_id = make_task(name, phone, summary, crm_url, os_url)
-    else:
-        # Reminder: skip setup steps already done for this lead
-        os_url = None
-    send_email(name, phone, addr, src, summary, crm_url, os_url, task_id, lead_status)
+    _, os_url = make_opensolar(name, phone, email, address, city, state, postcode)
+    if os_url: save_to_crm(cid, os_url, summary)
+    mac_contact(name, phone, src)
+    task_id = make_task(name, phone, summary, crm_url, os_url)
+    send_email(name, phone, addr, src, summary, crm_url, os_url, task_id)
     print("Done in", round(time.time()-t0,1), "s:", name)
 
 def main():

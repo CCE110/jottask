@@ -2838,6 +2838,37 @@ def billing():
 # ACTION ROUTE (Email Button Handler)
 # ============================================
 
+
+def _resend_dsw_email(task_id, task_data):
+    """Resend DSW lead email with current lead_status for delayed tasks."""
+    import importlib.util, sys, os
+    try:
+        spec = importlib.util.spec_from_file_location("dsw_lead_poller", 
+            os.path.join(os.path.dirname(__file__), "dsw_lead_poller.py"))
+        poller = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(poller)
+        from dotenv import load_dotenv
+        load_dotenv()
+        import requests as req
+        TOKEN = os.getenv("PIPEREPLY_TOKEN")
+        LOCATION_ID = os.getenv("PIPEREPLY_LOCATION_ID")
+        H = {"Authorization": f"Bearer {TOKEN}", "Content-Type": "application/json", "Version": "2021-07-28"}
+        # Extract name from task title e.g. "Call John Smith - New DSW Lead"
+        title = task_data.get('title', '')
+        name = title.replace('Call ', '').replace(' - New DSW Lead', '').strip()
+        r = req.get("https://services.leadconnectorhq.com/contacts/", headers=H,
+            params={"locationId": LOCATION_ID, "query": name, "limit": 1})
+        contacts = r.json().get("contacts", [])
+        if contacts:
+            contact = contacts[0]
+            lead_status = task_data.get('lead_status', 'new_lead')
+            poller.process(contact, task_id=task_id, lead_status=lead_status)
+            print(f"[DSW RESEND] Sent email for {name} status={lead_status}")
+        else:
+            print(f"[DSW RESEND] No contact found for: {name}")
+    except Exception as e:
+        print(f"[DSW RESEND] Error: {e}")
+
 @app.route('/action')
 def handle_action():
     """Handle action button clicks from emails - redirects to appropriate pages"""
@@ -2926,6 +2957,12 @@ def handle_action():
                     'reminder_sent_at': None
                 }).eq('id', task_id).execute()
 
+                # If DSW Solar task, resend lead email with current status
+                if task_data.get('category') == 'DSW Solar':
+                    try:
+                        _resend_dsw_email(task_id, task_data)
+                    except Exception as e:
+                        print(f"DSW resend error: {e}")
                 return render_template_string("""
                 <html><head><title>Task Delayed</title></head>
                 <body style="font-family: sans-serif; text-align: center; padding: 50px; background: #eff6ff;">
@@ -2949,6 +2986,11 @@ def handle_action():
                     'reminder_sent_at': None
                 }).eq('id', task_id).execute()
 
+                if task_data.get('category') == 'DSW Solar':
+                    try:
+                        _resend_dsw_email(task_id, task_data)
+                    except Exception as e:
+                        print(f"DSW resend error: {e}")
                 return render_template_string("""
                 <html><head><title>Task Delayed</title></head>
                 <body style="font-family: sans-serif; text-align: center; padding: 50px; background: #eff6ff;">
@@ -3155,6 +3197,37 @@ def handle_action():
                 <h2>Error</h2><p>{{ error }}</p>
             </body></html>
             """, error=str(e))
+
+    elif action == 'set_status' and task_id:
+            status_val = request.args.get('status', '')
+            lost_reason = request.args.get('lost_reason', '')
+            update = {'lead_status': status_val, 'reminder_sent_at': None}
+            if status_val in ['won', 'lost']:
+                update['status'] = 'completed'
+                update['completed_at'] = datetime.now(pytz.UTC).isoformat()
+            if status_val == 'lost' and lost_reason:
+                update['lost_reason'] = lost_reason
+            supabase.table('tasks').update(update).eq('id', task_id).execute()
+            status_labels = {
+                'intro_call':'Intro Call','site_visit_booked':'Site Visit Booked',
+                'awaiting_docs':'Awaiting Docs','build_quote':'Build Quote',
+                'quote_submitted':'Quote Sent','quote_followup':'Quote Follow Up',
+                'revise_quote':'Revise Quote','customer_deciding':'Customer Deciding',
+                'nurture':'Nurture','won':'WON 🎉','lost':'LOST ❌'
+            }
+            label = status_labels.get(status_val, status_val.replace('_',' ').title())
+            color = '#10B981' if status_val == 'won' else '#ef4444' if status_val == 'lost' else '#1e40af'
+            return render_template_string("""
+            <html><head><title>Status Updated</title>
+            <meta name="viewport" content="width=device-width,initial-scale=1">
+            </head>
+            <body style="font-family:sans-serif;text-align:center;padding:50px;background:#f8fafc;">
+                <div style="font-size:48px;margin-bottom:16px">✅</div>
+                <h2 style="color:{{ color }}">{{ label }}</h2>
+                <p style="color:#6b7280">Lead status updated</p>
+                <p><a href="https://www.jottask.app/dashboard" style="color:#6366F1">Open Dashboard</a></p>
+            </body></html>
+            """, label=label, color=color)
 
     # Default - show error (don't redirect to login-required dashboard)
     return render_template_string("""
