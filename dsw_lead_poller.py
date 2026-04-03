@@ -70,7 +70,7 @@ def summarise(name, phone, addr, src, notes, custom):
     extra_parts = [str(f.get("value","")) for f in (custom or []) if f.get("value")]
     extra_parts.sort(key=len, reverse=True)
     extra = chr(10).join(extra_parts)
-    prompt = "Summarise this into actionable customer requirements. Ignore duplicates. Ignore: verified phone number, consented to discuss energy plans, lead submitted, requested quotes number, roof ownership confirmed, north facing, supplier info, lead IDs.\n\nFormat exactly (plain text, no ## markdown):\nCUSTOMER REQUIREMENTS\n* [requirement]\n\nPROPERTY\n* [property detail]\n\nKeep: system size kW, solar/battery/both, EV charger, bill amount, payment method, urgency/timeframe, property type/storeys/roof type, motivation, blackout/backup needs, home visit.\nConcise bullets only.\n\nName: "+name+"\nSource: "+src+"\nAddress: "+addr+"\nNotes: "+notes[:2000]+"\n"+extra[:300]
+    prompt = "Summarise this into actionable customer requirements. Ignore duplicates. Ignore: verified phone number, consented to discuss energy plans, lead submitted, requested quotes number, roof ownership confirmed, north facing, supplier info, lead IDs.\n\nFormat exactly (plain text, no ## markdown):\nCUSTOMER REQUIREMENTS\n* [requirement]\n\nPROPERTY\n* [property detail]\n\nKeep: system size kW, solar/battery/both, EV charger, bill amount, payment method, urgency/timeframe, property type/storeys/roof type, motivation, blackout/backup needs, home visit.\nConcise bullets only.\n\nName: "+name+"\nSource: "+src+"\nAddress: "+addr+"\nNotes: "+(extra if len(extra) > len(notes) else notes)[:3000]
     r = claude.messages.create(model="claude-haiku-4-5-20251001", max_tokens=600, messages=[{"role":"user","content":prompt}])
     return r.content[0].text
 
