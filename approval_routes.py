@@ -194,3 +194,36 @@ def edit_action():
     except Exception as e:
         print(f"Error loading action for edit: {e}")
         return ERROR_TEMPLATE.format(error=f"Error loading action: {str(e)}"), 500
+
+
+@app.route('/action', methods=['GET'])
+def dsw_action():
+    from flask import request, jsonify
+    from dsw_action_handler import handle_action
+    action = request.args.get('action')
+    task_id = request.args.get('task_id')
+    status = request.args.get('status')
+    lost_reason = request.args.get('lost_reason')
+    if not action or not task_id:
+        return '<h2 style="font-family:sans-serif;color:red">Missing action or task_id</h2>', 400
+    ok, update = handle_action(action, task_id, status, lost_reason)
+    status_labels = {
+        'intro_call': 'Intro Call', 'site_visit_booked': 'Site Visit Booked',
+        'awaiting_docs': 'Awaiting Docs', 'build_quote': 'Build Quote',
+        'quote_submitted': 'Quote Sent', 'quote_followup': 'Quote Follow Up',
+        'revise_quote': 'Revise Quote', 'customer_deciding': 'Customer Deciding',
+        'nurture': 'Nurture', 'won': '🎉 WON', 'lost': '❌ LOST',
+        'complete': '✅ Complete'
+    }
+    if ok:
+        label = status_labels.get(status or action, action.replace('_', ' ').title())
+        color = '#10B981' if status in ['won','complete'] else '#ef4444' if status == 'lost' else '#1e40af'
+        return f'''<html><head><meta name="viewport" content="width=device-width,initial-scale=1">
+        <style>body{{font-family:sans-serif;display:flex;justify-content:center;align-items:center;min-height:100vh;margin:0;background:#f8fafc}}</style></head>
+        <body><div style="text-align:center;padding:40px">
+        <div style="font-size:48px;margin-bottom:16px">✅</div>
+        <h2 style="color:{color};margin:0">{label}</h2>
+        <p style="color:#6b7280">Task updated successfully</p>
+        <p style="color:#6b7280;font-size:12px">You can close this tab</p>
+        </div></body></html>'''
+    return '<h2 style="font-family:sans-serif;color:red">Action failed</h2>', 500
