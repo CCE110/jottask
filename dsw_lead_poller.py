@@ -163,7 +163,7 @@ def send_email(name, phone, addr, src, summary, crm_url, os_url, task_id=None):
     html = (
         '<div style="font-family:sans-serif;max-width:620px;margin:0 auto">'
         '<div style="background:#1e40af;color:white;padding:20px;border-radius:8px 8px 0 0">'
-        '<h2 style="margin:0">New DSW Lead</h2>'
+        '<div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap">'        '<h2 style="margin:0">New DSW Lead</h2>'        '<span style="background:rgba(255,255,255,0.25);padding:4px 14px;border-radius:20px;font-size:12px;font-weight:700;letter-spacing:0.5px">🔵 NEW LEAD</span>'        '</div>'
         '<p style="opacity:.8;margin:4px 0 0">'+now+' &middot; '+src+'</p></div>'
         '<div style="padding:20px;border:1px solid #e2e8f0">'
         '<h3 style="color:#1e40af;margin-top:0">'+name+'</h3>'
