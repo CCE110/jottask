@@ -3156,6 +3156,37 @@ def handle_action():
             </body></html>
             """, error=str(e))
 
+    elif action == 'set_status' and task_id:
+            status_val = request.args.get('status', '')
+            lost_reason = request.args.get('lost_reason', '')
+            update = {'lead_status': status_val, 'reminder_sent_at': None}
+            if status_val in ['won', 'lost']:
+                update['status'] = 'completed'
+                update['completed_at'] = datetime.now(pytz.UTC).isoformat()
+            if status_val == 'lost' and lost_reason:
+                update['lost_reason'] = lost_reason
+            supabase.table('tasks').update(update).eq('id', task_id).execute()
+            status_labels = {
+                'intro_call':'Intro Call','site_visit_booked':'Site Visit Booked',
+                'awaiting_docs':'Awaiting Docs','build_quote':'Build Quote',
+                'quote_submitted':'Quote Sent','quote_followup':'Quote Follow Up',
+                'revise_quote':'Revise Quote','customer_deciding':'Customer Deciding',
+                'nurture':'Nurture','won':'WON 🎉','lost':'LOST ❌'
+            }
+            label = status_labels.get(status_val, status_val.replace('_',' ').title())
+            color = '#10B981' if status_val == 'won' else '#ef4444' if status_val == 'lost' else '#1e40af'
+            return render_template_string("""
+            <html><head><title>Status Updated</title>
+            <meta name="viewport" content="width=device-width,initial-scale=1">
+            </head>
+            <body style="font-family:sans-serif;text-align:center;padding:50px;background:#f8fafc;">
+                <div style="font-size:48px;margin-bottom:16px">✅</div>
+                <h2 style="color:{{ color }}">{{ label }}</h2>
+                <p style="color:#6b7280">Lead status updated</p>
+                <p><a href="https://www.jottask.app/dashboard" style="color:#6366F1">Open Dashboard</a></p>
+            </body></html>
+            """, label=label, color=color)
+
     # Default - show error (don't redirect to login-required dashboard)
     return render_template_string("""
     <html><body style="font-family: sans-serif; text-align: center; padding: 50px;">
