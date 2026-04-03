@@ -93,7 +93,7 @@ def make_opensolar(name, phone, email, address, city, state, postcode):
     except Exception as e: print("OpenSolar exc:", e); return None, None
 
 def save_to_crm(cid, os_url, summary):
-    note_body = "OpenSolar: " + os_url + "\n\n" + summary
+    note_body = "OpenSolar: " + os_url + chr(10) + chr(10) + summary
     r_notes = req.get(f"{BASE}/contacts/{cid}/notes", headers=H)
     existing_id = None
     if r_notes.ok:
