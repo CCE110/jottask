@@ -143,6 +143,22 @@ def send_email(name, phone, addr, src, summary, crm_url, os_url, task_id=None):
         bl = [("Complete",f"{AU}?action=complete&task_id={task_id}","#10B981"),("+1 Hour",f"{AU}?action=delay_1hour&task_id={task_id}","#6B7280"),("+1 Day",f"{AU}?action=delay_1day&task_id={task_id}","#6B7280"),("Tmrw 8am",f"{AU}?action=delay_next_day_8am&task_id={task_id}","#0EA5E9"),("Tmrw 9am",f"{AU}?action=delay_next_day_9am&task_id={task_id}","#0EA5E9"),("Mon 9am",f"{AU}?action=delay_next_monday_9am&task_id={task_id}","#F59E0B")]
         bh = "".join(f'<a href="{u}" style="display:inline-block;padding:10px 15px;background:{col};color:white;text-decoration:none;border-radius:8px;font-weight:600;font-size:13px">{l}</a>' for l,u,col in bl)
         abtns = f'<div style="margin:16px 0;display:flex;flex-wrap:wrap;gap:8px">{bh}</div>'
+        # Status buttons
+        statuses = [
+            ("Intro Call","intro_call","#1e40af"),
+            ("Site Visit Booked","site_visit_booked","#7c3aed"),
+            ("Awaiting Docs","awaiting_docs","#b45309"),
+            ("Build Quote","build_quote","#0369a1"),
+            ("Quote Sent","quote_submitted","#0891b2"),
+            ("Quote Follow Up","quote_followup","#0e7490"),
+            ("Revise Quote","revise_quote","#7c3aed"),
+            ("Customer Deciding","customer_deciding","#b45309"),
+            ("Nurture","nurture","#6b7280"),
+            ("WON","won","#10B981"),
+            ("LOST","lost","#ef4444"),
+        ]
+        sh = "".join(f'<a href="{AU}?action=set_status&status={s}&task_id={task_id}" style="display:inline-block;padding:8px 12px;background:{col};color:white;text-decoration:none;border-radius:8px;font-weight:600;font-size:12px">{l}</a>' for l,s,col in statuses)
+        sbtns = f'<div style="margin:8px 0;display:flex;flex-wrap:wrap;gap:6px">{sh}</div>'
     os_btn = '<a href="'+os_url+'" style="display:inline-block;background:#f59e0b;color:white;padding:10px 20px;border-radius:6px;text-decoration:none;font-weight:bold;margin:5px">&#9728;&#65039; OpenSolar</a>' if os_url else ""
     html = (
         '<div style="font-family:sans-serif;max-width:620px;margin:0 auto">'
