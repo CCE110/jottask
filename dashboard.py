@@ -2838,6 +2838,37 @@ def billing():
 # ACTION ROUTE (Email Button Handler)
 # ============================================
 
+
+def _resend_dsw_email(task_id, task_data):
+    """Resend DSW lead email with current lead_status for delayed tasks."""
+    import importlib.util, sys, os
+    try:
+        spec = importlib.util.spec_from_file_location("dsw_lead_poller", 
+            os.path.join(os.path.dirname(__file__), "dsw_lead_poller.py"))
+        poller = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(poller)
+        from dotenv import load_dotenv
+        load_dotenv()
+        import requests as req
+        TOKEN = os.getenv("PIPEREPLY_TOKEN")
+        LOCATION_ID = os.getenv("PIPEREPLY_LOCATION_ID")
+        H = {"Authorization": f"Bearer {TOKEN}", "Content-Type": "application/json", "Version": "2021-07-28"}
+        # Extract name from task title e.g. "Call John Smith - New DSW Lead"
+        title = task_data.get('title', '')
+        name = title.replace('Call ', '').replace(' - New DSW Lead', '').strip()
+        r = req.get("https://services.leadconnectorhq.com/contacts/", headers=H,
+            params={"locationId": LOCATION_ID, "query": name, "limit": 1})
+        contacts = r.json().get("contacts", [])
+        if contacts:
+            contact = contacts[0]
+            lead_status = task_data.get('lead_status', 'new_lead')
+            poller.process(contact, task_id=task_id, lead_status=lead_status)
+            print(f"[DSW RESEND] Sent email for {name} status={lead_status}")
+        else:
+            print(f"[DSW RESEND] No contact found for: {name}")
+    except Exception as e:
+        print(f"[DSW RESEND] Error: {e}")
+
 @app.route('/action')
 def handle_action():
     """Handle action button clicks from emails - redirects to appropriate pages"""
@@ -2926,6 +2957,12 @@ def handle_action():
                     'reminder_sent_at': None
                 }).eq('id', task_id).execute()
 
+                # If DSW Solar task, resend lead email with current status
+                if task_data.get('category') == 'DSW Solar':
+                    try:
+                        _resend_dsw_email(task_id, task_data)
+                    except Exception as e:
+                        print(f"DSW resend error: {e}")
                 return render_template_string("""
                 <html><head><title>Task Delayed</title></head>
                 <body style="font-family: sans-serif; text-align: center; padding: 50px; background: #eff6ff;">
@@ -2949,6 +2986,11 @@ def handle_action():
                     'reminder_sent_at': None
                 }).eq('id', task_id).execute()
 
+                if task_data.get('category') == 'DSW Solar':
+                    try:
+                        _resend_dsw_email(task_id, task_data)
+                    except Exception as e:
+                        print(f"DSW resend error: {e}")
                 return render_template_string("""
                 <html><head><title>Task Delayed</title></head>
                 <body style="font-family: sans-serif; text-align: center; padding: 50px; background: #eff6ff;">
