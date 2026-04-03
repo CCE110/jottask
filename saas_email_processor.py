@@ -660,6 +660,9 @@ class AIEmailProcessor:
             email_type = 'plaud_transcription' if is_plaud else 'forwarded_email'
 
             print(f"{'[PLAUD]' if is_plaud else '[EMAIL]'} Analyzing: {subject}")
+            if subject and 're:' in subject.lower() and 'new lead:' in subject.lower():
+                if handle_dsw_reply(subject, body_text, sender_email):
+                    continue
 
             # Parse with appropriate prompt
             analysis = self.analyze_with_claude(subject, sender, content, email_type, user_context=user_context)
@@ -2024,3 +2027,58 @@ if __name__ == "__main__":
 
         print(f"Sleeping {poll_interval}s until next check... (tick #{tick})")
         time.sleep(poll_interval)
+
+
+def handle_dsw_reply(subject, body_text, sender_email):
+    import re, os, requests
+    from datetime import datetime
+    if 'directsolarwholesaler' not in (sender_email or '').lower():
+        return False
+    m = re.search(r'New Lead:\s+([A-Za-z\s]+?)\s*-\s*Call ASAP', subject or '', re.IGNORECASE)
+    if not m:
+        return False
+    name = m.group(1).strip()
+    print(f"[DSW REPLY] Notes update for: {name}")
+    clean_lines = []
+    for line in (body_text or '').split('\n'):
+        if line.strip().startswith('>') or line.strip().startswith('On ') or line.strip() == '---':
+            break
+        clean_lines.append(line)
+    notes_text = '\n'.join(clean_lines).strip()
+    if not notes_text:
+        print("[DSW REPLY] No text found"); return False
+    TOKEN = os.getenv('PIPEREPLY_TOKEN')
+    LOCATION_ID = os.getenv('PIPEREPLY_LOCATION_ID')
+    BASE = 'https://services.leadconnectorhq.com'
+    H = {'Authorization': f'Bearer {TOKEN}', 'Content-Type': 'application/json', 'Version': '2021-07-28'}
+    r = requests.get(f'{BASE}/contacts/', headers=H, params={'locationId': LOCATION_ID, 'query': name, 'limit': 3})
+    contacts = r.json().get('contacts', [])
+    match = next((c for c in contacts if name.lower() in (c.get('contactName') or '').lower()), None)
+    if not match and contacts: match = contacts[0]
+    if not match: print(f"[DSW REPLY] Not found: {name}"); return False
+    cid = match['id']
+    r_notes = requests.get(f'{BASE}/contacts/{cid}/notes', headers=H)
+    existing_id = existing_body = None
+    if r_notes.ok:
+        for note in (r_notes.json().get('notes') or []):
+            if 'OpenSolar' in (note.get('body') or '') or 'CUSTOMER REQUIREMENTS' in (note.get('body') or ''):
+                existing_id = note.get('id'); existing_body = note.get('body', ''); break
+    ts = datetime.now().strftime('%d %b %Y %I:%M %p')
+    new_body = (existing_body or '') + f'\n\n--- Call Notes ({ts}) ---\n{notes_text}'
+    if existing_id:
+        r2 = requests.put(f'{BASE}/contacts/{cid}/notes/{existing_id}', headers=H, json={'body': new_body})
+    else:
+        r2 = requests.post(f'{BASE}/contacts/{cid}/notes', headers=H, json={'body': new_body})
+    print(f"[DSW REPLY] CRM updated: {r2.status_code}")
+    try:
+        from supabase import create_client
+        sb = create_client(os.getenv('SUPABASE_URL'), os.getenv('SUPABASE_KEY'))
+        tasks = sb.table('tasks').select('id,description').eq('category','DSW Solar').ilike('title',f'%{name}%').eq('status','pending').order('created_at',desc=True).limit(1).execute()
+        if tasks.data:
+            tid = tasks.data[0]['id']
+            new_desc = (tasks.data[0].get('description') or '') + f'\n\n--- Call Notes ({ts}) ---\n{notes_text}'
+            sb.table('tasks').update({'description': new_desc}).eq('id', tid).execute()
+            print(f"[DSW REPLY] Task updated: {tid[:8]}")
+    except Exception as e:
+        print(f"[DSW REPLY] Task error: {e}")
+    return True
