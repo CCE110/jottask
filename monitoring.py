@@ -248,6 +248,7 @@ def check_reminder_health():
             .eq('status', 'pending')\
             .is_('reminder_sent_at', 'null')\
             .not_.is_('due_time', 'null')\
+            .neq('category', 'DSW Solar')\
             .gte('due_date', yesterday)\
             .lte('due_date', today)\
             .limit(50)\
