@@ -662,7 +662,7 @@ class AIEmailProcessor:
             print(f"{'[PLAUD]' if is_plaud else '[EMAIL]'} Analyzing: {subject}")
             if subject and 're:' in subject.lower() and 'new lead:' in subject.lower():
                 if handle_dsw_reply(subject, body_text, sender_email):
-                    continue
+                    return ("dsw_reply", "DSW lead notes updated")
 
             # Parse with appropriate prompt
             analysis = self.analyze_with_claude(subject, sender, content, email_type, user_context=user_context)
