@@ -177,7 +177,9 @@ def send_email(name, phone, addr, src, summary, crm_url, os_url, task_id=None):
         '<div style="background:#f8fafc;padding:15px;border-radius:6px;white-space:pre-line;font-size:14px;line-height:1.6">'+summary+'</div>'
         '<hr style="border:1px solid #e2e8f0">'
         '<p style="font-weight:600;color:#6B7280;font-size:13px">Task Delay</p>'
-        +abtns+
+        f'{abtns}'
+        '<p style="font-weight:600;color:#6B7280;font-size:13px;margin-top:12px">Lead Status</p>'
+        f'{sbtns}'
         '</div>'
         '<div style="background:#1e40af;padding:12px;border-radius:0 0 8px 8px;text-align:center">'
         '<a href="https://jottask.app/dashboard" style="color:white;font-weight:bold;text-decoration:none">Open Jottask</a>'
