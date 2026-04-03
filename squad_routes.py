@@ -8,7 +8,9 @@ Routes: /squad/, /squad/inbox, /squad/inbox/paste, /squad/team, /p/<token>
 
 import json
 import os
+import secrets
 import uuid
+from collections import defaultdict
 from datetime import datetime, date, timedelta
 
 import pytz
@@ -122,6 +124,29 @@ def dashboard():
         except Exception:
             ev['day_name'] = ''
             ev['day_short'] = ''
+
+    # Poll stats for upcoming events (batch fetch — avoids N+1 queries)
+    if squad_id and upcoming_events:
+        event_ids = [ev['id'] for ev in upcoming_events]
+        sep_result = _db().table('squad_event_players') \
+            .select('event_id, player_id, status, squad_players(player_name, shirt_number)') \
+            .in_('event_id', event_ids) \
+            .execute()
+        sep_by_event = defaultdict(lambda: {'yes': 0, 'no': 0, 'pending': 0, 'players': []})
+        for sep in (sep_result.data or []):
+            eid = sep['event_id']
+            sep_by_event[eid][sep['status']] += 1
+            pl = sep.get('squad_players') or {}
+            sep_by_event[eid]['players'].append({
+                'player_name':  pl.get('player_name', '?'),
+                'shirt_number': pl.get('shirt_number'),
+                'status':       sep['status'],
+            })
+        for ev in upcoming_events:
+            ev['poll'] = sep_by_event.get(ev['id'], {'yes': 0, 'no': 0, 'pending': 0, 'players': []})
+    else:
+        for ev in upcoming_events:
+            ev['poll'] = {'yes': 0, 'no': 0, 'pending': 0, 'players': []}
 
     # Pending inbox count
     inbox_q = _db().table('squad_email_inbox').select('id', count='exact').eq('status', 'pending')
@@ -587,6 +612,7 @@ def add_parent():
         'parent_name':  parent_name,
         'parent_email': parent_email or None,
         'parent_phone': parent_phone or None,
+        'magic_token':  secrets.token_hex(24),
         'is_active':    True,
         'created_at':   datetime.now(pytz.UTC).isoformat(),
     }).execute()
@@ -814,6 +840,7 @@ def upload_team_sheet():
             'player_id':    player_id,
             'parent_name':  pname,
             'parent_email': pa.get('parent_email') or None,
+            'magic_token':  secrets.token_hex(24),
             'is_active':    True,
             'created_at':   now_iso,
         }).execute()
@@ -988,3 +1015,267 @@ def squad_cal(token):
             'Cache-Control': 'no-cache, no-store, must-revalidate',
         }
     )
+
+
+# ── Availability Poll ─────────────────────────────────────────────────────────
+
+@squad_bp.route('/squad/events/<event_id>/poll', methods=['POST'])
+@login_required
+def poll_event(event_id):
+    """Send availability poll emails to all parents for every player in the squad.
+
+    One poll_token per player — shared by all parents linked to that player.
+    Players who have already responded (yes/no) are skipped.
+    """
+    from email_utils import send_email
+
+    user_id = session.get('user_id')
+    squad = _get_squad_for_user(user_id)
+    if not squad:
+        return jsonify({'error': 'No squad'}), 404
+
+    # Verify event belongs to this squad
+    ev_result = _db().table('squad_events').select('*') \
+        .eq('id', event_id).eq('squad_id', squad['id']).maybe_single().execute()
+    if not ev_result.data:
+        return jsonify({'error': 'Event not found'}), 404
+
+    event     = ev_result.data
+    squad_id  = squad['id']
+    squad_name = squad.get('name', 'Squad')
+    app_url   = os.getenv('APP_URL', 'https://www.jottask.app')
+
+    # All players in squad
+    players_result = _db().table('squad_players') \
+        .select('id, player_name, shirt_number') \
+        .eq('squad_id', squad_id).execute()
+    players = players_result.data or []
+    if not players:
+        return jsonify({'error': 'No players in squad'}), 400
+
+    # All active parents with emails, keyed by player_id
+    parents_result = _db().table('squad_parent_links') \
+        .select('id, parent_name, parent_email, player_id') \
+        .eq('squad_id', squad_id).eq('is_active', True).execute()
+    parents_by_player = defaultdict(list)
+    for pa in (parents_result.data or []):
+        if pa.get('parent_email') and pa.get('player_id'):
+            parents_by_player[pa['player_id']].append(pa)
+
+    # Format event description
+    try:
+        ev_date    = date.fromisoformat(str(event['event_date'])[:10])
+        ev_date_str = ev_date.strftime(f'%A, {ev_date.day} %B %Y')
+    except Exception:
+        ev_date_str = str(event.get('event_date', ''))
+
+    ev_time_str = str(event['event_time'])[:5] if event.get('event_time') else ''
+
+    if event.get('opponent'):
+        event_title = ('vs ' if event.get('is_home') else '@ ') + event['opponent']
+    elif event.get('event_type') == 'training':
+        event_title = f"{squad_name} Training"
+    else:
+        event_title = (event.get('event_type') or 'Event').title()
+
+    sent    = 0
+    now_iso = datetime.now(pytz.UTC).isoformat()
+
+    for player in players:
+        player_id   = player['id']
+        player_name = player['player_name']
+
+        # Get or create squad_event_players row
+        sep_result = _db().table('squad_event_players') \
+            .select('id, status, poll_token') \
+            .eq('event_id', event_id).eq('player_id', player_id) \
+            .maybe_single().execute()
+
+        if sep_result.data:
+            sep = sep_result.data
+            if sep['status'] in ('yes', 'no'):
+                continue          # already responded — don't re-email
+            poll_token = sep['poll_token']
+        else:
+            poll_token = secrets.token_hex(24)
+            _db().table('squad_event_players').insert({
+                'id':         str(uuid.uuid4()),
+                'event_id':   event_id,
+                'player_id':  player_id,
+                'status':     'pending',
+                'poll_token': poll_token,
+                'created_at': now_iso,
+            }).execute()
+
+        player_parents = parents_by_player.get(player_id, [])
+        if not player_parents:
+            continue
+
+        yes_url = f"{app_url}/squad/rsvp/{poll_token}/yes"
+        no_url  = f"{app_url}/squad/rsvp/{poll_token}/no"
+
+        for pa in player_parents:
+            html = _poll_email_html(
+                squad_name, player_name, pa.get('parent_name', 'there'),
+                event_title, ev_date_str, ev_time_str,
+                event.get('venue') or '', yes_url, no_url,
+            )
+            ok, _ = send_email(
+                pa['parent_email'],
+                f"{squad_name} — Is {player_name} available? {ev_date_str}",
+                html,
+                category='squad_poll',
+            )
+            if ok:
+                sent += 1
+
+    return jsonify({'ok': True, 'sent': sent})
+
+
+def _poll_email_html(squad_name, player_name, parent_name,
+                     event_title, ev_date_str, ev_time_str, venue,
+                     yes_url, no_url):
+    time_venue = ''
+    if ev_time_str:
+        time_venue += ev_time_str
+    if venue:
+        time_venue += (' · ' if time_venue else '') + venue
+    tv_line = (f"<div style='font-size:13px;color:#4b5563;margin-top:2px;'>{time_venue}</div>"
+               if time_venue else '')
+    return f"""
+<html><body style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
+                    max-width:560px;margin:0 auto;padding:20px;background:#f0fdf4;">
+  <div style="background:linear-gradient(135deg,#15803d,#14532d);padding:24px 32px;
+              border-radius:14px 14px 0 0;">
+    <h1 style="color:white;margin:0;font-size:22px;">&#x26BD; {squad_name}</h1>
+    <p style="color:rgba(255,255,255,.8);margin:6px 0 0;font-size:14px;">Availability check</p>
+  </div>
+  <div style="background:white;padding:28px 32px;border-radius:0 0 14px 14px;
+              box-shadow:0 4px 8px rgba(0,0,0,.06);">
+    <p style="font-size:16px;color:#1a2e1a;">Hi {parent_name},</p>
+    <p style="font-size:14px;color:#374151;margin-top:10px;line-height:1.6;">
+      Can <strong>{player_name}</strong> make this one?
+    </p>
+    <div style="background:#f0fdf4;border:1px solid #bbf7d0;border-radius:10px;
+                padding:14px 18px;margin:20px 0;">
+      <div style="font-size:16px;font-weight:700;color:#15803d;">{event_title}</div>
+      <div style="font-size:13px;color:#374151;margin-top:4px;">{ev_date_str}</div>
+      {tv_line}
+    </div>
+    <table width="100%" style="margin:24px 0;border-collapse:collapse;">
+      <tr>
+        <td style="padding-right:8px;">
+          <a href="{yes_url}" style="display:block;background:#15803d;color:white;
+             text-align:center;padding:16px;border-radius:10px;text-decoration:none;
+             font-weight:700;font-size:16px;">&#x2705; Yes, we&#x2019;re in!</a>
+        </td>
+        <td style="padding-left:8px;">
+          <a href="{no_url}" style="display:block;background:#fef2f2;color:#dc2626;
+             text-align:center;padding:16px;border-radius:10px;text-decoration:none;
+             font-weight:700;font-size:16px;border:1.5px solid #fecaca;">
+            &#x274C; Can&#x2019;t make it</a>
+        </td>
+      </tr>
+    </table>
+    <p style="font-size:12px;color:#9ca3af;text-align:center;margin-top:8px;">
+      Tap once — no login needed. First response counts.
+    </p>
+    <hr style="border:none;border-top:1px solid #e5e7eb;margin:20px 0;">
+    <p style="font-size:12px;color:#9ca3af;text-align:center;">
+      Powered by <a href="https://www.jottask.app" style="color:#6b7280;">Jottask Squad</a>
+    </p>
+  </div>
+</body></html>"""
+
+
+# ── One-click RSVP from email ─────────────────────────────────────────────────
+
+@squad_bp.route('/squad/rsvp/<token>/<action>')
+def quick_rsvp(token, action):
+    """Handle a YES or NO tap from a poll email. No login required.
+
+    First response wins — if already answered, show a friendly message.
+    """
+    if action not in ('yes', 'no'):
+        return _rsvp_page('&#x2753; Invalid link', 'This link is not valid.', '#6b7280'), 400
+
+    sep_result = _admin_db().table('squad_event_players') \
+        .select('id, status, player_id, event_id') \
+        .eq('poll_token', token).maybe_single().execute()
+
+    if not sep_result.data:
+        return _rsvp_page(
+            '&#x2753; Link not found',
+            'This availability link is no longer valid. Ask your coach for a new one.',
+            '#6b7280',
+        ), 404
+
+    sep       = sep_result.data
+    player_id = sep['player_id']
+
+    # Fetch player name for friendly messages
+    pl_result = _admin_db().table('squad_players') \
+        .select('player_name').eq('id', player_id).maybe_single().execute()
+    player_name = (pl_result.data or {}).get('player_name', 'your player')
+
+    # Already responded?
+    if sep['status'] != 'pending':
+        prev = sep['status']
+        icon = '&#x2705;' if prev == 'yes' else '&#x274C;'
+        return _rsvp_page(
+            f'{icon} Already recorded',
+            f"We already have a <strong>{prev}</strong> for <strong>{player_name}</strong> — no action needed.",
+            '#15803d' if prev == 'yes' else '#dc2626',
+        )
+
+    # Record response
+    now_iso = datetime.now(pytz.UTC).isoformat()
+    _admin_db().table('squad_event_players').update({
+        'status':       action,
+        'responded_at': now_iso,
+    }).eq('id', sep['id']).execute()
+
+    if action == 'yes':
+        return _rsvp_page(
+            '&#x2705; Thanks!',
+            f"Got it — <strong>{player_name} is coming</strong>. See you there!",
+            '#15803d',
+        )
+    else:
+        return _rsvp_page(
+            '&#x274C; Thanks for letting us know',
+            f"No worries — we&#x2019;ll note that <strong>{player_name} can&#x2019;t make it</strong>.",
+            '#dc2626',
+        )
+
+
+def _rsvp_page(title, body, color):
+    return f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Squad — RSVP</title>
+<style>
+  body {{
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    background: #f0fdf4; display: flex; align-items: center; justify-content: center;
+    min-height: 100vh; margin: 0; padding: 20px; box-sizing: border-box;
+  }}
+  .card {{
+    background: white; border-radius: 16px; padding: 40px 32px;
+    text-align: center; max-width: 420px; width: 100%;
+    box-shadow: 0 4px 16px rgba(0,0,0,.10);
+  }}
+  .icon {{ font-size: 56px; margin-bottom: 16px; display: block; }}
+  h1 {{ font-size: 22px; color: {color}; margin: 0 0 12px; line-height: 1.3; }}
+  p  {{ font-size: 15px; color: #374151; line-height: 1.6; margin: 0; }}
+</style>
+</head>
+<body>
+  <div class="card">
+    <h1>{title}</h1>
+    <p>{body}</p>
+  </div>
+</body>
+</html>"""

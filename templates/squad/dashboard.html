@@ -165,6 +165,33 @@
   .badge-cup      { background: #fef9c3; color: #854d0e; }
   .badge-other    { background: #f3f4f6; color: #374151; }
 
+  /* ── Poll stats bar ─────────────────────────────────── */
+  .poll-bar {
+    display: flex; align-items: center; gap: 10px;
+    margin-top: 6px; font-size: 12px; font-weight: 600;
+  }
+  .poll-yes     { color: #15803d; }
+  .poll-no      { color: #dc2626; }
+  .poll-pending { color: #9ca3af; }
+  .btn-poll {
+    background: none; border: none; cursor: pointer;
+    font-size: 15px; padding: 5px 7px; border-radius: 6px; line-height: 1;
+    color: #9ca3af;
+  }
+  .btn-poll:hover { color: #1d4ed8; background: #eff6ff; }
+
+  /* ── Team sheet expandable ───────────────────────────── */
+  .team-sheet { display: none; padding: 10px 0 4px; }
+  .team-sheet.open { display: grid; grid-template-columns: repeat(auto-fill, minmax(88px, 1fr)); gap: 6px; }
+  .ts-chip {
+    border-radius: 8px; padding: 8px 6px; text-align: center;
+    font-size: 12px; font-weight: 600; line-height: 1.3; border: 1px solid transparent;
+  }
+  .ts-yes     { background: #dcfce7; color: #15803d; border-color: #86efac; }
+  .ts-no      { background: #fef2f2; color: #dc2626; border-color: #fecaca; }
+  .ts-pending { background: #f3f4f6; color: #6b7280; border-color: #e5e7eb; }
+  .ts-num     { font-size: 15px; font-weight: 800; display: block; }
+
   /* ── Inbox preview items ─────────────────────────────── */
   .inbox-item {
     padding: 10px 0; border-bottom: 1px solid #f0fdf4;
@@ -462,41 +489,67 @@
             {% for ev in upcoming_events %}
             {% set parts = ev.event_date.split('-') %}
             {% set months = ['','Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'] %}
-            <div class="event-item">
-              <div class="event-date-block">
-                <span class="dow">{{ ev.day_short or '' }}</span>
-                <span class="day">{{ parts[2] | int }}</span>
-                <span class="mon">{{ months[parts[1] | int] }}</span>
-              </div>
-              <div class="event-info" style="cursor:pointer"
-                   onclick="openEditSheet('{{ ev.id }}','{{ ev.event_date }}','{{ ev.event_time[:5] if ev.event_time else '' }}','{{ ev.opponent or '' }}','{{ ev.venue or '' }}','{{ 'true' if ev.is_home is sameas true else ('false' if ev.is_home is sameas false else '') }}','{{ ev.event_type or 'game' }}')">
-                <div class="event-title">
-                  {% if ev.opponent %}
-                    {% if ev.is_home %}vs {{ ev.opponent }}{% else %}@ {{ ev.opponent }}{% endif %}
-                  {% elif ev.event_type == 'training' %}
-                    {{ squad.name }} Training
-                  {% elif ev.event_type == 'other' %}
-                    {{ ev.notes or ev.venue or 'Event' }}
-                  {% else %}
-                    {{ ev.event_type | title if ev.event_type else 'Event' }}
+            <div class="event-item" style="flex-direction:column;gap:0;">
+              <div style="display:flex;align-items:flex-start;gap:14px;width:100%;">
+                <div class="event-date-block">
+                  <span class="dow">{{ ev.day_short or '' }}</span>
+                  <span class="day">{{ parts[2] | int }}</span>
+                  <span class="mon">{{ months[parts[1] | int] }}</span>
+                </div>
+                <div class="event-info" style="cursor:pointer;flex:1;"
+                     onclick="openEditSheet('{{ ev.id }}','{{ ev.event_date }}','{{ ev.event_time[:5] if ev.event_time else '' }}','{{ ev.opponent or '' }}','{{ ev.venue or '' }}','{{ 'true' if ev.is_home is sameas true else ('false' if ev.is_home is sameas false else '') }}','{{ ev.event_type or 'game' }}')">
+                  <div class="event-title">
+                    {% if ev.opponent %}
+                      {% if ev.is_home %}vs {{ ev.opponent }}{% else %}@ {{ ev.opponent }}{% endif %}
+                    {% elif ev.event_type == 'training' %}
+                      {{ squad.name }} Training
+                    {% elif ev.event_type == 'other' %}
+                      {{ ev.notes or ev.venue or 'Event' }}
+                    {% else %}
+                      {{ ev.event_type | title if ev.event_type else 'Event' }}
+                    {% endif %}
+                  </div>
+                  <div class="event-meta">
+                    {% if ev.event_time %}{{ ev.event_time[:5] }}{% endif %}
+                    {% if ev.event_time and ev.venue %} · {% endif %}
+                    {% if ev.venue %}{{ ev.venue }}{% endif %}
+                    {% if not ev.event_time and not ev.venue %}Venue TBD{% endif %}
+                  </div>
+                  <span class="event-type-badge badge-{{ ev.event_type or 'other' }}">{{ ev.event_type or 'event' }}</span>
+                  {% set p = ev.poll %}
+                  {% if p.yes > 0 or p.no > 0 or p.pending > 0 %}
+                  <div class="poll-bar">
+                    {% if p.yes > 0 %}<span class="poll-yes">✅ {{ p.yes }}</span>{% endif %}
+                    {% if p.no > 0 %}<span class="poll-no">❌ {{ p.no }}</span>{% endif %}
+                    {% if p.pending > 0 %}<span class="poll-pending">⏳ {{ p.pending }}</span>{% endif %}
+                    {% if p.players %}
+                    <button class="btn-poll" title="Toggle team sheet"
+                            onclick="event.stopPropagation();toggleTeamSheet('{{ ev.id }}')">👕</button>
+                    {% endif %}
+                  </div>
                   {% endif %}
                 </div>
-                <div class="event-meta">
-                  {% if ev.event_time %}{{ ev.event_time[:5] }}{% endif %}
-                  {% if ev.event_time and ev.venue %} · {% endif %}
-                  {% if ev.venue %}{{ ev.venue }}{% endif %}
-                  {% if not ev.event_time and not ev.venue %}Venue TBD{% endif %}
+                <div class="event-actions">
+                  <button class="btn-poll" title="Poll parents"
+                          onclick="pollEvent('{{ ev.id }}', this)">📢</button>
+                  <button class="event-edit" title="Edit event"
+                          onclick="openEditSheet('{{ ev.id }}','{{ ev.event_date }}','{{ ev.event_time[:5] if ev.event_time else '' }}','{{ ev.opponent or '' }}','{{ ev.venue or '' }}','{{ 'true' if ev.is_home is sameas true else ('false' if ev.is_home is sameas false else '') }}','{{ ev.event_type or 'game' }}')">✏️</button>
+                  <form method="POST" action="/squad/events/{{ ev.id }}/delete"
+                        onsubmit="return confirm('Remove this event?')">
+                    <button type="submit" class="event-delete" title="Remove event">✕</button>
+                  </form>
                 </div>
-                <span class="event-type-badge badge-{{ ev.event_type or 'other' }}">{{ ev.event_type or 'event' }}</span>
               </div>
-              <div class="event-actions">
-                <button class="event-edit" title="Edit event"
-                        onclick="openEditSheet('{{ ev.id }}','{{ ev.event_date }}','{{ ev.event_time[:5] if ev.event_time else '' }}','{{ ev.opponent or '' }}','{{ ev.venue or '' }}','{{ 'true' if ev.is_home is sameas true else ('false' if ev.is_home is sameas false else '') }}','{{ ev.event_type or 'game' }}')">✏️</button>
-                <form method="POST" action="/squad/events/{{ ev.id }}/delete"
-                      onsubmit="return confirm('Remove this event?')">
-                  <button type="submit" class="event-delete" title="Remove event">✕</button>
-                </form>
+              {% if ev.poll.players %}
+              <div class="team-sheet" id="ts-{{ ev.id }}">
+                {% for ts in ev.poll.players | sort(attribute='player_name') %}
+                <div class="ts-chip ts-{{ ts.status }}">
+                  {% if ts.shirt_number %}<span class="ts-num">#{{ ts.shirt_number }}</span>{% endif %}
+                  {{ ts.player_name.split()[0] if ts.player_name else '?' }}
+                </div>
+                {% endfor %}
               </div>
+              {% endif %}
             </div>
             {% endfor %}
           {% else %}
@@ -812,6 +865,67 @@ async function saveRename() {
     document.title = 'Squad — ' + data.name;
     cancelRename();
   }
+}
+
+// ── Availability poll ──────────────────────────────────────────────────────
+
+async function pollEvent(eventId, btn) {
+  if (btn._polling) return;
+  btn._polling = true;
+  const orig = btn.textContent;
+  btn.textContent = '⏳';
+  btn.disabled = true;
+  try {
+    const res  = await fetch(`/squad/events/${eventId}/poll`, { method: 'POST' });
+    const data = await res.json();
+    if (data.ok) {
+      btn.textContent = '✅';
+      setTimeout(() => {
+        btn.textContent = orig;
+        btn.disabled = false;
+        btn._polling = false;
+      }, 2000);
+      // Show count in a small toast
+      showPollToast(data.sent);
+      // Reload after a moment so counts update
+      setTimeout(() => location.reload(), 2200);
+    } else {
+      alert(data.error || 'Poll failed');
+      btn.textContent = orig; btn.disabled = false; btn._polling = false;
+    }
+  } catch (e) {
+    alert('Network error — please try again.');
+    btn.textContent = orig; btn.disabled = false; btn._polling = false;
+  }
+}
+
+function showPollToast(sent) {
+  let toast = document.getElementById('pollToast');
+  if (!toast) {
+    toast = document.createElement('div');
+    toast.id = 'pollToast';
+    toast.style.cssText = [
+      'position:fixed', 'bottom:80px', 'left:50%',
+      'transform:translateX(-50%)',
+      'background:#15803d', 'color:white',
+      'padding:10px 20px', 'border-radius:10px',
+      'font-size:14px', 'font-weight:600',
+      'z-index:99999', 'pointer-events:none',
+      'box-shadow:0 4px 12px rgba(0,0,0,.2)',
+    ].join(';');
+    document.body.appendChild(toast);
+  }
+  toast.textContent = sent === 0
+    ? '📢 No pending parents to email'
+    : `📢 Poll sent to ${sent} parent${sent === 1 ? '' : 's'}`;
+  toast.style.display = 'block';
+  setTimeout(() => { toast.style.display = 'none'; }, 3000);
+}
+
+function toggleTeamSheet(eventId) {
+  const el = document.getElementById('ts-' + eventId);
+  if (!el) return;
+  el.classList.toggle('open');
 }
 </script>
 
