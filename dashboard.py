@@ -3237,7 +3237,7 @@ def handle_action():
                 <p style="color:#6b7280">Lead status updated</p>
                 <div style="margin:28px 0 8px">
                     <p style="color:#6b7280;font-size:13px;font-weight:600;margin-bottom:10px">Remind me again:</p>
-                    <div style="display:flex;flex-wrap:wrap;gap:8px;justify-content:center">{{ btns_html }}</div>
+                    <div style="display:flex;flex-wrap:wrap;gap:8px;justify-content:center">{{ btns_html | safe }}</div>
                 </div>
                 <p style="margin-top:28px"><a href="https://www.jottask.app/dashboard" style="color:#6366F1">Open Dashboard</a></p>
             </body></html>
