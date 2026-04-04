@@ -670,6 +670,9 @@ class AIEmailProcessor:
             if 're:' in subject_lower and 'new lead:' in subject_lower:
                 if handle_dsw_reply(subject, content, sender_email_addr):
                     return ("dsw_reply", "DSW lead notes updated")
+            # Forwarded/unstructured lead from rob.l — FW:/Fwd: or body has AU phone
+            if handle_dsw_forward(subject, content, sender_email_addr):
+                return ("task_created", f"DSW forward lead: {subject[:80]}")
 
             # Parse with appropriate prompt
             analysis = self.analyze_with_claude(subject, sender, content, email_type, user_context=user_context)
@@ -2042,6 +2045,204 @@ if __name__ == "__main__":
 
         print(f"Sleeping {poll_interval}s until next check... (tick #{tick})")
         time.sleep(poll_interval)
+
+
+def handle_dsw_forward(subject, body_text, sender_email):
+    """Handle a forwarded or unstructured lead email from rob.l@directsolarwholesaler.com.au.
+
+    Triggered when subject contains FW:/Fwd: OR body contains an Australian phone number.
+    Uses Claude Haiku to extract contact details (name, phone, email, address, referred_by,
+    notes, lead_source) from whatever is in the body — no fixed format required.
+
+    Steps:
+      1. Claude extracts contact details
+      2. Create/update Pipereply contact
+      3. Call dsw_lead_poller.process() → OpenSolar, Mac contact, CRM note, email, task
+      4. Patch the created task's due time to 30 min from now (urgent)
+    """
+    import re, os, requests, json, importlib.util as ilu
+    from datetime import datetime, timedelta
+    from anthropic import Anthropic
+
+    sender_lower = (sender_email or '').lower()
+    if 'rob.l@directsolarwholesaler.com.au' not in sender_lower:
+        return False
+
+    subject_lower = (subject or '').lower()
+    is_forward = any(subject_lower.startswith(p) for p in ('fw:', 'fwd:'))
+    has_au_phone = bool(re.search(r'\b0[0-9]{9}\b', body_text or ''))
+    if not is_forward and not has_au_phone:
+        return False
+
+    print(f"[DSW FORWARD] Processing forwarded/unstructured lead: {subject}")
+
+    # ── 1. Claude Haiku extracts contact details ───────────────────────────
+    claude = Anthropic(api_key=os.getenv('ANTHROPIC_API_KEY'))
+    extraction_prompt = f"""Extract contact details from this email and return JSON only. No explanation.
+
+Subject: {subject}
+Body:
+{(body_text or '')[:3000]}
+
+Return exactly this JSON:
+{{
+  "name": "full name or null",
+  "phone": "digits only (e.g. 0412345678) or null",
+  "email": "email address or null",
+  "address": "full street address with suburb, state, postcode or null",
+  "referred_by": "person/source that referred them or null",
+  "notes": "solar/battery interest, system size, urgency, bill amount, anything relevant or null",
+  "lead_source": "referral|website|sign|social_media|facebook|google|other or null"
+}}
+
+Rules:
+- Extract real data only, never invent anything
+- phone: Australian format — starts with 04 (mobile) or 02/03/07/08 (landline), 10 digits
+- Return null for any field not found in the email"""
+
+    try:
+        resp = claude.messages.create(
+            model='claude-haiku-4-5-20251001',
+            max_tokens=400,
+            messages=[{'role': 'user', 'content': extraction_prompt}],
+        )
+        raw = resp.content[0].text.strip()
+        # Strip markdown fences if present
+        raw = re.sub(r'^```(?:json)?\s*', '', raw, flags=re.MULTILINE)
+        raw = re.sub(r'\s*```$', '', raw, flags=re.MULTILINE)
+        extracted = json.loads(raw)
+    except Exception as e:
+        print(f"[DSW FORWARD] Claude extraction failed: {e}")
+        return False
+
+    name   = (extracted.get('name') or '').strip()
+    phone  = (extracted.get('phone') or '').strip()
+    email_addr = (extracted.get('email') or '').strip()
+    address    = (extracted.get('address') or '').strip()
+    referred_by = (extracted.get('referred_by') or '').strip()
+    notes       = (extracted.get('notes') or '').strip()
+    lead_source = (extracted.get('lead_source') or 'referral').strip()
+
+    if not name and not phone:
+        print(f"[DSW FORWARD] Could not extract name or phone — skipping")
+        return False
+
+    print(f"[DSW FORWARD] Extracted: {name} | {phone} | {address[:40] if address else '—'}")
+
+    TOKEN       = os.getenv('PIPEREPLY_TOKEN')
+    LOCATION_ID = os.getenv('PIPEREPLY_LOCATION_ID')
+    BASE = 'https://services.leadconnectorhq.com'
+    H = {'Authorization': f'Bearer {TOKEN}', 'Content-Type': 'application/json', 'Version': '2021-07-28'}
+
+    # ── 2. Create/update Pipereply contact ────────────────────────────────
+    parts = name.strip().split() if name else []
+    first_name = parts[0] if parts else (name or 'Unknown')
+    last_name  = ' '.join(parts[1:]) if len(parts) > 1 else ''
+
+    # Build contact notes for Claude summarisation in dsw.process()
+    note_parts = []
+    if referred_by:   note_parts.append(f'Referred by: {referred_by}')
+    if lead_source:   note_parts.append(f'Source: {lead_source}')
+    if notes:         note_parts.append(notes)
+    contact_notes = '\n'.join(note_parts)
+
+    cid = None
+    if name:
+        r_search = requests.get(f'{BASE}/contacts/', headers=H,
+                                params={'locationId': LOCATION_ID, 'query': name, 'limit': 3},
+                                timeout=10)
+        contacts_found = r_search.json().get('contacts', []) if r_search.ok else []
+        match = next((c for c in contacts_found
+                      if name.lower() in (c.get('contactName') or '').lower()), None)
+        if match:
+            cid = match['id']
+            update_payload = {}
+            if phone:       update_payload['phone']    = phone
+            if email_addr:  update_payload['email']    = email_addr
+            if address:     update_payload['address1'] = address
+            if contact_notes: update_payload['notes'] = contact_notes
+            if update_payload:
+                requests.put(f'{BASE}/contacts/{cid}', headers=H, json=update_payload, timeout=10)
+            print(f"[DSW FORWARD] Updated existing contact: {name} ({cid[:8]})")
+
+    if not cid:
+        contact_payload = {
+            'locationId': LOCATION_ID,
+            'firstName': first_name,
+            'lastName':  last_name,
+            'phone':     phone,
+            'email':     email_addr,
+            'address1':  address,
+            'tags':      [lead_source if lead_source else 'referral'],
+            'source':    lead_source.replace('_', ' ').title() if lead_source else 'Referral',
+            'notes':     contact_notes,
+        }
+        r_create = requests.post(f'{BASE}/contacts/', headers=H, json=contact_payload, timeout=10)
+        if r_create.ok:
+            created = r_create.json()
+            cid = (created.get('contact') or created).get('id', '')
+            print(f"[DSW FORWARD] Created contact: {name} ({(cid or '?')[:8]})")
+        else:
+            print(f"[DSW FORWARD] Contact creation failed: {r_create.status_code} {r_create.text[:120]}")
+
+    # ── 3. Save CRM note with all extracted info ───────────────────────────
+    if cid:
+        crm_note_lines = [f'Source: {lead_source.replace("_"," ").title()} — {datetime.now().strftime("%d %b %Y")}']
+        if referred_by:  crm_note_lines.append(f'Referred by: {referred_by}')
+        if phone:        crm_note_lines.append(f'Phone: {phone}')
+        if email_addr:   crm_note_lines.append(f'Email: {email_addr}')
+        if address:      crm_note_lines.append(f'Address: {address}')
+        if notes:        crm_note_lines.append(f'\nNotes:\n{notes}')
+        requests.post(f'{BASE}/contacts/{cid}/notes', headers=H,
+                      json={'body': '\n'.join(crm_note_lines)}, timeout=10)
+
+    if not cid:
+        print(f"[DSW FORWARD] No contact ID — cannot proceed")
+        return False
+
+    # ── 4+5+6+7. dsw.process() → OpenSolar, Mac contact, task, email ──────
+    # process() creates task with due=tomorrow 09:00; we patch it after.
+    try:
+        _spec = ilu.spec_from_file_location('dsw_lead_poller',
+            os.path.join(os.path.dirname(os.path.abspath(__file__)), 'dsw_lead_poller.py'))
+        dsw = ilu.module_from_spec(_spec)
+        _spec.loader.exec_module(dsw)
+
+        minimal_contact = {
+            'id': cid, 'contactName': name, 'phone': phone,
+            'email': email_addr, 'address1': address,
+            'tags': [lead_source if lead_source else 'referral'],
+        }
+        dsw.process(minimal_contact, task_id=None, lead_status=None)
+
+    except Exception as e:
+        print(f"[DSW FORWARD] dsw.process error: {e}")
+        return True  # Contact + note already created, still return True
+
+    # ── Patch task due time to 30 minutes from now ─────────────────────────
+    try:
+        from supabase import create_client
+        sb = create_client(os.getenv('SUPABASE_URL'), os.getenv('SUPABASE_KEY'))
+        due_dt = datetime.now() + timedelta(minutes=30)
+        task_search = sb.table('tasks')\
+            .select('id')\
+            .eq('category', 'DSW Solar')\
+            .eq('status', 'pending')\
+            .ilike('client_name', f'%{name}%')\
+            .order('created_at', desc=True)\
+            .limit(1)\
+            .execute()
+        if task_search.data:
+            tid = task_search.data[0]['id']
+            sb.table('tasks').update({
+                'due_date': due_dt.strftime('%Y-%m-%d'),
+                'due_time': due_dt.strftime('%H:%M:%S'),
+            }).eq('id', tid).execute()
+            print(f"[DSW FORWARD] Task due time patched to {due_dt.strftime('%H:%M')} ({tid[:8]})")
+    except Exception as e:
+        print(f"[DSW FORWARD] Task due-time patch error: {e}")
+
+    return True
 
 
 def handle_dsw_new_lead(subject, body_text, sender_email):
