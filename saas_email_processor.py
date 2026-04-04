@@ -1289,6 +1289,7 @@ Rules:
             'due_date': due_date,
             'due_time': due_time,
             'priority': action.get('priority', 'medium'),
+            'category': action.get('category') or 'DSW Solar',
             'is_meeting': action.get('action_type') == 'create_calendar_event',
             'status': 'pending',
         }

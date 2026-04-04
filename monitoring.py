@@ -290,6 +290,20 @@ def check_reminder_health():
             if (now - last_dt).total_seconds() < 10800:  # < 3 hours
                 return True  # Reminders sent recently — healthy
 
+        # Don't re-alert if this same check already fired within the last hour
+        last_alert = sb.table('system_events')\
+            .select('created_at')\
+            .eq('event_type', 'alert_sent')\
+            .ilike('message', '%Reminders may be silently failing%')\
+            .order('created_at', desc=True)\
+            .limit(1)\
+            .execute()
+
+        if last_alert.data:
+            alert_dt = datetime.fromisoformat(last_alert.data[0]['created_at'].replace('Z', '+00:00'))
+            if (now - alert_dt).total_seconds() < 3600:  # < 1 hour
+                return False  # Already alerted recently — suppress
+
         # Problem: tasks with past due_time have no reminder and no recent sends
         task_list = ', '.join(f"{t['title'][:30]} (due {t['due_date']} {t['due_time']})" for t in missed[:5])
         send_self_alert(
