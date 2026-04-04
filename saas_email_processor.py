@@ -660,8 +660,15 @@ class AIEmailProcessor:
             email_type = 'plaud_transcription' if is_plaud else 'forwarded_email'
 
             print(f"{'[PLAUD]' if is_plaud else '[EMAIL]'} Analyzing: {subject}")
-            if subject and 're:' in subject.lower() and 'new lead:' in subject.lower():
-                if handle_dsw_reply(subject, body_text, sender_email):
+            sender_email_addr = self._get_sender_email_address(sender)
+            subject_lower = (subject or '').lower()
+            # Self-generated lead from rob.l@directsolarwholesaler.com.au — "New Lead: ..."
+            if subject_lower.startswith('new lead:') and 're:' not in subject_lower:
+                if handle_dsw_new_lead(subject, content, sender_email_addr):
+                    return ("task_created", f"DSW self-generated lead: {subject[:80]}")
+            # Reply from DSW with call notes — "Re: New Lead: ..."
+            if 're:' in subject_lower and 'new lead:' in subject_lower:
+                if handle_dsw_reply(subject, content, sender_email_addr):
                     return ("dsw_reply", "DSW lead notes updated")
 
             # Parse with appropriate prompt
@@ -2035,6 +2042,125 @@ if __name__ == "__main__":
 
         print(f"Sleeping {poll_interval}s until next check... (tick #{tick})")
         time.sleep(poll_interval)
+
+
+def handle_dsw_new_lead(subject, body_text, sender_email):
+    """Handle a self-generated lead email from rob.l@directsolarwholesaler.com.au.
+
+    Triggered when subject starts with "New Lead:" (not a reply).
+    Parses Name/Phone/Email/Address/Referred by/Notes from body, then:
+      a) Creates/updates Pipereply contact
+      b) Saves CRM note with referral source + notes
+      c) Calls dsw_lead_poller.process() → creates OpenSolar project, Mac contact,
+         Jottask task (due tomorrow 9am), and sends full DSW lead email.
+    """
+    import re, os, requests, importlib.util as ilu
+    from datetime import datetime, timedelta
+
+    sender_lower = (sender_email or '').lower()
+    if 'rob.l@directsolarwholesaler.com.au' not in sender_lower:
+        return False
+    subject_lower = (subject or '').lower()
+    # Must start with "new lead:" but must NOT be a reply (re:)
+    if not subject_lower.startswith('new lead:'):
+        return False
+
+    print(f"[DSW NEW LEAD] Processing self-generated lead: {subject}")
+
+    def parse_field(text, field_name):
+        m = re.search(rf'^{re.escape(field_name)}\s*:?\s*(.+)$', text, re.MULTILINE | re.IGNORECASE)
+        return m.group(1).strip() if m else ''
+
+    body = body_text or ''
+    name       = parse_field(body, 'Name')
+    phone      = parse_field(body, 'Phone')
+    email_addr = parse_field(body, 'Email')
+    address    = parse_field(body, 'Address')
+    referred_by = parse_field(body, 'Referred by')
+    notes      = parse_field(body, 'Notes')
+
+    if not name:
+        print("[DSW NEW LEAD] No Name: field found in body — skipping")
+        return False
+
+    TOKEN       = os.getenv('PIPEREPLY_TOKEN')
+    LOCATION_ID = os.getenv('PIPEREPLY_LOCATION_ID')
+    BASE = 'https://services.leadconnectorhq.com'
+    H = {'Authorization': f'Bearer {TOKEN}', 'Content-Type': 'application/json', 'Version': '2021-07-28'}
+
+    # a) Create/update Pipereply contact
+    parts = name.strip().split()
+    first_name = parts[0] if parts else name
+    last_name  = ' '.join(parts[1:]) if len(parts) > 1 else ''
+
+    # Search for existing contact
+    r_search = requests.get(f'{BASE}/contacts/', headers=H,
+                            params={'locationId': LOCATION_ID, 'query': name, 'limit': 3},
+                            timeout=10)
+    contacts_found = r_search.json().get('contacts', []) if r_search.ok else []
+    match = next((c for c in contacts_found
+                  if name.lower() in (c.get('contactName') or '').lower()), None)
+
+    if match:
+        cid = match['id']
+        update_payload = {}
+        if phone:      update_payload['phone']    = phone
+        if email_addr: update_payload['email']    = email_addr
+        if address:    update_payload['address1'] = address
+        if update_payload:
+            requests.put(f'{BASE}/contacts/{cid}', headers=H, json=update_payload, timeout=10)
+        print(f"[DSW NEW LEAD] Updated existing contact: {name} ({cid[:8]})")
+    else:
+        contact_payload = {
+            'locationId': LOCATION_ID,
+            'firstName': first_name,
+            'lastName':  last_name,
+            'phone':     phone or '',
+            'email':     email_addr or '',
+            'address1':  address or '',
+            'tags':      ['referral'],
+            'source':    'Referral',
+        }
+        if referred_by or notes:
+            note_parts = []
+            if referred_by: note_parts.append(f'Referred by: {referred_by}')
+            if notes:        note_parts.append(notes)
+            contact_payload['notes'] = '\n'.join(note_parts)
+        r_create = requests.post(f'{BASE}/contacts/', headers=H,
+                                 json=contact_payload, timeout=10)
+        if r_create.ok:
+            created = r_create.json()
+            cid = (created.get('contact') or created).get('id', '')
+            print(f"[DSW NEW LEAD] Created contact: {name} ({(cid or '?')[:8]})")
+        else:
+            print(f"[DSW NEW LEAD] Contact creation failed: {r_create.status_code} {r_create.text[:120]}")
+            cid = None
+
+    # b) Save CRM note with referral source + notes
+    if cid:
+        note_lines = [f'Source: Referral — {datetime.now().strftime("%d %b %Y")}']
+        if referred_by: note_lines.append(f'Referred by: {referred_by}')
+        if notes:       note_lines.append(f'Notes: {notes}')
+        requests.post(f'{BASE}/contacts/{cid}/notes', headers=H,
+                      json={'body': '\n'.join(note_lines)}, timeout=10)
+
+    if not cid:
+        print("[DSW NEW LEAD] No contact ID — cannot proceed")
+        return False
+
+    # c+d) Run dsw_lead_poller.process() — creates OpenSolar, Mac contact, task, email
+    try:
+        _spec = ilu.spec_from_file_location('dsw_lead_poller',
+            os.path.join(os.path.dirname(os.path.abspath(__file__)), 'dsw_lead_poller.py'))
+        dsw = ilu.module_from_spec(_spec)
+        _spec.loader.exec_module(dsw)
+        minimal_contact = {'id': cid, 'contactName': name, 'phone': phone,
+                           'email': email_addr, 'address1': address, 'tags': ['referral']}
+        dsw.process(minimal_contact, task_id=None, lead_status=None)
+    except Exception as e:
+        print(f"[DSW NEW LEAD] dsw.process error: {e}")
+
+    return True
 
 
 def handle_dsw_reply(subject, body_text, sender_email):

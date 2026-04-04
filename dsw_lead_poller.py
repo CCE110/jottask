@@ -163,7 +163,7 @@ def make_task(name, phone, summary, crm_url, os_url):
         return tid
     except Exception as e: print("Task error:", e); return None
 
-def send_email(name, phone, addr, src, summary, crm_url, os_url, task_id=None, lead_status=None):
+def send_email(name, phone, addr, src, summary, crm_url, os_url, task_id=None, lead_status=None, subject=None):
     now = datetime.now().strftime("%d %b %Y %I:%M %p")
     import urllib.parse
     maps_url = "https://maps.google.com/?q=" + urllib.parse.quote(addr)
@@ -219,7 +219,8 @@ def send_email(name, phone, addr, src, summary, crm_url, os_url, task_id=None, l
         '</div></div>'
     )
     try:
-        resend.Emails.send({"from":"Jottask <"+FROM_EMAIL+">","to":[NOTIFY],"subject":"New Lead: "+name+" - Call ASAP","html":html})
+        email_subject = subject if subject else ("New Lead: "+name+" - Call ASAP")
+        resend.Emails.send({"from":"Jottask <"+FROM_EMAIL+">","to":[NOTIFY],"subject":email_subject,"html":html})
         print("Email sent:", name)
     except Exception as e: print("Email error:", e)
 

@@ -652,7 +652,7 @@ def check_and_send_dsw_reminders():
 
         # Get all pending DSW Solar tasks (filter overdue in Python to avoid null-check syntax issues)
         result = _get_supabase().table('tasks')\
-            .select('id, title, client_name, due_date, due_time, lead_status, reminder_sent_at')\
+            .select('id, title, client_name, due_date, due_time, lead_status, reminder_sent_at, description')\
             .eq('status', 'pending')\
             .eq('category', 'DSW Solar')\
             .execute()
@@ -716,7 +716,29 @@ def check_and_send_dsw_reminders():
 
                 contacts = r.json().get('contacts', [])
                 if not contacts:
-                    print(f"   No Pipereply contact found for: '{name}'")
+                    print(f"   No Pipereply contact for '{name}' — sending fallback reminder from task data")
+                    import re as _re
+                    desc = task.get('description') or ''
+                    phone_m = _re.search(r'Phone:\s*(\S+)', desc)
+                    phone = phone_m.group(1) if phone_m else 'N/A'
+                    # Build summary: description lines that aren't Phone/CRM/OpenSolar
+                    summary_lines = [l.strip() for l in desc.splitlines()
+                                     if l.strip() and not any(
+                                         l.strip().startswith(p)
+                                         for p in ('Phone:', 'CRM:', 'OpenSolar:'))]
+                    summary = '\n'.join(summary_lines) or desc[:500]
+                    status_label = dsw.STATUS_LABELS.get(lead_status, '🔵 NEW LEAD')
+                    dsw.send_email(
+                        name=name, phone=phone, addr='', src='DSW Solar',
+                        summary=summary, crm_url='', os_url=None,
+                        task_id=task_id, lead_status=lead_status,
+                        subject=f"DSW Reminder: {name} - {status_label}",
+                    )
+                    _get_supabase().table('tasks').update({
+                        'reminder_sent_at': datetime.now(pytz.UTC).isoformat()
+                    }).eq('id', task_id).execute()
+                    sent += 1
+                    time.sleep(0.5)
                     continue
 
                 print(f"   Resending lead email: {name} (status: {lead_status})")
