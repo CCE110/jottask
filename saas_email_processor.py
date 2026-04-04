@@ -2123,11 +2123,14 @@ Rules:
     notes       = (extracted.get('notes') or '').strip()
     lead_source = (extracted.get('lead_source') or 'referral').strip()
 
-    if not name and not phone:
-        print(f"[DSW FORWARD] Could not extract name or phone — skipping")
-        return False
+    # Never skip — even with no name/phone, create a task so the lead isn't lost.
+    # Fall back to subject line as the name so the task is identifiable.
+    if not name:
+        # Strip FW:/Fwd: prefix and use the remainder as a best-guess name
+        name = re.sub(r'^(fw|fwd)\s*:\s*', '', subject or 'Unknown Lead', flags=re.IGNORECASE).strip() or 'Unknown Lead'
+        print(f"[DSW FORWARD] No name extracted — using subject as fallback: '{name}'")
 
-    print(f"[DSW FORWARD] Extracted: {name} | {phone} | {address[:40] if address else '—'}")
+    print(f"[DSW FORWARD] Extracted: {name} | {phone or '—'} | {address[:40] if address else '—'}")
 
     TOKEN       = os.getenv('PIPEREPLY_TOKEN')
     LOCATION_ID = os.getenv('PIPEREPLY_LOCATION_ID')
