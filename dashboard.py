@@ -3217,6 +3217,16 @@ def handle_action():
             }
             label = status_labels.get(status_val, status_val.replace('_',' ').title())
             color = '#10B981' if status_val == 'won' else '#ef4444' if status_val == 'lost' else '#1e40af'
+            au = "https://www.jottask.app/action"
+            delay_buttons = [
+                ("+1 Hour",    f"{au}?action=delay_1hour&task_id={task_id}"),
+                ("+1 Day",     f"{au}?action=delay_1day&task_id={task_id}"),
+                ("Tmrw 8am",   f"{au}?action=delay_next_day_8am&task_id={task_id}"),
+                ("Tmrw 9am",   f"{au}?action=delay_next_day_9am&task_id={task_id}"),
+                ("Mon 9am",    f"{au}?action=delay_next_monday_9am&task_id={task_id}"),
+            ]
+            btn_style = "display:inline-block;padding:8px 14px;background:#1e40af;color:white;text-decoration:none;border-radius:8px;font-size:13px;font-weight:600"
+            btns_html = " ".join(f'<a href="{url}" style="{btn_style}">{label_}</a>' for label_, url in delay_buttons)
             return render_template_string("""
             <html><head><title>Status Updated</title>
             <meta name="viewport" content="width=device-width,initial-scale=1">
@@ -3225,9 +3235,13 @@ def handle_action():
                 <div style="font-size:48px;margin-bottom:16px">✅</div>
                 <h2 style="color:{{ color }}">{{ label }}</h2>
                 <p style="color:#6b7280">Lead status updated</p>
-                <p><a href="https://www.jottask.app/dashboard" style="color:#6366F1">Open Dashboard</a></p>
+                <div style="margin:28px 0 8px">
+                    <p style="color:#6b7280;font-size:13px;font-weight:600;margin-bottom:10px">Remind me again:</p>
+                    <div style="display:flex;flex-wrap:wrap;gap:8px;justify-content:center">{{ btns_html }}</div>
+                </div>
+                <p style="margin-top:28px"><a href="https://www.jottask.app/dashboard" style="color:#6366F1">Open Dashboard</a></p>
             </body></html>
-            """, label=label, color=color)
+            """, label=label, color=color, btns_html=btns_html)
 
     # Default - show error (don't redirect to login-required dashboard)
     return render_template_string("""
