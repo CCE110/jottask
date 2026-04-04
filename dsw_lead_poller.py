@@ -254,6 +254,52 @@ def process(contact, task_id=None, lead_status=None):
     send_email(name, phone, addr, src, summary, crm_url, os_url, task_id, lead_status)
     print("Done in", round(time.time()-t0,1), "s:", name)
 
+def resend_email_only(contact_name):
+    """Resend the lead email for an existing DSW Solar task by client_name.
+
+    Looks up the pending task, finds the Pipereply contact, and calls
+    process() with task_id + lead_status so no new task or OpenSolar
+    project is created.
+    """
+    from supabase import create_client
+    sb = create_client(os.getenv("SUPABASE_URL"), os.getenv("SUPABASE_KEY"))
+
+    # 1. Find existing pending DSW Solar task for this contact
+    result = sb.table('tasks')\
+        .select('id, lead_status')\
+        .eq('status', 'pending')\
+        .eq('category', 'DSW Solar')\
+        .ilike('client_name', contact_name)\
+        .order('created_at', desc=True)\
+        .limit(1)\
+        .execute()
+
+    if not result.data:
+        print(f"resend_email_only: no pending DSW Solar task found for '{contact_name}'")
+        return
+
+    task = result.data[0]
+    task_id = task['id']
+    lead_status = task.get('lead_status') or 'new_lead'
+    print(f"Found task {task_id[:8]} lead_status={lead_status} for '{contact_name}'")
+
+    # 2. Find Pipereply contact by name
+    r = req.get(f"{BASE}/contacts/", headers=H,
+                params={'locationId': LOCATION_ID, 'query': contact_name, 'limit': 1},
+                timeout=10)
+    if not r.ok:
+        print(f"resend_email_only: Pipereply lookup failed: HTTP {r.status_code}")
+        return
+
+    contacts = r.json().get('contacts', [])
+    if not contacts:
+        print(f"resend_email_only: no Pipereply contact found for '{contact_name}'")
+        return
+
+    # 3. Resend email only
+    process(contacts[0], task_id=task_id, lead_status=lead_status)
+
+
 def main():
     print("DSW Lead Poller v2 -", datetime.now().strftime("%H:%M:%S"))
     if not TOKEN: print("PIPEREPLY_TOKEN missing"); return
