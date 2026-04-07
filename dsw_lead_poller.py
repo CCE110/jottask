@@ -165,110 +165,103 @@ def save_to_crm(cid, os_url, summary):
         print("CRM note created:", r2.status_code)
 
 
-def mac_contact(name, phone, email='', address='', src=''):
-    """Create a contact via iCloud CardDAV (syncs to iPhone + all devices).
-    Falls back to osascript (Mac mini local only) if iCloud fails.
+def icloud_contact(name, phone, email='', address='', city='', state='', postcode='', src=''):
+    """Create a contact in iCloud via CardDAV. Returns True on success, False on failure.
+
+    Discovers partition + DSID dynamically so it works even if Apple moves the account.
     """
-    import uuid, re as _re
+    import uuid, re as _re, requests as _req, xml.etree.ElementTree as ET
+    from requests.auth import HTTPBasicAuth
+
+    icloud_email    = os.getenv('ICLOUD_EMAIL', '')
+    icloud_password = os.getenv('ICLOUD_APP_PASSWORD', '')
+    if not icloud_password:
+        print('[iCloud] No ICLOUD_APP_PASSWORD set')
+        return False
 
     parts = name.strip().split()
     first = parts[0] if parts else 'Unknown'
     last  = (' '.join(parts[1:]) + ' DSW').strip() if len(parts) > 1 else 'DSW'
     note  = f"DSW Lead | {src} | {datetime.now().strftime('%d %b %Y')}"
-    date_str = datetime.now().strftime('%Y%m%dT%H%M%SZ')
-
-    # ── Parse address into components ─────────────────────────────────────
-    # address might be "68 Coward St, Deagon, QLD, 4017" or just a street
-    street = city_v = state_v = post_v = ''
-    addr_parts = [p.strip() for p in (address or '').split(',')]
-    if len(addr_parts) >= 4:
-        street, city_v, state_v, post_v = addr_parts[0], addr_parts[1], addr_parts[2], addr_parts[3]
-    elif len(addr_parts) == 3:
-        street, city_v, state_v = addr_parts[0], addr_parts[1], addr_parts[2]
-    elif addr_parts:
-        street = addr_parts[0]
-
-    # ── Build vCard 3.0 ───────────────────────────────────────────────────
-    uid = str(uuid.uuid4()).upper()
+    date_str = datetime.utcnow().strftime('%Y%m%dT%H%M%SZ')
     phone_clean = _re.sub(r'[^\d+]', '', phone or '')
-    vcard_lines = [
-        'BEGIN:VCARD',
-        'VERSION:3.0',
-        f'UID:{uid}',
-        f'N:{last};{first};;;',
-        f'FN:{first} {last}',
-        f'REV:{date_str}',
-        f'NOTE:{note}',
-    ]
-    if phone_clean:
-        vcard_lines.append(f'TEL;TYPE=CELL:{phone_clean}')
-    if email:
-        vcard_lines.append(f'EMAIL;TYPE=INTERNET:{email}')
-    if any([street, city_v, state_v, post_v]):
-        # ADR: PO box; extended; street; city; state; postcode; country
-        vcard_lines.append(f'ADR;TYPE=HOME:;;{street};{city_v};{state_v};{post_v};Australia')
-    vcard_lines.append('END:VCARD')
-    vcard = '\r\n'.join(vcard_lines) + '\r\n'
 
-    # ── Try iCloud CardDAV ────────────────────────────────────────────────
-    icloud_email    = os.getenv('ICLOUD_EMAIL', 'rob@cloudcleanenergy.com.au')
-    icloud_password = os.getenv('ICLOUD_APP_PASSWORD', '')
+    auth = HTTPBasicAuth(icloud_email, icloud_password)
+    propfind_body = (
+        '<?xml version="1.0"?>'
+        '<d:propfind xmlns:d="DAV:"><d:prop><d:current-user-principal/></d:prop></d:propfind>'
+    )
 
-    if icloud_password:
-        try:
-            import requests as _req
-            from requests.auth import HTTPBasicAuth
-            auth = HTTPBasicAuth(icloud_email, icloud_password)
+    try:
+        # Step 1: get user partition from well-known endpoint
+        r0 = _req.request('PROPFIND', 'https://contacts.icloud.com/.well-known/carddav',
+                          auth=auth, headers={'Depth': '0', 'Content-Type': 'application/xml'},
+                          data=propfind_body, allow_redirects=True, timeout=15)
+        partition = r0.headers.get('x-apple-user-partition', '')
+        if not partition:
+            print(f'[iCloud] No x-apple-user-partition header (status {r0.status_code})')
+            return False
+        print(f'[iCloud] Partition: {partition}')
 
-            # Step 1: discover principal URL
-            discover_url = 'https://contacts.icloud.com/.well-known/carddav'
-            r0 = _req.request('PROPFIND', discover_url, auth=auth,
-                              headers={'Depth': '0', 'Content-Type': 'application/xml'},
-                              data='<?xml version="1.0"?><d:propfind xmlns:d="DAV:"><d:prop><d:current-user-principal/></d:prop></d:propfind>',
-                              allow_redirects=True, timeout=15)
-            print(f'[iCloud] PROPFIND {r0.status_code} → {r0.url}')
+        # Step 2: get DSID from partition server
+        r1 = _req.request('PROPFIND', f'https://p{partition}-contacts.icloud.com/',
+                          auth=auth, headers={'Depth': '0', 'Content-Type': 'application/xml'},
+                          data=propfind_body, timeout=15)
+        root = ET.fromstring(r1.text)
+        principal_el = root.find('.//{DAV:}current-user-principal/{DAV:}href')
+        if principal_el is None:
+            print(f'[iCloud] Could not parse current-user-principal from response')
+            return False
+        dsid = principal_el.text.strip('/').split('/')[0]
+        if not dsid.isdigit():
+            print(f'[iCloud] Unexpected principal href: {principal_el.text}')
+            return False
+        print(f'[iCloud] DSID: {dsid}')
 
-            # iCloud redirects to https://p{NN}-contacts.icloud.com/...
-            # The addressbook is at /UID/carddavhome/card/
-            # Extract base URL from redirect destination
-            base_url = r0.url.rstrip('/')
-            # Remove trailing path components after the dav principal
-            # Typical: https://p12-contacts.icloud.com/123456789/principal/
-            # Addressbook: https://p12-contacts.icloud.com/123456789/carddavhome/card/
-            if '/principal' in base_url:
-                base_url = base_url.replace('/principal', '')
-            elif '/.well-known' in base_url:
-                # Didn't redirect — try PROPFIND on the redirect location header
-                loc = r0.headers.get('location', '')
-                if loc:
-                    base_url = loc.rstrip('/')
+        # Step 3: build vCard 3.0
+        uid = str(uuid.uuid4()).upper()
+        vcard_lines = [
+            'BEGIN:VCARD',
+            'VERSION:3.0',
+            f'UID:{uid}',
+            f'N:{last};{first};;;',
+            f'FN:{first} {last}',
+            f'REV:{date_str}',
+            f'NOTE:{note}',
+        ]
+        if phone_clean:
+            vcard_lines.append(f'TEL;TYPE=CELL:{phone_clean}')
+        if email:
+            vcard_lines.append(f'EMAIL;TYPE=INTERNET:{email}')
+        if any([address, city, state, postcode]):
+            vcard_lines.append(f'ADR;TYPE=HOME:;;{address};{city};{state};{postcode};Australia')
+        vcard_lines.append('END:VCARD')
+        vcard = '\r\n'.join(vcard_lines) + '\r\n'
 
-            # Build addressbook URL
-            if '/carddavhome' not in base_url:
-                addressbook_url = base_url.rstrip('/') + '/carddavhome/card/'
-            else:
-                addressbook_url = base_url.rstrip('/') + '/'
+        # Step 4: PUT vCard to addressbook
+        ab_url   = f'https://p{partition}-contacts.icloud.com/{dsid}/carddavhome/card/'
+        card_url = ab_url + uid + '.vcf'
+        r2 = _req.put(card_url, auth=auth,
+                      headers={'Content-Type': 'text/vcard; charset=utf-8'},
+                      data=vcard.encode('utf-8'), timeout=15)
+        print(f'[iCloud] PUT {r2.status_code} → {first} {last}')
+        if r2.status_code in (200, 201, 204):
+            return True
+        print(f'[iCloud] PUT failed: {r2.status_code} {r2.text[:200]}')
+        return False
 
-            print(f'[iCloud] Addressbook URL: {addressbook_url}')
+    except Exception as e:
+        print(f'[iCloud] Error: {e}')
+        return False
 
-            # Step 2: PUT the vCard
-            card_url = addressbook_url + uid + '.vcf'
-            r1 = _req.put(card_url, auth=auth,
-                          headers={'Content-Type': 'text/vcard; charset=utf-8'},
-                          data=vcard.encode('utf-8'), timeout=15)
-            print(f'[iCloud] PUT {r1.status_code} → {card_url}')
 
-            if r1.status_code in (200, 201, 204):
-                print(f'[iCloud] Contact created: {first} {last}')
-                return
-            else:
-                print(f'[iCloud] PUT failed: {r1.status_code} {r1.text[:200]}')
-        except Exception as e:
-            print(f'[iCloud] Error: {e}')
-    else:
-        print('[iCloud] No ICLOUD_APP_PASSWORD set — skipping iCloud')
+def mac_contact(name, phone, src=''):
+    """Fallback: create a contact in the local Mac Contacts app via osascript."""
+    parts = name.strip().split()
+    first = parts[0] if parts else 'Unknown'
+    last  = (' '.join(parts[1:]) + ' DSW').strip() if len(parts) > 1 else 'DSW'
+    note  = f"DSW Lead | {src} | {datetime.now().strftime('%d %b %Y')}"
 
-    # ── Fallback: osascript (Mac mini local Contacts app) ─────────────────
     try:
         first_s = first.replace('"', '').replace("'", "")
         last_s  = last.replace('"', '').replace("'", "")
@@ -386,7 +379,8 @@ def process(contact, task_id=None, lead_status=None):
         # New lead: create OpenSolar project, Mac contact, and Jottask task
         _, os_url = make_opensolar(name, phone, email, address, city, state, postcode)
         if os_url: save_to_crm(cid, os_url, summary)
-        mac_contact(name, phone, email=email, address=addr, src=src)
+        if not icloud_contact(name, phone, email=email, address=address, city=city, state=state, postcode=postcode, src=src):
+            mac_contact(name, phone, src=src)
         task_id = make_task(name, phone, summary, crm_url, os_url)
     else:
         # Reminder resend: look up OpenSolar URL from existing CRM note
