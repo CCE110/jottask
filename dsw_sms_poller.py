@@ -110,4 +110,22 @@ def main():
     print(f"[SMS] Done. Processed {new_count} new leads.")
 
 if __name__ == '__main__':
-    main()
+    if len(sys.argv) > 1:
+        import requests, importlib.util
+        from dotenv import load_dotenv
+        load_dotenv()
+        name = ' '.join(sys.argv[1:])
+        TOKEN = os.getenv('PIPEREPLY_TOKEN')
+        LOC = os.getenv('PIPEREPLY_LOCATION_ID')
+        H = {'Authorization': f'Bearer {TOKEN}', 'Content-Type': 'application/json', 'Version': '2021-07-28'}
+        r = requests.get('https://services.leadconnectorhq.com/contacts/', headers=H, params={'locationId': LOC, 'query': name, 'limit': 1})
+        contacts = r.json().get('contacts', [])
+        spec = importlib.util.spec_from_file_location('poller', 'dsw_lead_poller.py')
+        poller = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(poller)
+        if contacts:
+            poller.process(contacts[0])
+        else:
+            print(f'NOT FOUND: {name}')
+    else:
+        main()
