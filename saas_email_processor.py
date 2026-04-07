@@ -2101,6 +2101,25 @@ def handle_dsw_forward(subject, body_text, sender_email):
     if has_lead_keywords: trigger_reason.append('solar/lead keywords')
     print(f"[DSW FORWARD] Triggered by: {', '.join(trigger_reason)}. Subject: '{subject}'")
 
+    # ── Helper: send failure alert to Rob ─────────────────────────────────
+    def notify_failure(reason):
+        try:
+            from email_utils import send_email
+            html = f"""
+<div style="font-family:sans-serif;max-width:600px;margin:0 auto">
+  <p style="color:#b91c1c;font-weight:bold;">&#9888; Jottask could not process your lead email</p>
+  <p><strong>Subject:</strong> {subject}</p>
+  <p><strong>Reason:</strong> {reason}</p>
+  <p>Please forward the email again or create the lead manually in Jottask.</p>
+  <p style="color:#6b7280;font-size:12px;">— Jottask Automation</p>
+</div>"""
+            send_email('rob.l@directsolarwholesaler.com.au',
+                       f'⚠️ Lead not processed: {(subject or "")[:60]}',
+                       html, category='dsw_forward_failure')
+            print(f"[DSW FORWARD] Failure alert sent to Rob: {reason}")
+        except Exception as e:
+            print(f"[DSW FORWARD] Could not send failure alert: {e}")
+
     # ── 1. Claude Haiku extracts contact details ───────────────────────────
     claude = Anthropic(api_key=os.getenv('ANTHROPIC_API_KEY'))
     extraction_prompt = f"""Extract contact details from this email and return JSON only. No explanation.
@@ -2138,6 +2157,7 @@ Rules:
         extracted = json.loads(raw)
     except Exception as e:
         print(f"[DSW FORWARD] Claude extraction failed: {e}")
+        notify_failure(f"AI could not read the email content ({e})")
         return False
 
     name   = (extracted.get('name') or '').strip()
@@ -2239,7 +2259,9 @@ Rules:
             cid = (created.get('contact') or created).get('id', '')
             print(f"[DSW FORWARD] Created new contact: {name} ({(cid or '?')[:8]})")
         else:
-            print(f"[DSW FORWARD] Contact creation failed: {r_create.status_code} {r_create.text[:120]}")
+            err = f"Pipereply contact creation failed ({r_create.status_code}): {r_create.text[:120]}"
+            print(f"[DSW FORWARD] {err}")
+            notify_failure(err)
 
     # ── 3. Save CRM note with all extracted info ───────────────────────────
     if cid:
@@ -2254,6 +2276,7 @@ Rules:
 
     if not cid:
         print(f"[DSW FORWARD] No contact ID — cannot proceed")
+        notify_failure("Could not find or create a Pipereply contact for this lead. Check Pipereply API token/permissions.")
         return False
 
     # ── 4+5+6+7. dsw.process() → OpenSolar, Mac contact, task, email ──────
@@ -2273,6 +2296,7 @@ Rules:
 
     except Exception as e:
         print(f"[DSW FORWARD] dsw.process error: {e}")
+        notify_failure(f"Lead was saved to Pipereply but task/reminder could not be created ({e}). Create the task manually in Jottask.")
         return True  # Contact + note already created, still return True
 
     # ── Patch task due time to 30 minutes from now ─────────────────────────
