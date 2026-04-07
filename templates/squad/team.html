@@ -80,7 +80,9 @@
   .number { font-weight: 800; color: #15803d; font-size: 16px; }
 
   /* ── Parent chips on Players tab ────────────────── */
-  .parent-chips { display: flex; flex-wrap: wrap; gap: 4px; }
+  .parent-chips { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; }
+  .btn-add-parent { padding:2px 8px;background:#eff6ff;color:#1e40af;border:1px solid #bfdbfe;border-radius:12px;font-size:11px;font-weight:600;cursor:pointer;white-space:nowrap; }
+  .btn-add-parent:hover { background:#dbeafe; }
   .parent-chip {
     font-size: 11px; background: #f0fdf4; color: #15803d; border: 1px solid #bbf7d0;
     border-radius: 20px; padding: 2px 9px; white-space: nowrap;
@@ -327,14 +329,31 @@
                      value="{{ p.position or '' }}" placeholder="Position" style="display:none">
             </td>
             <td>
-              <div class="parent-chips">
+              <div class="parent-chips" id="chips-{{ p.id }}">
                 {% if linked_parents %}
                   {% for pa in linked_parents %}
                   <span class="parent-chip" title="{{ pa.parent_email or '' }}">{{ pa.parent_name }}</span>
                   {% endfor %}
                 {% else %}
-                  <span class="no-parents">None linked</span>
+                  <span class="no-parents" id="no-parents-{{ p.id }}">None linked</span>
                 {% endif %}
+                <button class="btn-add-parent" onclick="showAddParent('{{ p.id }}')" title="Add parent">+ Add</button>
+              </div>
+              <!-- Inline add-parent form (hidden by default) -->
+              <div id="add-parent-form-{{ p.id }}" style="display:none;margin-top:6px">
+                <form method="POST" action="/squad/team/parents/add" style="display:flex;flex-wrap:wrap;gap:4px;align-items:center">
+                  <input type="hidden" name="player_id" value="{{ p.id }}">
+                  <input type="text"  name="parent_name"  placeholder="Name *" required
+                         style="width:120px;padding:4px 7px;border:1px solid #d1d5db;border-radius:6px;font-size:13px">
+                  <input type="email" name="parent_email" placeholder="Email"
+                         style="width:150px;padding:4px 7px;border:1px solid #d1d5db;border-radius:6px;font-size:13px">
+                  <input type="tel"   name="parent_phone" placeholder="Phone"
+                         style="width:110px;padding:4px 7px;border:1px solid #d1d5db;border-radius:6px;font-size:13px">
+                  <button type="submit"
+                          style="padding:4px 10px;background:#16a34a;color:white;border:none;border-radius:6px;font-size:13px;font-weight:600;cursor:pointer">Save</button>
+                  <button type="button" onclick="hideAddParent('{{ p.id }}')"
+                          style="padding:4px 8px;background:#f3f4f6;color:#374151;border:1px solid #d1d5db;border-radius:6px;font-size:13px;cursor:pointer">✕</button>
+                </form>
               </div>
             </td>
             <td>
@@ -658,6 +677,16 @@ function showToast(msg, ok = true) {
   const t = document.getElementById('toast');
   t.textContent = msg; t.style.background = ok ? '#15803d' : '#dc2626';
   t.style.display = 'block'; setTimeout(() => { t.style.display = 'none'; }, 2500);
+}
+
+function showAddParent(playerId) {
+  document.getElementById('add-parent-form-' + playerId).style.display = 'block';
+  document.getElementById('add-parent-form-' + playerId).querySelector('input[name="parent_name"]').focus();
+}
+function hideAddParent(playerId) {
+  var f = document.getElementById('add-parent-form-' + playerId);
+  f.style.display = 'none';
+  f.querySelector('form').reset();
 }
 </script>
 </body>
