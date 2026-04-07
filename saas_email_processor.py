@@ -2069,12 +2069,37 @@ def handle_dsw_forward(subject, body_text, sender_email):
         return False
 
     subject_lower = (subject or '').lower()
+    body_lower = (body_text or '').lower()
+
     is_forward = any(subject_lower.startswith(p) for p in ('fw:', 'fwd:'))
     has_au_phone = bool(re.search(r'\b0[0-9]{9}\b', body_text or ''))
-    if not is_forward and not has_au_phone:
+
+    # Skip known system/non-lead subject prefixes (new lead: and re: new lead: are
+    # already handled before this function is called, so only skip DSW system ones)
+    SKIP_PREFIXES = ('dsw reminder:', 'dsw:')
+    if any(subject_lower.startswith(p) for p in SKIP_PREFIXES):
+        print(f"[DSW FORWARD] SKIP — system subject prefix. Subject: '{subject}'")
         return False
 
-    print(f"[DSW FORWARD] Processing forwarded/unstructured lead: {subject}")
+    # Also fire for unstructured lead notes that don't have FW: or a phone number,
+    # e.g. "Joe hill referral aw his neighbour to send bill" or
+    # "Aw meeting energy retailer - Future X with Jack"
+    LEAD_KEYWORDS = (
+        'solar', 'battery', 'panel', 'inverter', 'energy', 'retailer',
+        'power', 'kwh', 'system', 'quote', 'install', 'referral', 'lead',
+        'customer', 'client', 'neighbour', 'neighbor', 'bill', 'meeting',
+    )
+    has_lead_keywords = any(kw in body_lower or kw in subject_lower for kw in LEAD_KEYWORDS)
+
+    if not is_forward and not has_au_phone and not has_lead_keywords:
+        print(f"[DSW FORWARD] SKIP — no FW:/Fwd: prefix, no AU phone, no solar/lead keywords. Subject: '{subject}'")
+        return False
+
+    trigger_reason = []
+    if is_forward:        trigger_reason.append('FW:/Fwd: prefix')
+    if has_au_phone:      trigger_reason.append('AU phone in body')
+    if has_lead_keywords: trigger_reason.append('solar/lead keywords')
+    print(f"[DSW FORWARD] Triggered by: {', '.join(trigger_reason)}. Subject: '{subject}'")
 
     # ── 1. Claude Haiku extracts contact details ───────────────────────────
     claude = Anthropic(api_key=os.getenv('ANTHROPIC_API_KEY'))
@@ -2150,25 +2175,52 @@ Rules:
     contact_notes = '\n'.join(note_parts)
 
     cid = None
-    if name:
-        r_search = requests.get(f'{BASE}/contacts/', headers=H,
-                                params={'locationId': LOCATION_ID, 'query': name, 'limit': 3},
-                                timeout=10)
-        contacts_found = r_search.json().get('contacts', []) if r_search.ok else []
-        match = next((c for c in contacts_found
-                      if name.lower() in (c.get('contactName') or '').lower()), None)
-        if match:
-            cid = match['id']
-            update_payload = {}
-            if phone:       update_payload['phone']    = phone
-            if email_addr:  update_payload['email']    = email_addr
-            if address:     update_payload['address1'] = address
-            if contact_notes: update_payload['notes'] = contact_notes
-            if update_payload:
-                requests.put(f'{BASE}/contacts/{cid}', headers=H, json=update_payload, timeout=10)
-            print(f"[DSW FORWARD] Updated existing contact: {name} ({cid[:8]})")
 
-    if not cid:
+    # ── Phone-first dedup search ───────────────────────────────────────────
+    if phone:
+        r_phone = requests.get(f'{BASE}/contacts/', headers=H,
+                               params={'locationId': LOCATION_ID, 'query': phone, 'limit': 5},
+                               timeout=10)
+        phone_contacts = r_phone.json().get('contacts', []) if r_phone.ok else []
+        phone_match = next(
+            (c for c in phone_contacts
+             if re.sub(r'\D', '', c.get('phone', '')) == re.sub(r'\D', '', phone)),
+            None,
+        )
+        if phone_match:
+            cid = phone_match['id']
+            print(f"[DSW FORWARD] Found existing contact by phone: "
+                  f"{phone_match.get('contactName','?')} ({cid[:8]})")
+
+    # ── Name fallback search (case-insensitive) ───────────────────────────
+    if not cid and name:
+        r_name = requests.get(f'{BASE}/contacts/', headers=H,
+                              params={'locationId': LOCATION_ID, 'query': name, 'limit': 3},
+                              timeout=10)
+        name_contacts = r_name.json().get('contacts', []) if r_name.ok else []
+        name_match = next(
+            (c for c in name_contacts
+             if name.lower() in (c.get('contactName') or '').lower()
+             or (c.get('contactName') or '').lower() in name.lower()),
+            None,
+        )
+        if name_match:
+            cid = name_match['id']
+            print(f"[DSW FORWARD] Found existing contact by name: "
+                  f"{name_match.get('contactName','?')} ({cid[:8]})")
+
+    if cid:
+        # Update existing contact with any new details
+        update_payload = {}
+        if phone:         update_payload['phone']    = phone
+        if email_addr:    update_payload['email']    = email_addr
+        if address:       update_payload['address1'] = address
+        if contact_notes: update_payload['notes']    = contact_notes
+        if update_payload:
+            requests.put(f'{BASE}/contacts/{cid}', headers=H, json=update_payload, timeout=10)
+        print(f"[DSW FORWARD] Updated existing contact: {name} ({cid[:8]})")
+    else:
+        # No match — create new contact
         contact_payload = {
             'locationId': LOCATION_ID,
             'firstName': first_name,
@@ -2184,7 +2236,7 @@ Rules:
         if r_create.ok:
             created = r_create.json()
             cid = (created.get('contact') or created).get('id', '')
-            print(f"[DSW FORWARD] Created contact: {name} ({(cid or '?')[:8]})")
+            print(f"[DSW FORWARD] Created new contact: {name} ({(cid or '?')[:8]})")
         else:
             print(f"[DSW FORWARD] Contact creation failed: {r_create.status_code} {r_create.text[:120]}")
 
