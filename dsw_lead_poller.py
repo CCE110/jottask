@@ -94,17 +94,43 @@ def make_opensolar(name, phone, email, address, city, state, postcode):
         if not conn.token: return None, None
         parts = name.strip().split()
         first = parts[0] if parts else "Unknown"
-        last = " ".join(parts[1:]) if len(parts)>1 else ""
-        full_addr = ", ".join(filter(None, [address, city, state, postcode]))
-        payload = {"address": full_addr, "contacts_data": [{"type":2,"first_name":first,"family_name":last,"phone":phone or "","email":email or ""}]}
+        last = " ".join(parts[1:]) if len(parts) > 1 else ""
+
+        # Build full address string — OpenSolar geocodes from this
+        full_addr = ", ".join(filter(None, [address, city, state, postcode, "Australia"]))
+
+        print(f"[OpenSolar] Address components: street='{address}' city='{city}' state='{state}' postcode='{postcode}'")
+        print(f"[OpenSolar] Full address string: '{full_addr}'")
+        print(f"[OpenSolar] Contact: first='{first}' last='{last}' phone='{phone}' email='{email}'")
+
+        payload = {
+            "address": full_addr,
+            "is_residential": True,
+            # contacts_new is the correct OpenSolar API field (not contacts_data)
+            "contacts_new": [
+                {
+                    "first_name": first,
+                    "last_name":  last,
+                    "phone":      phone or "",
+                    "email":      email or "",
+                }
+            ],
+        }
+        print(f"[OpenSolar] Payload: {payload}")
+
         th = {"Authorization": f"Bearer {conn.token}", "Content-Type": "application/json"}
-        r = req.post(f"https://api.opensolar.com/api/orgs/{conn.org_id}/projects/", headers=th, json=payload, timeout=20)
+        r = req.post(f"https://api.opensolar.com/api/orgs/{conn.org_id}/projects/",
+                     headers=th, json=payload, timeout=20)
         if r.ok:
-            pid = r.json().get("id","")
+            pid = r.json().get("id", "")
             url = f"https://app.opensolar.com/#/projects/{pid}/info"
-            print("OpenSolar:", url); return pid, url
-        print("OpenSolar error:", r.status_code, r.text[:100]); return None, None
-    except Exception as e: print("OpenSolar exc:", e); return None, None
+            print("OpenSolar:", url)
+            return pid, url
+        print(f"OpenSolar error: {r.status_code} {r.text[:200]}")
+        return None, None
+    except Exception as e:
+        print("OpenSolar exc:", e)
+        return None, None
 
 def get_os_url_from_crm(cid):
     """Parse the OpenSolar URL from the contact's CRM note (line starting with 'OpenSolar: ')."""
