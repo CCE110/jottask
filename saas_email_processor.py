@@ -1913,145 +1913,6 @@ def edit_action():
 """
 
 
-if __name__ == "__main__":
-    import time
-    from saas_scheduler import check_and_send_reminders, check_and_send_dsw_reminders, get_users_needing_summary, send_daily_summary
-    from monitoring import log_heartbeat, log_error, send_self_alert, cleanup_old_events, check_reminder_health, check_and_send_canary, check_email_processing_health, send_daily_health_digest
-
-    processor = AIEmailProcessor()
-    poll_interval = int(os.getenv('POLL_INTERVAL_SECONDS', '60'))
-    print(f"Starting worker (email processor + scheduler) every {poll_interval}s...")
-    print(f"  Email processing: every cycle")
-    print(f"  Reminders + daily summaries: every cycle")
-    print(f"  Monitoring: heartbeat every cycle, cleanup daily")
-
-    tick = 0
-    consecutive_failures = 0
-    last_cleanup_date = None
-    last_audit_time = None
-
-    while True:
-        tick += 1
-        tick_errors = 0
-        emails_processed = 0
-        reminders_sent = 0
-        summaries_sent = 0
-
-        try:
-            # 1. Process emails
-            processor.process_all_connections()
-        except Exception as e:
-            print(f"Error in email processing: {e}")
-            log_error('email_processing', e, category='email')
-            tick_errors += 1
-
-        try:
-            # 2. Check and send task reminders
-            reminders_sent = check_and_send_reminders() or 0
-        except Exception as e:
-            print(f"Error in reminders: {e}")
-            log_error('reminders', e, category='reminder')
-            tick_errors += 1
-
-        try:
-            # 2a. Check and send DSW Solar lead reminders
-            check_and_send_dsw_reminders()
-        except Exception as e:
-            print(f"Error in DSW reminders: {e}")
-            log_error('dsw_reminders', e, category='reminder')
-
-        try:
-            # 2b. Functional reminder health check
-            if not check_reminder_health():
-                print("WARNING: Reminder health check detected a problem")
-                tick_errors += 1
-        except Exception as e:
-            print(f"Error in reminder health check: {e}")
-            log_error('reminder_health_check', e, category='reminder')
-
-        try:
-            # 2c. Canary email delivery check (7 AM + 5 PM AEST)
-            canary_result = check_and_send_canary()
-            if canary_result == 'sent':
-                print("Canary email sent — email delivery verified")
-            elif canary_result == 'failed':
-                print("WARNING: Canary email FAILED — email delivery may be broken")
-                send_self_alert(
-                    "Canary email failed — outbound email may be down",
-                    "check_and_send_canary() returned 'failed'. Resend API may be unreachable or misconfigured. "
-                    "Check RESEND_API_KEY and Railway logs."
-                )
-                tick_errors += 1
-        except Exception as e:
-            print(f"Error in canary check: {e}")
-            log_error('canary_check', e, category='canary')
-            tick_errors += 1
-
-        try:
-            # 2e. Daily health digest (8 AM AEST)
-            digest_result = send_daily_health_digest()
-            if digest_result == 'sent':
-                print("Daily health digest sent")
-            elif digest_result == 'failed':
-                print("WARNING: Failed to send daily health digest")
-                tick_errors += 1
-        except Exception as e:
-            print(f"Error in health digest: {e}")
-            log_error('health_digest', e, category='system')
-
-        try:
-            # 2d. Email processing audit (every 30 minutes)
-            now_utc = datetime.now(pytz.UTC)
-            if last_audit_time is None or (now_utc - last_audit_time).total_seconds() >= 1800:
-                audit_result = check_email_processing_health()
-                if audit_result == 'warning':
-                    print("WARNING: Email processing audit detected silent failures")
-                    tick_errors += 1
-                last_audit_time = now_utc
-        except Exception as e:
-            print(f"Error in email processing audit: {e}")
-            log_error('email_audit', e, category='audit')
-
-        try:
-            # 3. Check and send daily summaries
-            users = get_users_needing_summary()
-            if users:
-                print(f"📬 Found {len(users)} user(s) needing daily summary")
-                for user in users:
-                    send_daily_summary(user)
-                    summaries_sent += 1
-        except Exception as e:
-            print(f"Error in daily summaries: {e}")
-            log_error('daily_summaries', e, category='summary')
-            tick_errors += 1
-
-        # Track consecutive failures for self-alerting
-        if tick_errors > 0:
-            consecutive_failures += 1
-            if consecutive_failures >= 3:
-                send_self_alert(
-                    f"Worker has {consecutive_failures} consecutive failed ticks",
-                    f"Tick #{tick}: {tick_errors} error(s) this cycle. "
-                    f"Check Railway logs for details."
-                )
-        else:
-            consecutive_failures = 0
-
-        # Log heartbeat every cycle
-        log_heartbeat(tick, emails_processed=emails_processed, reminders_sent=reminders_sent,
-                       summaries_sent=summaries_sent, errors=tick_errors)
-
-        # Daily cleanup of old monitoring events
-        from datetime import date as _date
-        today = _date.today()
-        if last_cleanup_date != today:
-            cleanup_old_events(days=30)
-            last_cleanup_date = today
-
-        print(f"Sleeping {poll_interval}s until next check... (tick #{tick})")
-        time.sleep(poll_interval)
-
-
 def handle_dsw_forward(subject, body_text, sender_email):
     """Handle a forwarded or unstructured lead email from rob.l@directsolarwholesaler.com.au.
 
@@ -2681,3 +2542,142 @@ def handle_dsw_reply(subject, body_text, sender_email):
         print(f'[DSW REPLY] Confirmation email error: {e}')
 
     return True
+
+
+if __name__ == "__main__":
+    import time
+    from saas_scheduler import check_and_send_reminders, check_and_send_dsw_reminders, get_users_needing_summary, send_daily_summary
+    from monitoring import log_heartbeat, log_error, send_self_alert, cleanup_old_events, check_reminder_health, check_and_send_canary, check_email_processing_health, send_daily_health_digest
+
+    processor = AIEmailProcessor()
+    poll_interval = int(os.getenv('POLL_INTERVAL_SECONDS', '60'))
+    print(f"Starting worker (email processor + scheduler) every {poll_interval}s...")
+    print(f"  Email processing: every cycle")
+    print(f"  Reminders + daily summaries: every cycle")
+    print(f"  Monitoring: heartbeat every cycle, cleanup daily")
+
+    tick = 0
+    consecutive_failures = 0
+    last_cleanup_date = None
+    last_audit_time = None
+
+    while True:
+        tick += 1
+        tick_errors = 0
+        emails_processed = 0
+        reminders_sent = 0
+        summaries_sent = 0
+
+        try:
+            # 1. Process emails
+            processor.process_all_connections()
+        except Exception as e:
+            print(f"Error in email processing: {e}")
+            log_error('email_processing', e, category='email')
+            tick_errors += 1
+
+        try:
+            # 2. Check and send task reminders
+            reminders_sent = check_and_send_reminders() or 0
+        except Exception as e:
+            print(f"Error in reminders: {e}")
+            log_error('reminders', e, category='reminder')
+            tick_errors += 1
+
+        try:
+            # 2a. Check and send DSW Solar lead reminders
+            check_and_send_dsw_reminders()
+        except Exception as e:
+            print(f"Error in DSW reminders: {e}")
+            log_error('dsw_reminders', e, category='reminder')
+
+        try:
+            # 2b. Functional reminder health check
+            if not check_reminder_health():
+                print("WARNING: Reminder health check detected a problem")
+                tick_errors += 1
+        except Exception as e:
+            print(f"Error in reminder health check: {e}")
+            log_error('reminder_health_check', e, category='reminder')
+
+        try:
+            # 2c. Canary email delivery check (7 AM + 5 PM AEST)
+            canary_result = check_and_send_canary()
+            if canary_result == 'sent':
+                print("Canary email sent — email delivery verified")
+            elif canary_result == 'failed':
+                print("WARNING: Canary email FAILED — email delivery may be broken")
+                send_self_alert(
+                    "Canary email failed — outbound email may be down",
+                    "check_and_send_canary() returned 'failed'. Resend API may be unreachable or misconfigured. "
+                    "Check RESEND_API_KEY and Railway logs."
+                )
+                tick_errors += 1
+        except Exception as e:
+            print(f"Error in canary check: {e}")
+            log_error('canary_check', e, category='canary')
+            tick_errors += 1
+
+        try:
+            # 2e. Daily health digest (8 AM AEST)
+            digest_result = send_daily_health_digest()
+            if digest_result == 'sent':
+                print("Daily health digest sent")
+            elif digest_result == 'failed':
+                print("WARNING: Failed to send daily health digest")
+                tick_errors += 1
+        except Exception as e:
+            print(f"Error in health digest: {e}")
+            log_error('health_digest', e, category='system')
+
+        try:
+            # 2d. Email processing audit (every 30 minutes)
+            now_utc = datetime.now(pytz.UTC)
+            if last_audit_time is None or (now_utc - last_audit_time).total_seconds() >= 1800:
+                audit_result = check_email_processing_health()
+                if audit_result == 'warning':
+                    print("WARNING: Email processing audit detected silent failures")
+                    tick_errors += 1
+                last_audit_time = now_utc
+        except Exception as e:
+            print(f"Error in email processing audit: {e}")
+            log_error('email_audit', e, category='audit')
+
+        try:
+            # 3. Check and send daily summaries
+            users = get_users_needing_summary()
+            if users:
+                print(f"📬 Found {len(users)} user(s) needing daily summary")
+                for user in users:
+                    send_daily_summary(user)
+                    summaries_sent += 1
+        except Exception as e:
+            print(f"Error in daily summaries: {e}")
+            log_error('daily_summaries', e, category='summary')
+            tick_errors += 1
+
+        # Track consecutive failures for self-alerting
+        if tick_errors > 0:
+            consecutive_failures += 1
+            if consecutive_failures >= 3:
+                send_self_alert(
+                    f"Worker has {consecutive_failures} consecutive failed ticks",
+                    f"Tick #{tick}: {tick_errors} error(s) this cycle. "
+                    f"Check Railway logs for details."
+                )
+        else:
+            consecutive_failures = 0
+
+        # Log heartbeat every cycle
+        log_heartbeat(tick, emails_processed=emails_processed, reminders_sent=reminders_sent,
+                       summaries_sent=summaries_sent, errors=tick_errors)
+
+        # Daily cleanup of old monitoring events
+        from datetime import date as _date
+        today = _date.today()
+        if last_cleanup_date != today:
+            cleanup_old_events(days=30)
+            last_cleanup_date = today
+
+        print(f"Sleeping {poll_interval}s until next check... (tick #{tick})")
+        time.sleep(poll_interval)
