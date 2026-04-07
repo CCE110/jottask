@@ -2524,6 +2524,90 @@ def handle_dsw_reply(subject, body_text, sender_email):
     desc = task.get('description') or ''
     aest = pytz.timezone('Australia/Brisbane')
     ts   = datetime.now(aest).strftime('%-d %b %Y %I:%M %p')
+    now  = datetime.now(aest)
+
+    # ── Extract "Remind me" / "remind me" time from notes text ───────────
+    # Patterns: "remind me 10am tomorrow", "remind me 3pm today",
+    #           "remind me tuesday 9am", "remind me 3 May 10am"
+    task_update = {'description': None, 'reminder_sent_at': None}
+    remind_match = re.search(
+        r'remind\s+me\s+(.{3,40}?)(?:\s*[-–]|\s*$)',
+        notes_text, re.IGNORECASE | re.MULTILINE
+    )
+    if remind_match:
+        remind_str = remind_match.group(1).strip().rstrip('.,')
+        print(f'[DSW REPLY] Remind me: "{remind_str}"')
+        try:
+            # Parse common patterns
+            due_date = due_time = None
+            rl = remind_str.lower()
+
+            # Extract time (e.g. 10am, 3:30pm, 9am)
+            time_m = re.search(r'(\d{1,2})(?::(\d{2}))?\s*(am|pm)', rl)
+            hour = minute = None
+            if time_m:
+                hour = int(time_m.group(1))
+                minute = int(time_m.group(2) or 0)
+                if time_m.group(3) == 'pm' and hour != 12: hour += 12
+                if time_m.group(3) == 'am' and hour == 12: hour = 0
+
+            # Determine date
+            if 'today' in rl:
+                due_date = now.date()
+            elif 'tomorrow' in rl or 'tmrw' in rl:
+                due_date = (now + timedelta(days=1)).date()
+            elif 'monday' in rl or 'mon ' in rl:
+                days = (7 - now.weekday()) % 7 or 7
+                due_date = (now + timedelta(days=days)).date()
+            elif 'tuesday' in rl or 'tue ' in rl:
+                days = (1 - now.weekday()) % 7 or 7
+                due_date = (now + timedelta(days=days)).date()
+            elif 'wednesday' in rl or 'wed ' in rl:
+                days = (2 - now.weekday()) % 7 or 7
+                due_date = (now + timedelta(days=days)).date()
+            elif 'thursday' in rl or 'thu ' in rl:
+                days = (3 - now.weekday()) % 7 or 7
+                due_date = (now + timedelta(days=days)).date()
+            elif 'friday' in rl or 'fri ' in rl:
+                days = (4 - now.weekday()) % 7 or 7
+                due_date = (now + timedelta(days=days)).date()
+            else:
+                # Try "3 May", "May 3", "3/5" style dates
+                date_m = re.search(r'(\d{1,2})\s+(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)', rl)
+                if not date_m:
+                    date_m = re.search(r'(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\s+(\d{1,2})', rl)
+                if date_m:
+                    try:
+                        from dateutil import parser as dparser
+                        due_date = dparser.parse(remind_str, default=now.replace(day=1)).date()
+                    except Exception:
+                        pass
+
+            if due_date:
+                task_update['due_date'] = due_date.isoformat()
+                if hour is not None:
+                    task_update['due_time'] = f'{hour:02d}:{minute:02d}:00'
+                print(f'[DSW REPLY] Due → {due_date} {hour:02d}:{minute:02d}' if hour is not None else f'[DSW REPLY] Due → {due_date}')
+        except Exception as e:
+            print(f'[DSW REPLY] Remind me parse error: {e}')
+
+    # ── Extract lead status hint from notes ───────────────────────────────
+    STATUS_HINTS = {
+        'awaiting_docs':    ['send.*photo', 'send.*bill', 'power bill', 'photos', 'awaiting'],
+        'site_visit_booked':['site visit', 'booked', 'appointment'],
+        'build_quote':      ['work out.*option', 'proposal', 'build.*quote'],
+        'quote_followup':   ['follow.?up', 'chasing'],
+        'intro_call':       ['chat', 'call', 'spoke', 'spoke to'],
+    }
+    inferred_status = None
+    notes_lower = notes_text.lower()
+    for status, patterns in STATUS_HINTS.items():
+        if any(re.search(p, notes_lower) for p in patterns):
+            inferred_status = status
+            break
+    if inferred_status:
+        task_update['lead_status'] = inferred_status
+        print(f'[DSW REPLY] Inferred status: {inferred_status}')
 
     # ── Update MY NOTES section in task description ───────────────────────
     NOTES_SEP = 'MY NOTES:'
@@ -2532,8 +2616,12 @@ def handle_dsw_reply(subject, body_text, sender_email):
     else:
         cust_part = desc.rstrip()
     new_desc = cust_part + '\n\n' + NOTES_SEP + '\n' + notes_text
-    sb.table('tasks').update({'description': new_desc}).eq('id', tid).execute()
-    print(f'[DSW REPLY] Task description updated: {tid[:8]}')
+    task_update['description'] = new_desc
+
+    # Apply all updates in one call
+    update_payload = {k: v for k, v in task_update.items() if v is not None}
+    sb.table('tasks').update(update_payload).eq('id', tid).execute()
+    print(f'[DSW REPLY] Task updated: {tid[:8]} fields={list(update_payload.keys())}')
 
     # ── Upsert Pipereply CRM note ─────────────────────────────────────────
     TOKEN = os.getenv('PIPEREPLY_TOKEN')
