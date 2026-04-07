@@ -215,7 +215,7 @@ def send_email(name, phone, addr, src, summary, crm_url, os_url, task_id=None, l
         f'{sbtns}'
         '</div>'
         '<div style="background:#1e40af;padding:12px;border-radius:0 0 8px 8px;text-align:center">'
-        f'<a href="https://www.jottask.app/dashboard#task-{task_id}" style="color:white;font-weight:bold;text-decoration:none">Open Jottask</a>'
+        f'<a href="https://www.jottask.app/task/{task_id}" style="color:white;font-weight:bold;text-decoration:none">Open Jottask</a>'
         '</div></div>'
     )
     try:
