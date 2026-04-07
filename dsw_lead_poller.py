@@ -281,21 +281,22 @@ def mac_contact(name, phone, src=''):
     except Exception as e:
         print(f'[osascript] Error: {e}')
 
-def make_task(name, phone, summary, crm_url, os_url):
+def make_task(name, phone, summary, crm_url, os_url, email=''):
     try:
         from task_manager import TaskManager
         tm = TaskManager()
         users = tm.supabase.table("users").select("id").eq("email","rob@cloudcleanenergy.com.au").execute()
         if not users.data: return
         due = (datetime.now()+timedelta(days=1)).strftime("%Y-%m-%d")
-        desc = "Phone: "+phone+"\nCRM: "+crm_url+"\nOpenSolar: "+(os_url or "pending")+"\n\n"+summary
+        email_line = ("Email: "+email+"\n") if email else ""
+        desc = "Phone: "+phone+"\n"+email_line+"CRM: "+crm_url+"\nOpenSolar: "+(os_url or "pending")+"\n\n"+summary
         result = tm.supabase.table("tasks").insert({"user_id":users.data[0]["id"],"title":"Call "+name+" - New DSW Lead","description":desc,"due_date":due,"due_time":"09:00","priority":"high","status":"pending","category":"DSW Solar","client_name":name}).execute()
         tid = result.data[0]["id"] if result.data else None
         print("Task created:", name, "id:", tid)
         return tid
     except Exception as e: print("Task error:", e); return None
 
-def send_email(name, phone, addr, src, summary, crm_url, os_url, task_id=None, lead_status=None, subject=None):
+def send_email(name, phone, addr, src, summary, crm_url, os_url, task_id=None, lead_status=None, subject=None, email=''):
     now = datetime.now().strftime("%d %b %Y %I:%M %p")
     import urllib.parse
     maps_url = "https://maps.google.com/?q=" + urllib.parse.quote(addr)
@@ -333,7 +334,8 @@ def send_email(name, phone, addr, src, summary, crm_url, os_url, task_id=None, l
         '<p style="opacity:.8;margin:4px 0 0">'+now+' &middot; '+src+'</p></div>'
         '<div style="padding:20px;border:1px solid #e2e8f0">'
         '<h3 style="color:#1e40af;margin-top:0">'+name+'</h3>'
-        '<p><a href="'+maps_url+'" style="color:#1e40af;text-decoration:none">'+addr+'</a></p>'
+        +('<p><a href="mailto:'+email+'" style="color:#1e40af;text-decoration:none">✉️ '+email+'</a></p>' if email else '')
+        +'<p><a href="'+maps_url+'" style="color:#1e40af;text-decoration:none">'+addr+'</a></p>'
         '<div style="margin:12px 0;display:flex;flex-direction:row;gap:8px;flex-wrap:nowrap">'
         '<a href="tel:'+phone+'" style="display:inline-block;background:#10B981;color:white;padding:10px 16px;border-radius:8px;text-decoration:none;font-weight:600;font-size:13px">Call '+phone+'</a>'
         '<a href="'+crm_url+'" style="display:inline-block;background:#1e40af;color:white;padding:10px 16px;border-radius:8px;text-decoration:none;font-weight:600;font-size:13px">Pipereply</a>'
@@ -381,11 +383,11 @@ def process(contact, task_id=None, lead_status=None):
         if os_url: save_to_crm(cid, os_url, summary)
         if not icloud_contact(name, phone, email=email, address=address, city=city, state=state, postcode=postcode, src=src):
             mac_contact(name, phone, src=src)
-        task_id = make_task(name, phone, summary, crm_url, os_url)
+        task_id = make_task(name, phone, summary, crm_url, os_url, email=email)
     else:
         # Reminder resend: look up OpenSolar URL from existing CRM note
         os_url = get_os_url_from_crm(cid)
-    send_email(name, phone, addr, src, summary, crm_url, os_url, task_id, lead_status)
+    send_email(name, phone, addr, src, summary, crm_url, os_url, task_id, lead_status, email=email)
     print("Done in", round(time.time()-t0,1), "s:", name)
 
 def resend_email_only(contact_name):

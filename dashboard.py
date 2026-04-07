@@ -4327,6 +4327,7 @@ def lead_detail(task_id):
         return m.group(1).strip() if m else ''
 
     phone   = _field('Phone:', desc)
+    email   = _field('Email:', desc)
     crm_url = _field('CRM:', desc)
     os_url  = _field('OpenSolar:', desc)
     if os_url.lower() in ('pending', ''): os_url = ''
@@ -4339,9 +4340,9 @@ def lead_detail(task_id):
     else:
         cust_raw, notes_raw = desc, ''
 
-    # Strip Phone/CRM/OpenSolar header lines from customer requirements
+    # Strip Phone/Email/CRM/OpenSolar header lines from customer requirements
     cust_lines = [ln for ln in cust_raw.splitlines()
-                  if not ln.startswith(('Phone:', 'CRM:', 'OpenSolar:'))]
+                  if not ln.startswith(('Phone:', 'Email:', 'CRM:', 'OpenSolar:'))]
     cust_text = '\n'.join(cust_lines).strip()
 
     # Extract Pipereply contact ID from CRM URL
@@ -4432,6 +4433,7 @@ textarea:focus{border-color:#1e40af;box-shadow:0 0 0 3px rgba(30,64,175,.1)}
     <div class="lead-name">{{ name }}</div>
     {% if phone %}<a href="tel:{{ phone }}" class="call-btn">📞 Call</a>{% endif %}
   </div>
+  {% if email %}<a href="mailto:{{ email }}" class="addr-link">✉️ {{ email }}</a>{% endif %}
   {% if addr_raw %}<a href="{{ maps_url }}" class="addr-link" target="_blank">📍 {{ addr_raw }}</a>{% endif %}
 </div>
 
@@ -4500,7 +4502,7 @@ if(location.search.includes('saved=1')){
 </html>""",
         name=name, badge_text=badge_text, badge_color=badge_color,
         src=src, created_str=created_str,
-        phone=phone, addr_raw=addr_raw, maps_url=maps_url,
+        phone=phone, email=email, addr_raw=addr_raw, maps_url=maps_url,
         crm_url=crm_url, os_url=os_url,
         cust_text=cust_text, notes_raw=notes_raw,
         lead_status=lead_status, statuses=STATUSES,
