@@ -2332,7 +2332,24 @@ def handle_dsw_reply(subject, body_text, sender_email):
         if stripped.startswith('>') or stripped.startswith('On ') or stripped == '---':
             break
         clean_lines.append(line)
-    notes_text = '\n'.join(clean_lines).strip()
+
+    # ── Strip email signature ─────────────────────────────────────────────
+    sig_patterns = [
+        r'^(best regards|kind regards|regards|cheers|thanks|thank you)\s*[,.]?\s*$',
+        r'^rob\s+lowe\s*$',
+        r'^m:\s*[\d\s\+]+$',
+        r'^e:\s*\S+@\S+$',
+        r'^w:\s*https?://',
+        r'^(qld|sa|vic|nsw|act|wa|nt|tas)\s*:',
+        r'^--\s*$',
+    ]
+    sig_re = re.compile('|'.join(sig_patterns), re.IGNORECASE)
+    trimmed = []
+    for line in clean_lines:
+        if sig_re.match(line.strip()):
+            break
+        trimmed.append(line)
+    notes_text = '\n'.join(trimmed).strip()
 
     if not notes_text:
         print('[DSW REPLY] No note text after stripping quoted content')
@@ -2518,9 +2535,12 @@ def handle_dsw_reply(subject, body_text, sender_email):
     # ── Send confirmation email ───────────────────────────────────────────
     try:
         from email_utils import send_email
-        # Show the full saved notes so Rob can see exactly what's stored
-        # and reply again to update if needed
-        saved_notes = notes_text  # already the full current MY NOTES content
+        # Extract the full MY NOTES block from the saved description
+        NOTES_SEP = 'MY NOTES:'
+        if NOTES_SEP in new_desc:
+            full_saved_notes = new_desc.split(NOTES_SEP, 1)[1].strip()
+        else:
+            full_saved_notes = notes_text
         html = f"""
 <div style="font-family:sans-serif;max-width:560px;margin:0 auto">
   <div style="background:#1e40af;color:white;padding:16px 20px;border-radius:8px 8px 0 0">
@@ -2528,17 +2548,17 @@ def handle_dsw_reply(subject, body_text, sender_email):
   </div>
   <div style="padding:16px 20px;border:1px solid #e2e8f0;border-radius:0 0 8px 8px">
     <p style="margin:0 0 12px;color:#6b7280;font-size:13px">Saved to Jottask + Pipereply · {ts}</p>
-    <p style="margin:0 0 6px;font-weight:600;font-size:13px;color:#374151">CURRENT MY NOTES:</p>
+    <p style="margin:0 0 6px;font-weight:600;font-size:13px;color:#374151">YOUR CURRENT NOTES:</p>
     <div style="background:#f8fafc;padding:12px;border-radius:6px;
        font-size:13px;white-space:pre-wrap;color:#374151;line-height:1.6;
-       border-left:3px solid #1e40af">{saved_notes}</div>
+       border-left:3px solid #1e40af">{full_saved_notes}</div>
     <p style="margin-top:16px">
       <a href="https://www.jottask.app/task/{tid}"
          style="background:#1e40af;color:white;padding:9px 16px;border-radius:7px;
                 text-decoration:none;font-weight:600;font-size:13px">Open Lead Page</a>
     </p>
     <p style="margin-top:16px;font-size:12px;color:#9ca3af">
-      Reply to this email to update notes again.
+      Reply to this email to update notes.
     </p>
   </div>
 </div>"""
