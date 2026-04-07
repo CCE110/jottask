@@ -2518,19 +2518,27 @@ def handle_dsw_reply(subject, body_text, sender_email):
     # ── Send confirmation email ───────────────────────────────────────────
     try:
         from email_utils import send_email
+        # Show the full saved notes so Rob can see exactly what's stored
+        # and reply again to update if needed
+        saved_notes = notes_text  # already the full current MY NOTES content
         html = f"""
-<div style="font-family:sans-serif;max-width:500px;margin:0 auto">
+<div style="font-family:sans-serif;max-width:560px;margin:0 auto">
   <div style="background:#1e40af;color:white;padding:16px 20px;border-radius:8px 8px 0 0">
-    <strong>✅ Notes updated</strong>
+    <strong>✅ Notes updated for {name}</strong>
   </div>
   <div style="padding:16px 20px;border:1px solid #e2e8f0;border-radius:0 0 8px 8px">
-    <p><strong>{name}</strong> — notes saved to Jottask + Pipereply.</p>
-    <p style="margin-top:12px;background:#f8fafc;padding:12px;border-radius:6px;
-       font-size:13px;white-space:pre-wrap;color:#374151">{notes_text[:500]}</p>
-    <p style="margin-top:14px">
+    <p style="margin:0 0 12px;color:#6b7280;font-size:13px">Saved to Jottask + Pipereply · {ts}</p>
+    <p style="margin:0 0 6px;font-weight:600;font-size:13px;color:#374151">CURRENT MY NOTES:</p>
+    <div style="background:#f8fafc;padding:12px;border-radius:6px;
+       font-size:13px;white-space:pre-wrap;color:#374151;line-height:1.6;
+       border-left:3px solid #1e40af">{saved_notes}</div>
+    <p style="margin-top:16px">
       <a href="https://www.jottask.app/task/{tid}"
          style="background:#1e40af;color:white;padding:9px 16px;border-radius:7px;
                 text-decoration:none;font-weight:600;font-size:13px">Open Lead Page</a>
+    </p>
+    <p style="margin-top:16px;font-size:12px;color:#9ca3af">
+      Reply to this email to update notes again.
     </p>
   </div>
 </div>"""
