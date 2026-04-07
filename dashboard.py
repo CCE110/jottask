@@ -4244,14 +4244,12 @@ def validate_action_token(token):
     return token_data['task_id'], token_data['user_id'], token_data['action']
 
 
-@app.route('/task/<task_id>', methods=['GET', 'POST'])
+@app.route('/task/<task_id>', methods=['GET'])
 def lead_detail(task_id):
-    """DSW lead detail page — no login required (linked from email)."""
-    import re, requests as rq, urllib.parse
+    """DSW lead detail page — no login required."""
+    import re, urllib.parse
 
     aest = pytz.timezone('Australia/Brisbane')
-    AU   = 'https://www.jottask.app/action'
-    APP  = 'https://www.jottask.app'
 
     STATUS_LABELS = {
         'new_lead':          '🔵 NEW LEAD',
@@ -4275,10 +4273,6 @@ def lead_detail(task_id):
         'customer_deciding': '#b45309', 'nurture': '#6b7280',
         'won': '#10b981', 'lost': '#ef4444',
     }
-    PIPEREPLY_TOKEN = os.getenv('PIPEREPLY_TOKEN')
-    PR_H = {'Authorization': f'Bearer {PIPEREPLY_TOKEN}',
-            'Content-Type': 'application/json', 'Version': '2021-07-28'}
-    PR_BASE = 'https://services.leadconnectorhq.com'
 
     # ── Fetch task ────────────────────────────────────────────────────────
     try:
@@ -4287,148 +4281,93 @@ def lead_detail(task_id):
     except Exception:
         t = None
     if not t:
-        return render_template_string("""
-        <html><body style="font-family:sans-serif;text-align:center;padding:50px">
-        <h2>Lead not found</h2><p>This link may be expired or invalid.</p>
-        <a href="{{ app }}" style="color:#1e40af">Open Jottask</a>
-        </body></html>""", app=APP), 404
+        return '<html><body style="font-family:sans-serif;text-align:center;padding:50px"><h2>Lead not found</h2></body></html>', 404
 
-    flash_msg = ''
-
-    # ── Parse description for phone/CRM/OS urls ───────────────────────────
-    desc = t.get('description') or ''
-    def _extract_line(prefix, text):
-        m = re.search(rf'^{re.escape(prefix)}\s*(.+)$', text, re.MULTILINE)
-        return m.group(1).strip() if m else ''
-
-    phone   = _extract_line('Phone:', desc) or t.get('client_name', '')
-    crm_url = _extract_line('CRM:', desc)
-    os_url  = _extract_line('OpenSolar:', desc)
-    if os_url.lower() == 'pending': os_url = ''
-
-    # Extract Pipereply contact ID from CRM URL for note saving
-    crm_cid = ''
-    if crm_url:
-        m = re.search(r'/detail/([A-Za-z0-9]+)', crm_url)
-        if m: crm_cid = m.group(1)
-
-    # ── Handle GET actions (delay / status) ───────────────────────────────
+    # ── Handle GET actions (delay / status) — redirect back to clean URL ──
     action = request.args.get('action', '')
     if action:
         update = {}
-        msg = ''
         if action == 'delay_1hour':
-            new_dt = datetime.now(aest) + timedelta(hours=1)
-            update = {'due_date': new_dt.date().isoformat(),
-                      'due_time': new_dt.strftime('%H:%M:00'),
-                      'reminder_sent_at': None}
-            msg = f'Snoozed +1 hour → {new_dt.strftime("%I:%M %p")}'
+            nd = datetime.now(aest) + timedelta(hours=1)
+            update = {'due_date': nd.date().isoformat(), 'due_time': nd.strftime('%H:%M:00'), 'reminder_sent_at': None}
         elif action == 'delay_1day':
             try:
-                base = datetime.fromisoformat(t['due_date'])
+                base = datetime.fromisoformat(t.get('due_date', '')).replace(tzinfo=aest)
             except Exception:
                 base = datetime.now(aest)
-            new_d = (base + timedelta(days=1)).date().isoformat()
-            update = {'due_date': new_d, 'reminder_sent_at': None}
-            msg = f'Snoozed +1 day → {new_d}'
+            nd = base + timedelta(days=1)
+            update = {'due_date': nd.date().isoformat(), 'reminder_sent_at': None}
         elif action == 'delay_next_day_8am':
             tgt = (datetime.now(aest) + timedelta(days=1)).replace(hour=8, minute=0, second=0, microsecond=0)
             update = {'due_date': tgt.date().isoformat(), 'due_time': '08:00:00', 'reminder_sent_at': None}
-            msg = f'Rescheduled → Tomorrow 8:00 AM'
         elif action == 'delay_next_day_9am':
             tgt = (datetime.now(aest) + timedelta(days=1)).replace(hour=9, minute=0, second=0, microsecond=0)
             update = {'due_date': tgt.date().isoformat(), 'due_time': '09:00:00', 'reminder_sent_at': None}
-            msg = f'Rescheduled → Tomorrow 9:00 AM'
         elif action == 'delay_next_monday_9am':
             now = datetime.now(aest)
             days = (7 - now.weekday()) % 7 or 7
             tgt = (now + timedelta(days=days)).replace(hour=9, minute=0, second=0, microsecond=0)
             update = {'due_date': tgt.date().isoformat(), 'due_time': '09:00:00', 'reminder_sent_at': None}
-            msg = f'Rescheduled → Monday 9:00 AM'
         elif action == 'set_status':
-            status_val = request.args.get('status', '')
-            if status_val in STATUS_LABELS:
-                update = {'lead_status': status_val, 'reminder_sent_at': None}
-                if status_val in ('won', 'lost'):
+            sv = request.args.get('status', '')
+            if sv in STATUS_LABELS:
+                update = {'lead_status': sv, 'reminder_sent_at': None}
+                if sv in ('won', 'lost'):
                     update['status'] = 'completed'
                     update['completed_at'] = datetime.now(pytz.UTC).isoformat()
-                msg = f'Status → {STATUS_LABELS[status_val]}'
-
         if update:
             supabase.table('tasks').update(update).eq('id', task_id).execute()
-            # Re-fetch task after update
-            t = supabase.table('tasks').select('*').eq('id', task_id).single().execute().data or t
-            flash_msg = msg
+        return redirect(url_for('lead_detail', task_id=task_id))
 
-    # ── Handle POST (add note) ────────────────────────────────────────────
-    if request.method == 'POST' and request.form.get('_action') == 'add_note':
-        note_text = request.form.get('note', '').strip()
-        if note_text:
-            timestamp = datetime.now(aest).strftime('%d %b %Y %I:%M %p')
-            existing_desc = t.get('description') or ''
-            new_desc = existing_desc.rstrip() + f'\n\n— Note ({timestamp}) —\n{note_text}'
-            supabase.table('tasks').update({'description': new_desc}).eq('id', task_id).execute()
-            # Save note to Pipereply CRM
-            if crm_cid and PIPEREPLY_TOKEN:
-                try:
-                    rq.post(f'{PR_BASE}/contacts/{crm_cid}/notes', headers=PR_H,
-                            json={'body': f'Call note ({timestamp}):\n{note_text}'}, timeout=8)
-                except Exception:
-                    pass
-            return redirect(url_for('lead_detail', task_id=task_id, _saved='1'))
+    # ── Parse description ─────────────────────────────────────────────────
+    desc = t.get('description') or ''
 
-    if request.args.get('_saved'):
-        flash_msg = 'Notes saved ✓'
+    def _field(prefix, text):
+        m = re.search(rf'^{re.escape(prefix)}\s*(.+)$', text, re.MULTILINE)
+        return m.group(1).strip() if m else ''
 
-    # ── Build page data ───────────────────────────────────────────────────
+    phone   = _field('Phone:', desc)
+    crm_url = _field('CRM:', desc)
+    os_url  = _field('OpenSolar:', desc)
+    if os_url.lower() in ('pending', ''): os_url = ''
+
+    # Split description into CUSTOMER REQUIREMENTS / MY NOTES sections
+    NOTES_SEP = 'MY NOTES:'
+    if NOTES_SEP in desc:
+        cust_raw, notes_raw = desc.split(NOTES_SEP, 1)
+        notes_raw = notes_raw.strip()
+    else:
+        cust_raw, notes_raw = desc, ''
+
+    # Strip Phone/CRM/OpenSolar header lines from customer requirements
+    cust_lines = [ln for ln in cust_raw.splitlines()
+                  if not ln.startswith(('Phone:', 'CRM:', 'OpenSolar:'))]
+    cust_text = '\n'.join(cust_lines).strip()
+
+    # Extract Pipereply contact ID from CRM URL
+    crm_cid = ''
+    if crm_url:
+        m = re.search(r'/detail/([A-Za-z0-9]+)', crm_url)
+        if m: crm_cid = m.group(1)
+
+    # ── Page data ─────────────────────────────────────────────────────────
     name        = t.get('client_name') or t.get('title') or 'Unknown Lead'
     lead_status = t.get('lead_status') or 'new_lead'
     badge_text  = STATUS_LABELS.get(lead_status, '🔵 NEW LEAD')
     badge_color = STATUS_COLORS.get(lead_status, '#1e40af')
-
     src = t.get('source') or t.get('category') or 'DSW Solar'
     try:
-        created_dt = datetime.fromisoformat(t['created_at'].replace('Z', '+00:00')).astimezone(aest)
-        created_str = created_dt.strftime('%d %b %Y')
-        created_full = created_dt.strftime('%d %b %Y %I:%M %p')
+        cdt = datetime.fromisoformat(t['created_at'].replace('Z', '+00:00')).astimezone(aest)
+        created_str = cdt.strftime('%-d %b %Y')
     except Exception:
-        created_str = created_full = t.get('created_at', '')[:10]
+        created_str = (t.get('created_at') or '')[:10]
 
-    # Reminder / due timeline entries
-    timeline_rows = [f'<div class="tl-row"><span class="tl-icon">📅</span><span>Created: {created_full}</span></div>']
-    if t.get('due_date'):
-        due_str = t['due_date']
-        if t.get('due_time'):
-            try:
-                due_dt = datetime.strptime(f"{t['due_date']} {t['due_time'][:5]}", '%Y-%m-%d %H:%M')
-                due_str = due_dt.strftime('%d %b %Y %I:%M %p')
-            except Exception:
-                pass
-        timeline_rows.append(f'<div class="tl-row"><span class="tl-icon">⏰</span><span>Due: {due_str}</span></div>')
-    if t.get('reminder_sent_at'):
-        try:
-            rdt = datetime.fromisoformat(t['reminder_sent_at'].replace('Z', '+00:00')).astimezone(aest)
-            timeline_rows.append(f'<div class="tl-row"><span class="tl-icon">📧</span><span>Reminder sent: {rdt.strftime("%d %b %Y %I:%M %p")}</span></div>')
-        except Exception:
-            pass
+    addr_raw = _field('Address:', desc)
+    maps_url = ('https://maps.google.com/?q=' + urllib.parse.quote(addr_raw)) if addr_raw else ''
 
-    # Delay buttons
-    DELAYS = [
-        ('+1 Hour',   f'?action=delay_1hour'),
-        ('+1 Day',    f'?action=delay_1day'),
-        ('Tmrw 8am',  f'?action=delay_next_day_8am'),
-        ('Tmrw 9am',  f'?action=delay_next_day_9am'),
-        ('Mon 9am',   f'?action=delay_next_monday_9am'),
-    ]
-    delay_btns = ''.join(
-        f'<a href="{url}" class="btn btn-sm btn-gray">{label}</a>'
-        for label, url in DELAYS
-    )
-
-    # Status buttons (all except current)
     STATUSES = [
         ('Intro Call',        'intro_call',        '#1e40af'),
-        ('Site Visit Booked', 'site_visit_booked', '#7c3aed'),
+        ('Site Visit',        'site_visit_booked', '#7c3aed'),
         ('Awaiting Docs',     'awaiting_docs',     '#b45309'),
         ('Build Quote',       'build_quote',       '#0369a1'),
         ('Quote Sent',        'quote_submitted',   '#0891b2'),
@@ -4436,53 +4375,11 @@ def lead_detail(task_id):
         ('Revise Quote',      'revise_quote',      '#7c3aed'),
         ('Deciding',          'customer_deciding', '#b45309'),
         ('Nurture',           'nurture',           '#6b7280'),
-        ('WON',               'won',               '#10b981'),
-        ('LOST',              'lost',              '#ef4444'),
+        ('WON 🎉',            'won',               '#10b981'),
+        ('LOST ❌',           'lost',              '#ef4444'),
     ]
-    status_btns = ''.join(
-        f'<a href="?action=set_status&status={s}" class="btn btn-sm" style="background:{col};color:white">{l}</a>'
-        for l, s, col in STATUSES
-    )
 
-    # Contact info blocks
-    phone_display = phone if phone else ''
-    phone_html = (f'<p><a href="tel:{phone_display}" class="contact-link call-link">📞 {phone_display}</a></p>'
-                  if phone_display else '')
-    address = _extract_line('Address:', desc) or t.get('description', '').split('\n')[3] if False else ''
-    # Try to get address from description lines after the header block
-    addr_raw = ''
-    for line in desc.splitlines():
-        if line.startswith(('Phone:', 'CRM:', 'OpenSolar:')):
-            continue
-        if line.strip() and not addr_raw:
-            # Skip the summary header lines
-            pass
-    # Simpler: look for Address: field
-    addr_raw = _extract_line('Address:', desc)
-    maps_url = f'https://maps.google.com/?q={urllib.parse.quote(addr_raw)}' if addr_raw else ''
-    addr_html = (f'<p><a href="{maps_url}" class="contact-link" target="_blank">📍 {addr_raw}</a></p>'
-                 if addr_raw else '')
-    email_field = _extract_line('Email:', desc)
-    email_html = (f'<p><a href="mailto:{email_field}" class="contact-link">✉️ {email_field}</a></p>'
-                  if email_field else '')
-
-    # Action buttons row
-    os_btn = (f'<a href="{os_url}" class="btn btn-amber" target="_blank">☀️ OpenSolar</a>'
-              if os_url else '')
-    crm_btn = (f'<a href="{crm_url}" class="btn btn-blue" target="_blank">Pipereply</a>'
-               if crm_url else '')
-    call_btn = (f'<a href="tel:{phone_display}" class="btn btn-green">📞 Call</a>'
-                if phone_display else '')
-
-    # Summary text (strip the header Phone/CRM/OpenSolar lines)
-    summary_lines = [ln for ln in desc.splitlines()
-                     if not ln.startswith(('Phone:', 'CRM:', 'OpenSolar:'))]
-    summary_text = '\n'.join(summary_lines).strip()
-
-    flash_html = (f'<div class="flash">{flash_msg}</div>' if flash_msg else '')
-    tl_html = '\n'.join(timeline_rows)
-
-    return render_template_string("""<!DOCTYPE html>
+    return render_template_string(r"""<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
@@ -4491,111 +4388,185 @@ def lead_detail(task_id):
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
 body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#f1f5f9;min-height:100vh}
-.header{background:#1e40af;color:white;padding:20px 16px 18px}
-.header-top{display:flex;justify-content:space-between;align-items:flex-start;gap:8px;margin-bottom:4px}
-.header h1{font-size:22px;font-weight:700;line-height:1.2;flex:1}
-.badge{display:inline-block;padding:4px 12px;border-radius:20px;font-size:11px;font-weight:700;letter-spacing:0.5px;white-space:nowrap;background:rgba(255,255,255,0.25);color:white}
-.meta{font-size:13px;opacity:.75;margin-top:6px}
-.flash{background:#d1fae5;color:#065f46;padding:10px 16px;margin:10px 16px 0;border-radius:8px;font-size:14px;font-weight:600}
-.card{background:white;border-radius:12px;padding:16px;margin:10px 16px;box-shadow:0 1px 3px rgba(0,0,0,.07)}
-.card-title{font-size:11px;font-weight:700;color:#9ca3af;text-transform:uppercase;letter-spacing:.7px;margin-bottom:10px}
-.btn{display:inline-block;padding:10px 16px;border-radius:8px;text-decoration:none;font-weight:600;font-size:14px;text-align:center;border:none;cursor:pointer;line-height:1}
-.btn-sm{padding:8px 12px;font-size:13px}
-.btn-green{background:#10b981;color:white}
-.btn-blue{background:#1e40af;color:white}
-.btn-amber{background:#f59e0b;color:white}
-.btn-gray{background:#6b7280;color:white}
+.hdr{background:#1e40af;color:#fff;padding:18px 16px 14px}
+.hdr-row{display:flex;justify-content:space-between;align-items:center;gap:8px}
+.hdr h1{font-size:17px;font-weight:700;opacity:.85;margin-bottom:6px}
+.badge{display:inline-block;padding:5px 13px;border-radius:20px;font-size:12px;font-weight:700;white-space:nowrap;background:rgba(255,255,255,.22)}
+.hdr-meta{font-size:12px;opacity:.7;margin-top:6px}
+.card{background:#fff;border-radius:12px;padding:16px;margin:10px 12px;box-shadow:0 1px 4px rgba(0,0,0,.08)}
+.sec{font-size:10px;font-weight:700;color:#9ca3af;text-transform:uppercase;letter-spacing:.8px;margin-bottom:10px}
+.name-row{display:flex;justify-content:space-between;align-items:center;gap:10px}
+.lead-name{font-size:20px;font-weight:700;color:#111;flex:1}
+.call-btn{display:inline-flex;align-items:center;gap:6px;background:#10b981;color:#fff;padding:10px 16px;border-radius:9px;text-decoration:none;font-weight:700;font-size:14px;white-space:nowrap;flex-shrink:0}
+.addr-link{display:block;color:#1e40af;text-decoration:none;font-size:14px;margin-top:10px;font-weight:500}
 .btn-row{display:flex;flex-wrap:wrap;gap:8px}
-.contact-link{color:#1e40af;text-decoration:none;font-size:15px;display:block;padding:4px 0;font-weight:500}
-.call-link{color:#059669}
-.summary{background:#f8fafc;border-radius:8px;padding:14px;font-size:14px;line-height:1.7;white-space:pre-wrap;color:#374151;max-height:200px;overflow-y:auto}
-.status-badge{display:inline-block;padding:6px 16px;border-radius:20px;font-size:13px;font-weight:700;color:white;margin-bottom:12px}
-textarea{width:100%;border:1.5px solid #e2e8f0;border-radius:8px;padding:10px;font-size:14px;font-family:inherit;resize:vertical;min-height:90px;outline:none}
-textarea:focus{border-color:#1e40af}
-.save-btn{background:#1e40af;color:white;border:none;border-radius:8px;padding:10px 22px;font-size:14px;font-weight:600;cursor:pointer;margin-top:8px;width:100%}
-.tl-row{display:flex;gap:10px;padding:7px 0;border-bottom:1px solid #f1f5f9;font-size:13px;color:#6b7280}
-.tl-row:last-child{border-bottom:none}
-.tl-icon{flex-shrink:0;width:20px}
-.footer-link{display:block;text-align:center;padding:20px;color:#9ca3af;font-size:13px;text-decoration:none}
+.btn{display:inline-block;padding:10px 18px;border-radius:9px;text-decoration:none;font-weight:700;font-size:14px;color:#fff;text-align:center;border:none;cursor:pointer}
+.btn-blue{background:#1e40af}
+.btn-amber{background:#f59e0b}
+.req-box{background:#f8fafc;border-radius:8px;padding:13px;font-size:14px;line-height:1.7;white-space:pre-wrap;color:#374151}
+textarea{width:100%;border:1.5px solid #e2e8f0;border-radius:9px;padding:11px;font-size:14px;font-family:inherit;resize:vertical;min-height:110px;outline:none;color:#111}
+textarea:focus{border-color:#1e40af;box-shadow:0 0 0 3px rgba(30,64,175,.1)}
+.save-btn{background:#1e40af;color:#fff;border:none;border-radius:9px;padding:11px;font-size:14px;font-weight:700;cursor:pointer;width:100%;margin-top:8px}
+.sbtn{display:inline-block;padding:8px 12px;border-radius:8px;font-size:12px;font-weight:700;color:#fff;text-decoration:none;white-space:nowrap}
+.dbtn{display:inline-block;padding:8px 13px;border-radius:8px;font-size:13px;font-weight:600;color:#fff;text-decoration:none;background:#6b7280}
+.toast{position:fixed;top:16px;left:50%;transform:translateX(-50%);background:#065f46;color:#fff;padding:10px 20px;border-radius:10px;font-size:14px;font-weight:600;z-index:999;display:none}
 </style>
 </head>
 <body>
 
-<div class="header">
-  <div class="header-top">
-    <h1>{{ name }}</h1>
-    <span class="badge" style="background:{{ badge_color }}">{{ badge_text }}</span>
+<div id="toast" class="toast"></div>
+
+<div class="hdr">
+  <div>
+    <h1>New DSW Lead</h1>
+    <div class="hdr-row">
+      <span class="badge" style="background:{{ badge_color }}">{{ badge_text }}</span>
+    </div>
+    <div class="hdr-meta">{{ created_str }} &middot; {{ src }}</div>
   </div>
-  <div class="meta">{{ src }} &middot; {{ created_str }}</div>
 </div>
 
-{{ flash_html | safe }}
-
-{% if phone_html or addr_html or email_html %}
+<!-- Name + Call -->
 <div class="card">
-  <div class="card-title">Contact</div>
-  {{ phone_html | safe }}
-  {{ addr_html | safe }}
-  {{ email_html | safe }}
+  <div class="name-row">
+    <div class="lead-name">{{ name }}</div>
+    {% if phone %}<a href="tel:{{ phone }}" class="call-btn">📞 Call</a>{% endif %}
+  </div>
+  {% if addr_raw %}<a href="{{ maps_url }}" class="addr-link" target="_blank">📍 {{ addr_raw }}</a>{% endif %}
 </div>
-{% endif %}
 
-{% if call_btn or crm_btn or os_btn %}
+<!-- Pipereply + OpenSolar -->
+{% if crm_url or os_url %}
 <div class="card">
-  <div class="card-title">Actions</div>
   <div class="btn-row">
-    {{ call_btn | safe }}
-    {{ crm_btn | safe }}
-    {{ os_btn | safe }}
+    {% if crm_url %}<a href="{{ crm_url }}" class="btn btn-blue" target="_blank">Pipereply</a>{% endif %}
+    {% if os_url %}<a href="{{ os_url }}" class="btn btn-amber" target="_blank">☀️ OpenSolar</a>{% endif %}
   </div>
 </div>
 {% endif %}
 
-{% if summary_text %}
+<!-- Customer Requirements -->
+{% if cust_text %}
 <div class="card">
-  <div class="card-title">Lead Summary</div>
-  <div class="summary">{{ summary_text }}</div>
+  <div class="sec">Customer Requirements</div>
+  <div class="req-box">{{ cust_text }}</div>
 </div>
 {% endif %}
 
+<!-- My Notes -->
 <div class="card">
-  <div class="card-title">Lead Status</div>
-  <div><span class="status-badge" style="background:{{ badge_color }}">{{ badge_text }}</span></div>
-  <div class="btn-row">{{ status_btns | safe }}</div>
-</div>
-
-<div class="card">
-  <div class="card-title">Remind Me</div>
-  <div class="btn-row">{{ delay_btns | safe }}</div>
-</div>
-
-<div class="card">
-  <div class="card-title">Add Call Notes</div>
-  <form method="POST">
-    <input type="hidden" name="_action" value="add_note">
-    <textarea name="note" placeholder="Enter call notes, outcome, next steps..."></textarea>
+  <div class="sec">My Notes</div>
+  <form action="/task/{{ task_id }}/notes" method="POST">
+    <textarea name="notes" placeholder="Call notes, outcome, next steps...">{{ notes_raw }}</textarea>
     <button type="submit" class="save-btn">Save Notes</button>
   </form>
 </div>
 
+<!-- Lead Status -->
 <div class="card">
-  <div class="card-title">Timeline</div>
-  {{ tl_html | safe }}
+  <div class="sec">Lead Status</div>
+  <div class="btn-row">
+    {% for label, slug, col in statuses %}
+    <a href="?action=set_status&status={{ slug }}"
+       class="sbtn"
+       style="background:{{ col }};{% if lead_status == slug %}outline:3px solid #000;{% endif %}">{{ label }}</a>
+    {% endfor %}
+  </div>
 </div>
 
-<a href="https://www.jottask.app/dashboard" class="footer-link">Open Full Dashboard →</a>
+<!-- Task Delay -->
+<div class="card">
+  <div class="sec">Remind Me</div>
+  <div class="btn-row">
+    <a href="?action=delay_1hour"          class="dbtn">+1 Hour</a>
+    <a href="?action=delay_1day"           class="dbtn">+1 Day</a>
+    <a href="?action=delay_next_day_8am"   class="dbtn">Tmrw 8am</a>
+    <a href="?action=delay_next_day_9am"   class="dbtn">Tmrw 9am</a>
+    <a href="?action=delay_next_monday_9am" class="dbtn">Mon 9am</a>
+  </div>
+</div>
 
+<script>
+// Show toast if ?saved=1
+if(location.search.includes('saved=1')){
+  var t=document.getElementById('toast');
+  t.textContent='Notes saved ✓';
+  t.style.display='block';
+  setTimeout(function(){t.style.display='none';
+    history.replaceState(null,'',location.pathname);},2500);
+}
+</script>
 </body>
 </html>""",
         name=name, badge_text=badge_text, badge_color=badge_color,
         src=src, created_str=created_str,
-        flash_html=flash_html,
-        phone_html=phone_html, addr_html=addr_html, email_html=email_html,
-        call_btn=call_btn, crm_btn=crm_btn, os_btn=os_btn,
-        summary_text=summary_text,
-        status_btns=status_btns, delay_btns=delay_btns,
-        tl_html=tl_html,
+        phone=phone, addr_raw=addr_raw, maps_url=maps_url,
+        crm_url=crm_url, os_url=os_url,
+        cust_text=cust_text, notes_raw=notes_raw,
+        lead_status=lead_status, statuses=STATUSES,
+        task_id=task_id,
     )
+
+
+@app.route('/task/<task_id>/notes', methods=['POST'])
+def lead_save_notes(task_id):
+    """Save MY NOTES section to task description and replace Pipereply CRM note."""
+    import re, requests as rq
+
+    notes_text = request.form.get('notes', '').strip()
+
+    # Fetch current task
+    try:
+        res = supabase.table('tasks').select('description').eq('id', task_id).single().execute()
+        t = res.data
+    except Exception:
+        return redirect(url_for('lead_detail', task_id=task_id, saved='1'))
+
+    desc = t.get('description') or ''
+    NOTES_SEP = 'MY NOTES:'
+
+    # Rebuild description: keep everything before MY NOTES:, replace after
+    if NOTES_SEP in desc:
+        cust_part = desc.split(NOTES_SEP, 1)[0].rstrip()
+    else:
+        cust_part = desc.rstrip()
+
+    new_desc = cust_part + '\n\n' + NOTES_SEP + '\n' + notes_text if notes_text else cust_part
+    supabase.table('tasks').update({'description': new_desc}).eq('id', task_id).execute()
+
+    # Replace Pipereply CRM note body
+    PIPEREPLY_TOKEN = os.getenv('PIPEREPLY_TOKEN')
+    crm_url = ''
+    m = re.search(r'^CRM:\s*(.+)$', desc, re.MULTILINE)
+    if m: crm_url = m.group(1).strip()
+    crm_cid = ''
+    if crm_url:
+        m2 = re.search(r'/detail/([A-Za-z0-9]+)', crm_url)
+        if m2: crm_cid = m2.group(1)
+
+    if crm_cid and PIPEREPLY_TOKEN and notes_text:
+        PR_H = {'Authorization': f'Bearer {PIPEREPLY_TOKEN}',
+                'Content-Type': 'application/json', 'Version': '2021-07-28'}
+        PR_BASE = 'https://services.leadconnectorhq.com'
+        aest = pytz.timezone('Australia/Brisbane')
+        ts = datetime.now(aest).strftime('%-d %b %Y %I:%M %p')
+        try:
+            # Find existing notes for this contact and replace the latest, or create new
+            r_notes = rq.get(f'{PR_BASE}/contacts/{crm_cid}/notes', headers=PR_H, timeout=8)
+            existing_notes = r_notes.json().get('notes', []) if r_notes.ok else []
+            # Look for a note with "MY NOTES" tag to replace
+            my_note = next((n for n in existing_notes if 'MY NOTES' in (n.get('body') or '')), None)
+            note_body = f'MY NOTES ({ts}):\n{notes_text}'
+            if my_note:
+                rq.put(f'{PR_BASE}/contacts/{crm_cid}/notes/{my_note["id"]}',
+                       headers=PR_H, json={'body': note_body}, timeout=8)
+            else:
+                rq.post(f'{PR_BASE}/contacts/{crm_cid}/notes',
+                        headers=PR_H, json={'body': note_body}, timeout=8)
+        except Exception as e:
+            print(f'[LEAD NOTES] Pipereply note error: {e}')
+
+    return redirect(url_for('lead_detail', task_id=task_id, saved='1'))
 
 
 @app.route('/action/<token>')
