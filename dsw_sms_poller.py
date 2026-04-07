@@ -55,11 +55,11 @@ def find_pipereply_contact(name):
 def extract_name(sms_text):
     """Extract lead name from SolarQuotes SMS"""
     import re
-    # SolarQuotes format: "New solar lead: John Smith, ..."
-    m = re.search(r'(?:lead:|quote:)\s*([A-Z][a-z]+ [A-Z][a-z]+)', sms_text)
+    # DSW Energy format: "Hi Rob, Peter Smith has just been assigned to you."
+    m = re.search(r'Hi Rob,\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)\s+has just been assigned', sms_text)
     if m:
         return m.group(1)
-    # Fallback: look for capitalised name pattern
+    # Fallback capitalised name
     m = re.search(r'([A-Z][a-z]+ [A-Z][a-z]+)', sms_text)
     if m:
         return m.group(1)
