@@ -2215,7 +2215,7 @@ Rules:
         if phone:         update_payload['phone']    = phone
         if email_addr:    update_payload['email']    = email_addr
         if address:       update_payload['address1'] = address
-        if contact_notes: update_payload['notes']    = contact_notes
+        # 'notes' not accepted by PUT contacts endpoint — notes go via /contacts/{id}/notes
         if update_payload:
             requests.put(f'{BASE}/contacts/{cid}', headers=H, json=update_payload, timeout=10)
         print(f"[DSW FORWARD] Updated existing contact: {name} ({cid[:8]})")
@@ -2230,7 +2230,8 @@ Rules:
             'address1':  address,
             'tags':      [lead_source if lead_source else 'referral'],
             'source':    lead_source.replace('_', ' ').title() if lead_source else 'Referral',
-            'notes':     contact_notes,
+            # 'notes' is not a valid field on contact creation (Pipereply returns 422)
+            # Notes are added separately via the /contacts/{id}/notes endpoint below
         }
         r_create = requests.post(f'{BASE}/contacts/', headers=H, json=contact_payload, timeout=10)
         if r_create.ok:
@@ -2377,11 +2378,7 @@ def handle_dsw_new_lead(subject, body_text, sender_email):
             'tags':      ['referral'],
             'source':    'Referral',
         }
-        if referred_by or notes:
-            note_parts = []
-            if referred_by: note_parts.append(f'Referred by: {referred_by}')
-            if notes:        note_parts.append(notes)
-            contact_payload['notes'] = '\n'.join(note_parts)
+        # 'notes' not accepted by POST contacts endpoint (422) — added via /notes below
         r_create = requests.post(f'{BASE}/contacts/', headers=H,
                                  json=contact_payload, timeout=10)
         if r_create.ok:
