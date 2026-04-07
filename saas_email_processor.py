@@ -666,8 +666,13 @@ class AIEmailProcessor:
             if subject_lower.startswith('new lead:') and 're:' not in subject_lower:
                 if handle_dsw_new_lead(subject, content, sender_email_addr):
                     return ("task_created", f"DSW self-generated lead: {subject[:80]}")
-            # Reply from DSW with call notes — "Re: New Lead: ..."
-            if 're:' in subject_lower and 'new lead:' in subject_lower:
+            # Reply from DSW with call notes — "Re: New Lead: ..." or "Re: DSW ..."
+            is_dsw_reply = subject_lower.startswith('re:') and (
+                'new lead:' in subject_lower or
+                subject_lower.startswith('re: dsw') or
+                subject_lower.startswith('re: new dsw')
+            )
+            if is_dsw_reply:
                 if handle_dsw_reply(subject, content, sender_email_addr):
                     return ("dsw_reply", "DSW lead notes updated")
             # Forwarded/unstructured lead from rob.l — FW:/Fwd: or body has AU phone
@@ -2441,55 +2446,150 @@ def handle_dsw_new_lead(subject, body_text, sender_email):
 
 
 def handle_dsw_reply(subject, body_text, sender_email):
+    """Handle a reply email from rob.l updating notes on an existing DSW lead.
+
+    Triggered when subject starts with Re: and contains 'New Lead:' or 'DSW'.
+    Looks for a /task/{task_id} or task_id= URL in the body to identify the
+    exact task, then updates the MY NOTES section in the task description and
+    upserts a Pipereply CRM note. Sends a confirmation email back.
+    """
     import re, os, requests
     from datetime import datetime
+    import pytz
+
     if 'directsolarwholesaler' not in (sender_email or '').lower():
         return False
-    m = re.search(r'New Lead:\s+([A-Za-z\s]+?)\s*-\s*Call ASAP', subject or '', re.IGNORECASE)
-    if not m:
-        return False
-    name = m.group(1).strip()
-    print(f"[DSW REPLY] Notes update for: {name}")
+
+    body = body_text or ''
+    subject = subject or ''
+
+    # ── Strip quoted/forwarded content ────────────────────────────────────
     clean_lines = []
-    for line in (body_text or '').split('\n'):
-        if line.strip().startswith('>') or line.strip().startswith('On ') or line.strip() == '---':
+    for line in body.split('\n'):
+        stripped = line.strip()
+        # Stop at quoted reply indicators
+        if stripped.startswith('>') or stripped.startswith('On ') or stripped == '---':
             break
         clean_lines.append(line)
     notes_text = '\n'.join(clean_lines).strip()
+
     if not notes_text:
-        print("[DSW REPLY] No text found"); return False
-    TOKEN = os.getenv('PIPEREPLY_TOKEN')
-    LOCATION_ID = os.getenv('PIPEREPLY_LOCATION_ID')
-    BASE = 'https://services.leadconnectorhq.com'
-    H = {'Authorization': f'Bearer {TOKEN}', 'Content-Type': 'application/json', 'Version': '2021-07-28'}
-    r = requests.get(f'{BASE}/contacts/', headers=H, params={'locationId': LOCATION_ID, 'query': name, 'limit': 3})
-    contacts = r.json().get('contacts', [])
-    match = next((c for c in contacts if name.lower() in (c.get('contactName') or '').lower()), None)
-    if not match and contacts: match = contacts[0]
-    if not match: print(f"[DSW REPLY] Not found: {name}"); return False
-    cid = match['id']
-    r_notes = requests.get(f'{BASE}/contacts/{cid}/notes', headers=H)
-    existing_id = existing_body = None
-    if r_notes.ok:
-        for note in (r_notes.json().get('notes') or []):
-            if 'OpenSolar' in (note.get('body') or '') or 'CUSTOMER REQUIREMENTS' in (note.get('body') or ''):
-                existing_id = note.get('id'); existing_body = note.get('body', ''); break
-    ts = datetime.now().strftime('%d %b %Y %I:%M %p')
-    new_body = (existing_body or '') + f'\n\n--- Call Notes ({ts}) ---\n{notes_text}'
-    if existing_id:
-        r2 = requests.put(f'{BASE}/contacts/{cid}/notes/{existing_id}', headers=H, json={'body': new_body})
+        print('[DSW REPLY] No note text after stripping quoted content')
+        return False
+
+    # ── Extract task_id from body URL ─────────────────────────────────────
+    # Matches: /task/{uuid} or task_id={uuid}
+    task_id = None
+    m = re.search(r'/task/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})', body, re.IGNORECASE)
+    if m:
+        task_id = m.group(1)
     else:
-        r2 = requests.post(f'{BASE}/contacts/{cid}/notes', headers=H, json={'body': new_body})
-    print(f"[DSW REPLY] CRM updated: {r2.status_code}")
+        m = re.search(r'task_id=([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})', body, re.IGNORECASE)
+        if m: task_id = m.group(1)
+
+    print(f'[DSW REPLY] task_id from body: {task_id} | subject: {subject}')
+
+    # ── Fetch task from Supabase ──────────────────────────────────────────
+    from supabase import create_client
+    sb = create_client(os.getenv('SUPABASE_URL'), os.getenv('SUPABASE_KEY'))
+
+    task = None
+    if task_id:
+        try:
+            res = sb.table('tasks').select('id,title,client_name,description').eq('id', task_id).single().execute()
+            task = res.data
+        except Exception as e:
+            print(f'[DSW REPLY] Task fetch error: {e}')
+
+    # Fallback: search by name in subject ("Re: New Lead: Name - Call ASAP")
+    if not task:
+        nm = re.search(r'New Lead:\s+(.+?)\s*(?:-\s*Call ASAP)?$', subject, re.IGNORECASE)
+        if nm:
+            name_q = nm.group(1).strip()
+            try:
+                res = sb.table('tasks').select('id,title,client_name,description')\
+                    .eq('category', 'DSW Solar').ilike('client_name', f'%{name_q}%')\
+                    .eq('status', 'pending').order('created_at', desc=True).limit(1).execute()
+                task = res.data[0] if res.data else None
+                print(f'[DSW REPLY] Fallback name search "{name_q}": {"found" if task else "not found"}')
+            except Exception as e:
+                print(f'[DSW REPLY] Fallback search error: {e}')
+
+    if not task:
+        print('[DSW REPLY] Could not identify task — aborting')
+        return False
+
+    tid  = task['id']
+    name = task.get('client_name') or task.get('title') or 'Lead'
+    desc = task.get('description') or ''
+    aest = pytz.timezone('Australia/Brisbane')
+    ts   = datetime.now(aest).strftime('%-d %b %Y %I:%M %p')
+
+    # ── Update MY NOTES section in task description ───────────────────────
+    NOTES_SEP = 'MY NOTES:'
+    if NOTES_SEP in desc:
+        cust_part = desc.split(NOTES_SEP, 1)[0].rstrip()
+    else:
+        cust_part = desc.rstrip()
+    new_desc = cust_part + '\n\n' + NOTES_SEP + '\n' + notes_text
+    sb.table('tasks').update({'description': new_desc}).eq('id', tid).execute()
+    print(f'[DSW REPLY] Task description updated: {tid[:8]}')
+
+    # ── Upsert Pipereply CRM note ─────────────────────────────────────────
+    TOKEN = os.getenv('PIPEREPLY_TOKEN')
+    crm_url = ''
+    m2 = re.search(r'^CRM:\s*(.+)$', desc, re.MULTILINE)
+    if m2: crm_url = m2.group(1).strip()
+    crm_cid = ''
+    if crm_url:
+        m3 = re.search(r'/detail/([A-Za-z0-9]+)', crm_url)
+        if m3: crm_cid = m3.group(1)
+
+    if crm_cid and TOKEN:
+        H = {'Authorization': f'Bearer {TOKEN}', 'Content-Type': 'application/json', 'Version': '2021-07-28'}
+        PR = 'https://services.leadconnectorhq.com'
+        note_body = f'MY NOTES ({ts}):\n{notes_text}'
+        try:
+            r_list = requests.get(f'{PR}/contacts/{crm_cid}/notes', headers=H, timeout=8)
+            existing = r_list.json().get('notes', []) if r_list.ok else []
+            my_note = next((n for n in existing if 'MY NOTES' in (n.get('body') or '')), None)
+            if my_note:
+                requests.put(f'{PR}/contacts/{crm_cid}/notes/{my_note["id"]}',
+                             headers=H, json={'body': note_body}, timeout=8)
+                print(f'[DSW REPLY] Pipereply note updated')
+            else:
+                requests.post(f'{PR}/contacts/{crm_cid}/notes',
+                              headers=H, json={'body': note_body}, timeout=8)
+                print(f'[DSW REPLY] Pipereply note created')
+        except Exception as e:
+            print(f'[DSW REPLY] Pipereply error: {e}')
+    else:
+        print(f'[DSW REPLY] No Pipereply contact ID found — skipping CRM note')
+
+    # ── Send confirmation email ───────────────────────────────────────────
     try:
-        from supabase import create_client
-        sb = create_client(os.getenv('SUPABASE_URL'), os.getenv('SUPABASE_KEY'))
-        tasks = sb.table('tasks').select('id,description').eq('category','DSW Solar').ilike('title',f'%{name}%').eq('status','pending').order('created_at',desc=True).limit(1).execute()
-        if tasks.data:
-            tid = tasks.data[0]['id']
-            new_desc = (tasks.data[0].get('description') or '') + f'\n\n--- Call Notes ({ts}) ---\n{notes_text}'
-            sb.table('tasks').update({'description': new_desc}).eq('id', tid).execute()
-            print(f"[DSW REPLY] Task updated: {tid[:8]}")
+        from email_utils import send_email
+        html = f"""
+<div style="font-family:sans-serif;max-width:500px;margin:0 auto">
+  <div style="background:#1e40af;color:white;padding:16px 20px;border-radius:8px 8px 0 0">
+    <strong>✅ Notes updated</strong>
+  </div>
+  <div style="padding:16px 20px;border:1px solid #e2e8f0;border-radius:0 0 8px 8px">
+    <p><strong>{name}</strong> — notes saved to Jottask + Pipereply.</p>
+    <p style="margin-top:12px;background:#f8fafc;padding:12px;border-radius:6px;
+       font-size:13px;white-space:pre-wrap;color:#374151">{notes_text[:500]}</p>
+    <p style="margin-top:14px">
+      <a href="https://www.jottask.app/task/{tid}"
+         style="background:#1e40af;color:white;padding:9px 16px;border-radius:7px;
+                text-decoration:none;font-weight:600;font-size:13px">Open Lead Page</a>
+    </p>
+  </div>
+</div>"""
+        send_email('rob.l@directsolarwholesaler.com.au',
+                   f'✅ Notes updated for {name}', html,
+                   category='dsw_reply_confirm')
+        print(f'[DSW REPLY] Confirmation email sent for {name}')
     except Exception as e:
-        print(f"[DSW REPLY] Task error: {e}")
+        print(f'[DSW REPLY] Confirmation email error: {e}')
+
     return True
