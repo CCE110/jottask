@@ -728,11 +728,19 @@ def check_and_send_dsw_reminders():
                                          for p in ('Phone:', 'CRM:', 'OpenSolar:'))]
                     summary = '\n'.join(summary_lines) or desc[:500]
                     status_label = dsw.STATUS_LABELS.get(lead_status, '🔵 NEW LEAD')
+                    _brief = ''
+                    for _l in summary.splitlines():
+                        _l = _l.strip()
+                        if _l.startswith('*'):
+                            _brief = _l.lstrip('*').strip()[:40]
+                            break
+                    _subj = (f"Reminder: {name} - {status_label} | {_brief}"
+                             if _brief else f"Reminder: {name} - {status_label}")
                     dsw.send_email(
                         name=name, phone=phone, addr='', src='DSW Solar',
                         summary=summary, crm_url='', os_url=None,
                         task_id=task_id, lead_status=lead_status,
-                        subject=f"DSW Reminder: {name} - {status_label}",
+                        subject=_subj,
                     )
                     _get_supabase().table('tasks').update({
                         'reminder_sent_at': datetime.now(pytz.UTC).isoformat()

@@ -353,7 +353,17 @@ def send_email(name, phone, addr, src, summary, crm_url, os_url, task_id=None, l
         '</div></div>'
     )
     try:
-        email_subject = subject if subject else ("New Lead: "+name+" - Call ASAP")
+        if subject:
+            email_subject = subject
+        else:
+            brief_note = ''
+            for _l in (summary or '').splitlines():
+                _l = _l.strip()
+                if _l.startswith('*'):
+                    brief_note = _l.lstrip('*').strip()[:40]
+                    break
+            email_subject = (f"New Lead: {name} - {badge_text} | {brief_note}"
+                             if brief_note else f"New Lead: {name} - {badge_text}")
         resend.Emails.send({"from":"Jottask <"+FROM_EMAIL+">","to":[NOTIFY],"subject":email_subject,"html":html})
         print("Email sent:", name)
     except Exception as e: print("Email error:", e)
