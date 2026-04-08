@@ -4551,6 +4551,24 @@ def lead_save_notes(task_id):
 
     notes_text = request.form.get('notes', '').strip()
 
+    # Strip email signature lines
+    _sig_re = re.compile(
+        r'^(best regards|kind regards|regards|cheers|thanks|thank you)\s*[,.]?\s*$'
+        r'|^rob\s+lowe\s*$'
+        r'|^m:\s*[\d\s\+]+$'
+        r'|^e:\s*\S+@\S+$'
+        r'|^w:\s*https?://'
+        r'|^(qld|sa|vic|nsw|act|wa|nt|tas)\s*:'
+        r'|^--\s*$',
+        re.IGNORECASE,
+    )
+    trimmed = []
+    for _line in notes_text.split('\n'):
+        if _sig_re.match(_line.strip()):
+            break
+        trimmed.append(_line)
+    notes_text = '\n'.join(trimmed).strip()
+
     # Fetch current task
     try:
         res = supabase.table('tasks').select('description').eq('id', task_id).single().execute()
