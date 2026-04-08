@@ -7,6 +7,7 @@ Supports API key auth (PipeReply) and OAuth 2.0 (HubSpot, Zoho)
 import os
 import secrets
 from datetime import datetime, timedelta
+from typing import Optional
 from urllib.parse import urlencode
 
 import pytz
@@ -25,7 +26,7 @@ crm_mgr = CRMManager()
 _opensolar_connectors = {}
 
 
-def get_opensolar_for_user(user_id: str) -> OpenSolarConnector | None:
+def get_opensolar_for_user(user_id: str) -> Optional[OpenSolarConnector]:
     """Get an authenticated OpenSolar connector for a user.
     Used by email processor, scheduler, and API routes.
     """
