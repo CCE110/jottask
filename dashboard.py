@@ -4315,6 +4315,18 @@ def lead_detail(task_id):
                 if sv in ('won', 'lost'):
                     update['status'] = 'completed'
                     update['completed_at'] = datetime.now(pytz.UTC).isoformat()
+        elif action == 'set_custom':
+            r_date = request.args.get('date', '')
+            r_time = request.args.get('time', '09:00')
+            if r_date:
+                update = {
+                    'due_date': r_date,
+                    'due_time': r_time + ':00',
+                    'reminder_sent_at': None,
+                }
+                supabase.table('tasks').update(update).eq('id', task_id).execute()
+                return redirect(url_for('lead_detail', task_id=task_id,
+                                        reminder_set='1', rdate=r_date, rtime=r_time))
         if update:
             supabase.table('tasks').update(update).eq('id', task_id).execute()
         return redirect(url_for('lead_detail', task_id=task_id))
@@ -4379,6 +4391,8 @@ def lead_detail(task_id):
         ('WON 🎉',            'won',               '#10b981'),
         ('LOST ❌',           'lost',              '#ef4444'),
     ]
+
+    tomorrow = (datetime.now(aest) + timedelta(days=1)).strftime('%Y-%m-%d')
 
     return render_template_string(r"""<!DOCTYPE html>
 <html lang="en">
@@ -4486,6 +4500,15 @@ textarea:focus{border-color:#1e40af;box-shadow:0 0 0 3px rgba(30,64,175,.1)}
     <a href="?action=delay_next_day_9am"   class="dbtn">Tmrw 9am</a>
     <a href="?action=delay_next_monday_9am" class="dbtn">Mon 9am</a>
   </div>
+  <form method="GET" action="" style="margin-top:12px;display:flex;flex-wrap:wrap;gap:8px;align-items:center">
+    <input type="hidden" name="action" value="set_custom">
+    <input type="date" name="date" value="{{ tomorrow }}"
+           style="flex:1;min-width:130px;border:1.5px solid #e2e8f0;border-radius:8px;padding:9px 10px;font-size:14px;font-family:inherit;outline:none;color:#111">
+    <input type="time" name="time" value="09:00"
+           style="width:110px;border:1.5px solid #e2e8f0;border-radius:8px;padding:9px 10px;font-size:14px;font-family:inherit;outline:none;color:#111">
+    <button type="submit"
+            style="background:#7c3aed;color:#fff;border:none;border-radius:8px;padding:9px 16px;font-size:14px;font-weight:700;cursor:pointer;white-space:nowrap">Set Reminder</button>
+  </form>
 </div>
 
 <script>
@@ -4497,6 +4520,17 @@ if(location.search.includes('saved=1')){
   setTimeout(function(){t.style.display='none';
     history.replaceState(null,'',location.pathname);},2500);
 }
+// Show toast if ?reminder_set=1
+var sp=new URLSearchParams(location.search);
+if(sp.get('reminder_set')==='1'){
+  var rd=sp.get('rdate')||'';
+  var rt=sp.get('rtime')||'';
+  var t=document.getElementById('toast');
+  t.textContent='Reminder set for '+rd+' at '+rt+' ✓';
+  t.style.display='block';
+  setTimeout(function(){t.style.display='none';
+    history.replaceState(null,'',location.pathname);},3000);
+}
 </script>
 </body>
 </html>""",
@@ -4506,7 +4540,7 @@ if(location.search.includes('saved=1')){
         crm_url=crm_url, os_url=os_url,
         cust_text=cust_text, notes_raw=notes_raw,
         lead_status=lead_status, statuses=STATUSES,
-        task_id=task_id,
+        task_id=task_id, tomorrow=tomorrow,
     )
 
 
