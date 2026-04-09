@@ -4456,6 +4456,7 @@ textarea:focus{border-color:#1e40af;box-shadow:0 0 0 3px rgba(30,64,175,.1)}
 .sbtn{display:inline-block;padding:8px 12px;border-radius:8px;font-size:12px;font-weight:700;color:#fff;text-decoration:none;white-space:nowrap}
 .dbtn{display:inline-block;padding:8px 13px;border-radius:8px;font-size:13px;font-weight:600;color:#fff;text-decoration:none;background:#6b7280}
 .toast{position:fixed;top:16px;left:50%;transform:translateX(-50%);background:#065f46;color:#fff;padding:10px 20px;border-radius:10px;font-size:14px;font-weight:600;z-index:999;display:none}
+.sub-note-input::placeholder{color:rgba(255,255,255,0.6)}
 </style>
 </head>
 <body>
@@ -4467,6 +4468,7 @@ textarea:focus{border-color:#1e40af;box-shadow:0 0 0 3px rgba(30,64,175,.1)}
     <h1>New DSW Lead</h1>
     <form action="/task/{{ task_id }}/sub_note" method="POST" style="margin:6px 0 4px">
       <input type="text" name="sub_note" value="{{ sub_note | e }}"
+             class="sub-note-input"
              placeholder="Sub-status note (e.g. Tried once — try again tomorrow)..."
              style="width:100%;background:rgba(255,255,255,0.15);border:1px solid rgba(255,255,255,0.3);border-radius:6px;padding:7px 10px;color:#fff;font-size:13px;outline:none;font-family:inherit"
              onblur="this.form.submit()">
