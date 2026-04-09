@@ -2067,122 +2067,51 @@ Rules:
     print(f"[DSW FORWARD] Extracted: {name} | {phone or '—'} | {address[:40] if address else '—'}")
     print(f"[DSW FORWARD] Generated email subject: '{generated_subject}'")
 
-    TOKEN       = os.getenv('PIPEREPLY_TOKEN')
-    LOCATION_ID = os.getenv('PIPEREPLY_LOCATION_ID')
-    BASE = 'https://services.leadconnectorhq.com'
-    H = {'Authorization': f'Bearer {TOKEN}', 'Content-Type': 'application/json', 'Version': '2021-07-28'}
+    # ── 2+3. Find or create Pipereply contact via dsw_lead_poller helper ────
+    # This uses phone-first dedup (normalized), fuzzy name match (≥80%),
+    # then creates only if no match found. Returns (cid, is_new_contact).
+    try:
+        _spec = ilu.spec_from_file_location('dsw_lead_poller',
+            os.path.join(os.path.dirname(os.path.abspath(__file__)), 'dsw_lead_poller.py'))
+        dsw = ilu.module_from_spec(_spec)
+        _spec.loader.exec_module(dsw)
+    except Exception as e:
+        print(f"[DSW FORWARD] Could not load dsw_lead_poller: {e}")
+        notify_failure(f"Internal error loading DSW module ({e}).")
+        return False
 
-    # ── 2. Create/update Pipereply contact ────────────────────────────────
-    parts = name.strip().split() if name else []
-    first_name = parts[0] if parts else (name or 'Unknown')
-    last_name  = ' '.join(parts[1:]) if len(parts) > 1 else ''
-
-    # Build contact notes for Claude summarisation in dsw.process()
-    note_parts = []
-    if referred_by:   note_parts.append(f'Referred by: {referred_by}')
-    if lead_source:   note_parts.append(f'Source: {lead_source}')
-    if notes:         note_parts.append(notes)
-    contact_notes = '\n'.join(note_parts)
-
-    cid = None
-
-    # ── Phone-first dedup search ───────────────────────────────────────────
-    if phone:
-        r_phone = requests.get(f'{BASE}/contacts/', headers=H,
-                               params={'locationId': LOCATION_ID, 'query': phone, 'limit': 5},
-                               timeout=10)
-        phone_contacts = r_phone.json().get('contacts', []) if r_phone.ok else []
-        phone_match = next(
-            (c for c in phone_contacts
-             if re.sub(r'\D', '', c.get('phone', '')) == re.sub(r'\D', '', phone)),
-            None,
-        )
-        if phone_match:
-            cid = phone_match['id']
-            print(f"[DSW FORWARD] Found existing contact by phone: "
-                  f"{phone_match.get('contactName','?')} ({cid[:8]})")
-
-    # ── Name fallback search (case-insensitive) ───────────────────────────
-    if not cid and name:
-        r_name = requests.get(f'{BASE}/contacts/', headers=H,
-                              params={'locationId': LOCATION_ID, 'query': name, 'limit': 3},
-                              timeout=10)
-        name_contacts = r_name.json().get('contacts', []) if r_name.ok else []
-        name_match = next(
-            (c for c in name_contacts
-             if name.lower() in (c.get('contactName') or '').lower()
-             or (c.get('contactName') or '').lower() in name.lower()),
-            None,
-        )
-        if name_match:
-            cid = name_match['id']
-            print(f"[DSW FORWARD] Found existing contact by name: "
-                  f"{name_match.get('contactName','?')} ({cid[:8]})")
-
-    if cid:
-        # Update existing contact with any new details
-        update_payload = {}
-        if phone:         update_payload['phone']    = phone
-        if email_addr:    update_payload['email']    = email_addr
-        if address:       update_payload['address1'] = address
-        # 'notes' not accepted by PUT contacts endpoint — notes go via /contacts/{id}/notes
-        if update_payload:
-            requests.put(f'{BASE}/contacts/{cid}', headers=H, json=update_payload, timeout=10)
-        print(f"[DSW FORWARD] Updated existing contact: {name} ({cid[:8]})")
-    else:
-        # No match — create new contact
-        contact_payload = {
-            'locationId': LOCATION_ID,
-            'firstName': first_name,
-            'lastName':  last_name,
-            'phone':     phone,
-            'email':     email_addr,
-            'address1':  address,
-            'tags':      [lead_source if lead_source else 'referral'],
-            'source':    lead_source.replace('_', ' ').title() if lead_source else 'Referral',
-            # 'notes' is not a valid field on contact creation (Pipereply returns 422)
-            # Notes are added separately via the /contacts/{id}/notes endpoint below
-        }
-        r_create = requests.post(f'{BASE}/contacts/', headers=H, json=contact_payload, timeout=10)
-        if r_create.ok:
-            created = r_create.json()
-            cid = (created.get('contact') or created).get('id', '')
-            print(f"[DSW FORWARD] Created new contact: {name} ({(cid or '?')[:8]})")
-        else:
-            err = f"Pipereply contact creation failed ({r_create.status_code}): {r_create.text[:120]}"
-            print(f"[DSW FORWARD] {err}")
-            notify_failure(err)
-
-    # ── 3. Save CRM note with all extracted info ───────────────────────────
-    if cid:
-        crm_note_lines = [f'Source: {lead_source.replace("_"," ").title()} — {datetime.now().strftime("%d %b %Y")}']
-        if referred_by:  crm_note_lines.append(f'Referred by: {referred_by}')
-        if phone:        crm_note_lines.append(f'Phone: {phone}')
-        if email_addr:   crm_note_lines.append(f'Email: {email_addr}')
-        if address:      crm_note_lines.append(f'Address: {address}')
-        if notes:        crm_note_lines.append(f'\nNotes:\n{notes}')
-        requests.post(f'{BASE}/contacts/{cid}/notes', headers=H,
-                      json={'body': '\n'.join(crm_note_lines)}, timeout=10)
+    cid, is_new_contact = dsw.find_or_create_pipereply_contact(
+        name=name, phone=phone, email=email_addr,
+        address=address, src=lead_source or 'referral',
+    )
 
     if not cid:
         print(f"[DSW FORWARD] No contact ID — cannot proceed")
         notify_failure("Could not find or create a Pipereply contact for this lead. Check Pipereply API token/permissions.")
         return False
 
+    # ── 3. Save intake CRM note with extracted details ─────────────────────
+    crm_note_lines = [f'Source: {lead_source.replace("_"," ").title()} — {datetime.now().strftime("%d %b %Y")}']
+    if referred_by:  crm_note_lines.append(f'Referred by: {referred_by}')
+    if phone:        crm_note_lines.append(f'Phone: {phone}')
+    if email_addr:   crm_note_lines.append(f'Email: {email_addr}')
+    if address:      crm_note_lines.append(f'Address: {address}')
+    if notes:        crm_note_lines.append(f'\nNotes:\n{notes}')
+    import requests as _rq2
+    _h2 = {'Authorization': f'Bearer {os.getenv("PIPEREPLY_TOKEN")}',
+            'Content-Type': 'application/json', 'Version': '2021-07-28'}
+    _rq2.post(f'https://services.leadconnectorhq.com/contacts/{cid}/notes',
+              headers=_h2, json={'body': '\n'.join(crm_note_lines)}, timeout=10)
+
     # ── 4+5+6+7. dsw.process() → OpenSolar, Mac contact, task, email ──────
     # process() creates task with due=tomorrow 09:00; we patch it after.
     try:
-        _spec = ilu.spec_from_file_location('dsw_lead_poller',
-            os.path.join(os.path.dirname(os.path.abspath(__file__)), 'dsw_lead_poller.py'))
-        dsw = ilu.module_from_spec(_spec)
-        _spec.loader.exec_module(dsw)
-
         minimal_contact = {
             'id': cid, 'contactName': name, 'phone': phone,
             'email': email_addr, 'address1': address,
             'tags': [lead_source if lead_source else 'referral'],
         }
-        dsw.process(minimal_contact, task_id=None, lead_status=None)
+        dsw.process(minimal_contact, task_id=None, lead_status=None, is_new_contact=is_new_contact)
 
     except Exception as e:
         print(f"[DSW FORWARD] dsw.process error: {e}")

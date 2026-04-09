@@ -74,6 +74,117 @@ def get_full(cid):
         d = r.json(); return d.get("contact", d)
     return {}
 
+def _normalize_phone(p):
+    """Normalize to 10-digit Australian format (0XXXXXXXXX) for comparison."""
+    import re as _re
+    if not p:
+        return ''
+    d = _re.sub(r'\D', '', str(p))
+    if d.startswith('61') and len(d) == 11:  # +61XXXXXXXXX → 0XXXXXXXXX
+        d = '0' + d[2:]
+    return d
+
+
+def _fuzzy_name_match(a, b, threshold=0.80):
+    """Return True if two name strings match with >= threshold similarity."""
+    from difflib import SequenceMatcher
+    return SequenceMatcher(None, a.lower().strip(), b.lower().strip()).ratio() >= threshold
+
+
+def find_or_create_pipereply_contact(name, phone, email='', address='', src='referral'):
+    """Find an existing Pipereply contact by phone (primary) or fuzzy name (secondary).
+
+    Returns (cid, is_new):
+      - cid: Pipereply contact ID (or None on failure)
+      - is_new: True if a new contact was created, False if an existing one was reused
+    """
+    norm_phone = _normalize_phone(phone)
+
+    # ── 1. Phone-first dedup ──────────────────────────────────────────────
+    if norm_phone:
+        r = req.get(f'{BASE}/contacts/', headers=H,
+                    params={'locationId': LOCATION_ID, 'query': norm_phone, 'limit': 10},
+                    timeout=10)
+        if r.ok:
+            for c in r.json().get('contacts', []):
+                if _normalize_phone(c.get('phone', '')) == norm_phone:
+                    cid = c['id']
+                    existing_name = c.get('contactName', name)
+                    print(f'[Pipereply] Reused existing contact (phone match): {existing_name} ({cid[:8]})')
+                    # Patch in any missing fields
+                    patch = {}
+                    if email and not c.get('email'):
+                        patch['email'] = email
+                    if address and not c.get('address1'):
+                        patch['address1'] = address
+                    if patch:
+                        req.put(f'{BASE}/contacts/{cid}', headers=H, json=patch, timeout=10)
+                    return cid, False
+
+    # ── 2. Fuzzy name dedup ───────────────────────────────────────────────
+    if name:
+        r = req.get(f'{BASE}/contacts/', headers=H,
+                    params={'locationId': LOCATION_ID, 'query': name, 'limit': 5},
+                    timeout=10)
+        if r.ok:
+            for c in r.json().get('contacts', []):
+                if _fuzzy_name_match(name, c.get('contactName', '')):
+                    cid = c['id']
+                    existing_name = c.get('contactName', name)
+                    print(f'[Pipereply] Reused existing contact (name match ≥80%%): {existing_name} ({cid[:8]})')
+                    patch = {}
+                    if phone and not _normalize_phone(c.get('phone', '')):
+                        patch['phone'] = phone
+                    if email and not c.get('email'):
+                        patch['email'] = email
+                    if address and not c.get('address1'):
+                        patch['address1'] = address
+                    if patch:
+                        req.put(f'{BASE}/contacts/{cid}', headers=H, json=patch, timeout=10)
+                    return cid, False
+
+    # ── 3. Create new contact ─────────────────────────────────────────────
+    parts = (name or '').strip().split()
+    first = parts[0] if parts else name or 'Unknown'
+    last  = ' '.join(parts[1:]) if len(parts) > 1 else ''
+    payload = {
+        'locationId': LOCATION_ID,
+        'firstName':  first,
+        'lastName':   last,
+        'phone':      phone or '',
+        'email':      email or '',
+        'address1':   address or '',
+        'tags':       [src if src else 'referral'],
+        'source':     src.replace('_', ' ').title() if src else 'Referral',
+    }
+    r = req.post(f'{BASE}/contacts/', headers=H, json=payload, timeout=10)
+    if r.ok:
+        data = r.json()
+        cid  = (data.get('contact') or data).get('id', '')
+        print(f'[Pipereply] Created new contact: {name} ({(cid or "?")[:8]})')
+        return cid, True
+    print(f'[Pipereply] Contact creation failed ({r.status_code}): {r.text[:120]}')
+    return None, False
+
+
+def _mac_contact_exists(name):
+    """Return True if a contact named '{first} {last} DSW' already exists in Mac Contacts."""
+    parts = (name or '').strip().split()
+    first = parts[0] if parts else ''
+    last  = (' '.join(parts[1:]) + ' DSW').strip() if len(parts) > 1 else 'DSW'
+    full  = f'{first} {last}'.strip().replace('"', '').replace("'", '')
+    script = f'tell application "Contacts"\nreturn (count of (people whose name is "{full}")) > 0\nend tell'
+    try:
+        r = subprocess.run(['osascript', '-e', script], capture_output=True, text=True, timeout=10)
+        exists = r.stdout.strip().lower() == 'true'
+        if exists:
+            print(f'[iCloud] Contact already exists — skipping: {full}')
+        return exists
+    except Exception as e:
+        print(f'[iCloud] Existence check error: {e}')
+        return False
+
+
 def source(c):
     tags = " ".join([t.lower() for t in (c.get("tags") or [])])
     for s, k in [("SolarQuotes","solar_quotes"),("SEM","sem"),("Facebook","facebook"),("Website","website"),("Referral","referral")]:
@@ -149,28 +260,39 @@ def get_os_url_from_crm(cid):
         print(f"get_os_url_from_crm error: {e}")
     return None
 
-def save_to_crm(cid, os_url, summary):
+def save_to_crm(cid, os_url, summary, overwrite=True):
+    """Save lead summary + OpenSolar URL to Pipereply CRM notes.
+
+    overwrite=True  → update the existing 'OpenSolar' note (default for new contacts)
+    overwrite=False → always add a new note (used when reusing an existing contact
+                      so historical notes are preserved)
+    """
     note_body = "OpenSolar: " + os_url + chr(10) + chr(10) + summary
-    r_notes = req.get(f"{BASE}/contacts/{cid}/notes", headers=H)
-    existing_id = None
-    if r_notes.ok:
-        for note in (r_notes.json().get("notes") or []):
-            if "OpenSolar" in (note.get("body") or ""):
-                existing_id = note.get("id")
-                break
-    if existing_id:
-        r2 = req.put(f"{BASE}/contacts/{cid}/notes/{existing_id}", headers=H, json={"body": note_body})
-        print("CRM note updated:", r2.status_code)
-    else:
-        r2 = req.post(f"{BASE}/contacts/{cid}/notes", headers=H, json={"body": note_body})
-        print("CRM note created:", r2.status_code)
+    if overwrite:
+        r_notes = req.get(f"{BASE}/contacts/{cid}/notes", headers=H)
+        existing_id = None
+        if r_notes.ok:
+            for note in (r_notes.json().get("notes") or []):
+                if "OpenSolar" in (note.get("body") or ""):
+                    existing_id = note.get("id")
+                    break
+        if existing_id:
+            r2 = req.put(f"{BASE}/contacts/{cid}/notes/{existing_id}", headers=H, json={"body": note_body})
+            print("CRM note updated:", r2.status_code)
+            return
+    # Add as new note (either overwrite=False, or no existing note found)
+    r2 = req.post(f"{BASE}/contacts/{cid}/notes", headers=H, json={"body": note_body})
+    print("CRM note created:", r2.status_code)
 
 
 def icloud_contact(name, phone, email='', address='', city='', state='', postcode='', src=''):
     """Create a contact in iCloud via CardDAV. Returns True on success, False on failure.
 
-    Discovers partition + DSID dynamically so it works even if Apple moves the account.
+    Checks whether a contact named '{name} DSW' already exists (via Mac Contacts) before
+    creating. Discovers partition + DSID dynamically so it works even if Apple moves the account.
     """
+    if _mac_contact_exists(name):
+        return True  # Already exists — treat as success, skip creation
     import uuid, re as _re, requests as _req, xml.etree.ElementTree as ET
     from requests.auth import HTTPBasicAuth
 
@@ -258,6 +380,8 @@ def icloud_contact(name, phone, email='', address='', city='', state='', postcod
 
 def mac_contact(name, phone, src=''):
     """Fallback: create a contact in the local Mac Contacts app via osascript."""
+    if _mac_contact_exists(name):
+        return  # Already exists — skip
     parts = name.strip().split()
     first = parts[0] if parts else 'Unknown'
     last  = (' '.join(parts[1:]) + ' DSW').strip() if len(parts) > 1 else 'DSW'
@@ -388,7 +512,13 @@ def send_email(name, phone, addr, src, summary, crm_url, os_url, task_id=None, l
         print("Email sent:", name)
     except Exception as e: print("Email error:", e)
 
-def process(contact, task_id=None, lead_status=None):
+def process(contact, task_id=None, lead_status=None, is_new_contact=True):
+    """Process a DSW lead contact.
+
+    is_new_contact=True  → freshly created Pipereply contact; overwrite CRM note
+    is_new_contact=False → existing contact being reused; add a new CRM note to
+                           preserve history rather than overwriting the old one
+    """
     t0 = time.time()
     cid = contact.get("id")
     name = " ".join(w.capitalize() for w in (contact.get("contactName") or "Unknown").split())
@@ -404,19 +534,30 @@ def process(contact, task_id=None, lead_status=None):
     src = source(full)
     addr = ", ".join(filter(None,[address,city,state,postcode]))
     crm_url = CRM_BASE+"/detail/"+cid
-    print("Processing:", name, "|", phone, "|", src)
-    summary = summarise(name, phone, addr, src, notes, custom)
     is_reminder = task_id is not None
+
+    if is_reminder:
+        print(f"[Pipereply] Resending reminder: {name} ({cid[:8]})")
+    elif is_new_contact:
+        print(f"[Pipereply] Created new contact: {name} ({cid[:8]})")
+    else:
+        print(f"[Pipereply] Reused existing contact: {name} ({cid[:8]})")
+
+    summary = summarise(name, phone, addr, src, notes, custom)
+
     if not is_reminder:
         # New lead: create OpenSolar project, Mac contact, and Jottask task
         _, os_url = make_opensolar(name, phone, email, address, city, state, postcode)
-        if os_url: save_to_crm(cid, os_url, summary)
+        if os_url:
+            # Overwrite CRM note for brand-new contacts; add new note for reused ones
+            save_to_crm(cid, os_url, summary, overwrite=is_new_contact)
         if not icloud_contact(name, phone, email=email, address=address, city=city, state=state, postcode=postcode, src=src):
             mac_contact(name, phone, src=src)
         task_id = make_task(name, phone, summary, crm_url, os_url, email=email)
     else:
         # Reminder resend: look up OpenSolar URL from existing CRM note
         os_url = get_os_url_from_crm(cid)
+
     send_email(name, phone, addr, src, summary, crm_url, os_url, task_id, lead_status, email=email)
     print("Done in", round(time.time()-t0,1), "s:", name)
 
