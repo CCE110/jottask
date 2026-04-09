@@ -13,6 +13,7 @@ import imaplib
 import email
 from email.header import decode_header
 import json
+import re
 from datetime import datetime, date, timedelta
 from task_manager import TaskManager
 from anthropic import Anthropic
@@ -81,7 +82,6 @@ class AIEmailProcessor:
     @staticmethod
     def _normalize_subject(subject):
         """Strip Re:/Fwd:/FW: prefixes and whitespace to get the core subject"""
-        import re
         if not subject:
             return ''
         # Remove common prefixes repeatedly
@@ -247,6 +247,12 @@ class AIEmailProcessor:
             email_type = 'plaud_transcription' if is_plaud else 'forwarded_email'
 
             print(f"{'[PLAUD]' if is_plaud else '[EMAIL]'} Analyzing: {subject}")
+
+            # Rob forwarding his own leads/emails — use the DSW forward handler
+            # which strips his signature and validates the customer name.
+            if not is_plaud and self._is_from_rob(sender):
+                self.handle_dsw_forward(subject, sender, content)
+                return
 
             # Parse with appropriate prompt
             analysis = self.analyze_with_claude(subject, sender, content, email_type)
@@ -790,6 +796,143 @@ Rules:
         })
 
         return True, f"Deal status task created for {customer}"
+
+    # =========================================================================
+    # DSW FORWARD HANDLING (Rob-forwarded / self-generated leads)
+    # =========================================================================
+
+    # Patterns that mark the start of Rob's email signature
+    _ROB_SIG_PATTERNS = [
+        r'^Best Regards\b',
+        r'^Rob Lowe\b',
+        r'^M:\s',
+        r'^E:\s',
+        r'^W:\s',
+        r'^(QLD|SA|VIC|NSW)\s*:',
+        r'^--\s*$',
+    ]
+
+    def _is_from_rob(self, sender):
+        """Return True if the sender is Rob himself"""
+        rob_email = os.getenv('ROB_EMAIL', 'rob@cloudcleanenergy.com.au').lower()
+        rob_emails = {rob_email}
+        alt = os.getenv('ROB_ALT_EMAIL', '')
+        if alt:
+            rob_emails.add(alt.strip().lower())
+        sender_lower = sender.lower()
+        return any(r in sender_lower for r in rob_emails)
+
+    def strip_rob_signature(self, content):
+        """
+        Strip Rob's email signature from content before AI analysis.
+        Cuts at the first line matching any of _ROB_SIG_PATTERNS.
+        """
+        lines = content.splitlines()
+        for i, line in enumerate(lines):
+            stripped = line.strip()
+            for pattern in self._ROB_SIG_PATTERNS:
+                if re.match(pattern, stripped, re.IGNORECASE):
+                    return '\n'.join(lines[:i]).strip()
+        return content.strip()
+
+    def _is_rob_name(self, name):
+        """Return True if the extracted name is Rob's own name, not a customer"""
+        if not name:
+            return False
+        return name.strip().lower() in ('rob lowe', 'rob')
+
+    def _extract_name_from_subject(self, subject):
+        """
+        Try to extract a customer name from the email subject line.
+        Looks for a 'First Last' pattern after stripping Fwd:/Re: prefixes.
+        """
+        cleaned = re.sub(r'^(fwd?|re)\s*:\s*', '', subject, flags=re.IGNORECASE).strip()
+        match = re.match(r'^([A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)', cleaned)
+        if match:
+            return match.group(1)
+        return None
+
+    def handle_dsw_forward(self, subject, sender, content):
+        """
+        Process an email that Rob forwarded or self-generated as a lead.
+
+        Key differences from the standard flow:
+        1. Rob's signature is stripped BEFORE passing content to Claude.
+        2. If Claude returns Rob's own name as the customer, fall back to
+           extracting a name from the subject line.
+        3. The approval/confirmation email subject uses
+           '{customer_name} — {first requirement}' instead of the raw
+           forwarded subject.
+        """
+        # 1. Strip Rob's signature
+        stripped = self.strip_rob_signature(content)
+        removed = len(content) - len(stripped)
+        if removed:
+            print(f"  [DSW Fwd] Stripped {removed} chars of Rob's signature")
+
+        # 2. Analyze with Claude
+        analysis = self.analyze_with_claude(subject, sender, stripped, 'forwarded_email')
+
+        if not analysis or not analysis.get('actions'):
+            print("  [DSW Fwd] No actionable items found")
+            return
+
+        # 3. Validate customer name — reject if it's Rob
+        customer_name = analysis.get('customer_name')
+        if self._is_rob_name(customer_name):
+            fallback = self._extract_name_from_subject(subject)
+            print(f"  [DSW Fwd] Rejected extracted name '{customer_name}' — "
+                  f"falling back to subject name: '{fallback}'")
+            customer_name = fallback
+            analysis['customer_name'] = customer_name
+            # Fix name in each action too
+            for action in analysis['actions']:
+                if self._is_rob_name(action.get('customer_name')):
+                    action['customer_name'] = customer_name
+                    # Rebuild title if it starts with Rob's name
+                    title = action.get('title', '')
+                    if re.match(r'^Rob\b', title, re.IGNORECASE):
+                        action_part = title.split('-', 1)[-1].strip() if '-' in title else title
+                        action['title'] = f"{customer_name or subject[:40]}- {action_part}"
+
+        # 4. Build a meaningful subject for the generated email
+        first_action = analysis['actions'][0]
+        first_req = (first_action.get('description') or first_action.get('title') or '').strip()
+        # Truncate requirement to keep subject concise
+        if len(first_req) > 60:
+            first_req = first_req[:57].rstrip() + '...'
+        if customer_name:
+            generated_subject = f"{customer_name} \u2014 {first_req}" if first_req else customer_name
+        else:
+            # Fallback: use de-prefixed original subject
+            generated_subject = re.sub(r'^(fwd?|re)\s*:\s*', '', subject, flags=re.IGNORECASE).strip()
+
+        print(f"  [DSW Fwd] Customer: {customer_name!r}  |  Email subject: {generated_subject!r}")
+
+        # 5. Standard tier routing
+        auto_actions = []
+        approval_actions = []
+        for action in analysis['actions']:
+            tier = self.classify_action_tier(action)
+            action['tier'] = tier
+            if tier == self.TIER_1_AUTO:
+                auto_actions.append(action)
+            else:
+                approval_actions.append(action)
+
+        if auto_actions:
+            print(f"  Auto-executing {len(auto_actions)} action(s)...")
+            for action in auto_actions:
+                self.execute_action(action)
+
+        if approval_actions:
+            print(f"  Queuing {len(approval_actions)} action(s) for approval...")
+            self.send_approval_email(
+                email_subject=generated_subject,
+                email_sender=sender,
+                actions=approval_actions,
+                context=analysis.get('summary', '')
+            )
 
     # =========================================================================
     # EMAIL CONTENT EXTRACTION
