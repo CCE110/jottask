@@ -2517,6 +2517,19 @@ def handle_dsw_reply(subject, body_text, sender_email):
         cust_part = desc.split(NOTES_SEP, 1)[0].rstrip()
     else:
         cust_part = desc.rstrip()
+
+    # Auto-populate Sub-note from first line of notes if none exists yet
+    if not re.search(r'^Sub-note:', cust_part, re.MULTILINE):
+        first_note_line = next((l.strip() for l in notes_text.split('\n') if l.strip()), '')
+        if first_note_line:
+            first_note_line = first_note_line[:80]
+            if re.search(r'^OpenSolar:', cust_part, re.MULTILINE):
+                cust_part = re.sub(r'^(OpenSolar:[^\n]*)', rf'\1\nSub-note: {first_note_line}',
+                                   cust_part, flags=re.MULTILINE, count=1)
+            else:
+                cust_part = cust_part + f'\nSub-note: {first_note_line}'
+            print(f'[DSW REPLY] Auto-populated Sub-note: "{first_note_line}"')
+
     new_desc = cust_part + '\n\n' + NOTES_SEP + '\n' + notes_text
     task_update['description'] = new_desc
 

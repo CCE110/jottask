@@ -4466,12 +4466,11 @@ textarea:focus{border-color:#1e40af;box-shadow:0 0 0 3px rgba(30,64,175,.1)}
 <div class="hdr">
   <div>
     <h1>New DSW Lead</h1>
-    <form action="/task/{{ task_id }}/sub_note" method="POST" style="margin:6px 0 4px">
-      <input type="text" name="sub_note" value="{{ sub_note | e }}"
+    <form id="sub-note-form" action="/task/{{ task_id }}/sub_note" method="POST" style="margin:6px 0 4px">
+      <input id="sub-note-input" type="text" name="sub_note" value="{{ sub_note | e }}"
              class="sub-note-input"
              placeholder="Sub-status note (e.g. Tried once — try again tomorrow)..."
-             style="width:100%;background:rgba(255,255,255,0.15);border:1px solid rgba(255,255,255,0.3);border-radius:6px;padding:7px 10px;color:#fff;font-size:13px;outline:none;font-family:inherit"
-             onblur="this.form.submit()">
+             style="width:100%;background:rgba(255,255,255,0.15);border:1.5px solid rgba(255,255,255,0.5);border-radius:6px;padding:7px 10px;color:#fff;font-size:13px;outline:none;font-family:inherit">
     </form>
     <div class="hdr-row">
       <span class="badge" style="background:{{ badge_color }}">{{ badge_text }}</span>
@@ -4551,25 +4550,48 @@ textarea:focus{border-color:#1e40af;box-shadow:0 0 0 3px rgba(30,64,175,.1)}
 </div>
 
 <script>
+function showToast(msg,ms){
+  var t=document.getElementById('toast');
+  t.textContent=msg; t.style.display='block';
+  clearTimeout(t._tid);
+  t._tid=setTimeout(function(){t.style.display='none';},ms||2500);
+}
 // Show toast if ?saved=1
 if(location.search.includes('saved=1')){
-  var t=document.getElementById('toast');
-  t.textContent='Notes saved ✓';
-  t.style.display='block';
-  setTimeout(function(){t.style.display='none';
-    history.replaceState(null,'',location.pathname);},2500);
+  showToast('Notes saved ✓');
+  history.replaceState(null,'',location.pathname);
 }
 // Show toast if ?reminder_set=1
 var sp=new URLSearchParams(location.search);
 if(sp.get('reminder_set')==='1'){
   var rd=sp.get('rdate')||'';
   var rt=sp.get('rtime')||'';
-  var t=document.getElementById('toast');
-  t.textContent='Reminder set for '+rd+' at '+rt+' ✓';
-  t.style.display='block';
-  setTimeout(function(){t.style.display='none';
-    history.replaceState(null,'',location.pathname);},3000);
+  showToast('Reminder set for '+rd+' at '+rt+' ✓',3000);
+  history.replaceState(null,'',location.pathname);
 }
+// Sub-note: async save on Enter or blur (no page reload)
+(function(){
+  var form=document.getElementById('sub-note-form');
+  var inp=document.getElementById('sub-note-input');
+  if(!inp||!form) return;
+  var _orig=inp.value;
+  function _save(){
+    var val=inp.value;
+    if(val===_orig) return;
+    _orig=val;
+    fetch(form.action,{
+      method:'POST',
+      headers:{'Content-Type':'application/x-www-form-urlencoded','X-Requested-With':'fetch'},
+      body:'sub_note='+encodeURIComponent(val)
+    }).then(function(r){ if(r.ok) showToast('Sub-note saved ✓'); })
+      .catch(function(){ showToast('Save failed — try again'); });
+  }
+  inp.addEventListener('keydown',function(e){
+    if(e.key==='Enter'){ e.preventDefault(); _save(); inp.blur(); }
+  });
+  inp.addEventListener('blur',_save);
+  form.addEventListener('submit',function(e){ e.preventDefault(); _save(); });
+})();
 </script>
 </body>
 </html>""",
@@ -4623,6 +4645,17 @@ def lead_save_notes(task_id):
         cust_part = desc.split(NOTES_SEP, 1)[0].rstrip()
     else:
         cust_part = desc.rstrip()
+
+    # Auto-populate Sub-note from first line of notes if no sub_note exists yet
+    if notes_text and not re.search(r'^Sub-note:', cust_part, re.MULTILINE):
+        first_note_line = next((l.strip() for l in notes_text.split('\n') if l.strip()), '')
+        if first_note_line:
+            first_note_line = first_note_line[:80]
+            if re.search(r'^OpenSolar:', cust_part, re.MULTILINE):
+                cust_part = re.sub(r'^(OpenSolar:[^\n]*)', rf'\1\nSub-note: {first_note_line}',
+                                   cust_part, flags=re.MULTILINE, count=1)
+            else:
+                cust_part = cust_part.rstrip() + f'\nSub-note: {first_note_line}'
 
     new_desc = cust_part + '\n\n' + NOTES_SEP + '\n' + notes_text if notes_text else cust_part
     supabase.table('tasks').update({'description': new_desc}).eq('id', task_id).execute()
@@ -4692,6 +4725,8 @@ def lead_save_sub_note(task_id):
             new_desc = desc
 
     supabase.table('tasks').update({'description': new_desc}).eq('id', task_id).execute()
+    if request.headers.get('X-Requested-With') == 'fetch':
+        return ('', 204)
     return redirect(url_for('lead_detail', task_id=task_id, saved='1'))
 
 

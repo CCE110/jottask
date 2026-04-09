@@ -728,12 +728,15 @@ def check_and_send_dsw_reminders():
                                          for p in ('Phone:', 'CRM:', 'OpenSolar:'))]
                     summary = '\n'.join(summary_lines) or desc[:500]
                     status_label = dsw.STATUS_LABELS.get(lead_status, '🔵 NEW LEAD')
-                    _brief = ''
-                    for _l in summary.splitlines():
-                        _l = _l.strip()
-                        if _l.startswith('*'):
-                            _brief = _l.lstrip('*').strip()[:40]
-                            break
+                    # Subject: prefer Sub-note, fall back to first bullet point
+                    _sub_m = _re.search(r'^Sub-note:\s*(.+)$', desc, _re.MULTILINE)
+                    _brief = _sub_m.group(1).strip()[:50] if _sub_m else ''
+                    if not _brief:
+                        for _l in summary.splitlines():
+                            _l = _l.strip()
+                            if _l.startswith('*'):
+                                _brief = _l.lstrip('*').strip()[:40]
+                                break
                     _subj = (f"Reminder: {name} - {status_label} | {_brief}"
                              if _brief else f"Reminder: {name} - {status_label}")
                     dsw.send_email(
