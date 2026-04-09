@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
 """
-AI Email Task Processor v2
+AI Email Task Processor v3 — Multi-Tenant
 Upgraded with:
 - Solar sales pipeline awareness (DSW/Cloud Clean Energy workflow)
 - Plaud voice transcription detection & multi-action parsing
 - Tiered action system (auto-execute vs email approval)
 - Email-based approval flow (replaces terminal input)
 - Jottask category intelligence
+- Multi-tenant: processes all active email_connections, per-user AI context
+- Backward compatible: falls back to env-var single-inbox when no connections exist
 """
 
 import imaplib
@@ -14,17 +16,49 @@ import email
 from email.header import decode_header
 import json
 import re
+from dataclasses import dataclass, field
+from typing import Optional, Dict
 from datetime import datetime, date, timedelta
 from task_manager import TaskManager
 from anthropic import Anthropic
 from dotenv import load_dotenv
+# install_order imported lazily inside _handle_opensolar_accepted()
+# to isolate failures — a broken install_order.py won't kill reminders/email processing
 import os
 import uuid
 import hashlib
-import resend
 import pytz
 
 load_dotenv()
+
+AEST = pytz.timezone('Australia/Brisbane')
+
+def _now_local(user_context=None):
+    """Get current time in the user's timezone (defaults to AEST)."""
+    tz = AEST
+    if user_context and hasattr(user_context, 'timezone') and user_context.timezone:
+        try:
+            tz = pytz.timezone(user_context.timezone)
+        except:
+            pass
+    return datetime.now(tz)
+
+
+# =========================================================================
+# USER CONTEXT — per-tenant data passed through the processing pipeline
+# =========================================================================
+
+@dataclass
+class UserContext:
+    """Per-user context for multi-tenant email processing"""
+    user_id: str
+    email_address: str
+    company_name: str = ''
+    full_name: str = ''
+    timezone: str = 'Australia/Brisbane'
+    businesses: Dict[str, str] = field(default_factory=dict)
+    ai_context: Optional[dict] = None
+    connection_id: Optional[str] = None
 
 
 class AIEmailProcessor:
@@ -38,15 +72,10 @@ class AIEmailProcessor:
         self.email_password = os.getenv('JOTTASK_EMAIL_PASSWORD')
         self.imap_server = os.getenv('IMAP_SERVER', 'mail.privateemail.com')
 
-        # Resend for outbound emails (approval emails etc)
-        resend.api_key = os.getenv('RESEND_API_KEY')
-        self.from_email = os.getenv('FROM_EMAIL', 'admin@flowquote.ai')
+        # Outbound emails routed through email_utils.send_email() (retries + monitoring)
 
-        # Business IDs
-        self.businesses = {
-            'Cloud Clean Energy': os.getenv('BUSINESS_ID_CCE', 'feb14276-5c3d-4fcf-af06-9a8f54cf7159'),
-            'AI Project Pro': os.getenv('BUSINESS_ID_AIPP', 'ec5d7aab-8d74-4ef2-9d92-01b143c68c82')
-        }
+        # Business IDs come from per-user ai_context (no hardcoded fallback)
+        self.businesses = {}
 
         # Plaud detection
         self.plaud_senders = ['no-reply@plaud.ai', 'noreply@plaud.ai']
@@ -65,7 +94,7 @@ class AIEmailProcessor:
             'set_reminder',
             'categorise_task',
             'snooze_task',
-            'update_task_notes',
+            'update_task_notes',  # AI-routed note to existing task
         ]
         self.approval_action_types = [
             'update_crm',           # Writing to PipeReply — hard to undo
@@ -76,7 +105,319 @@ class AIEmailProcessor:
         ]
 
     # =========================================================================
-    # MAIN PROCESSING LOOP
+    # MULTI-TENANT MAIN LOOP
+    # =========================================================================
+
+    def _get_active_connections(self):
+        """Query email_connections for active connections due for sync"""
+        try:
+            # Query connections separately from users to avoid RLS/JOIN issues
+            result = self.tm.supabase.table('email_connections') \
+                .select('*') \
+                .eq('is_active', True) \
+                .execute()
+
+            if not result.data:
+                print("  _get_active_connections: no rows in email_connections with is_active=true")
+                return []
+
+            print(f"  _get_active_connections: found {len(result.data)} active connection(s)")
+
+            now = datetime.now(pytz.UTC)
+            due_connections = []
+            for conn in result.data:
+                last_sync = conn.get('last_sync_at')
+                freq_minutes = conn.get('sync_frequency_minutes', 15)
+
+                if last_sync:
+                    last_sync_dt = datetime.fromisoformat(last_sync.replace('Z', '+00:00'))
+                    next_sync = last_sync_dt + timedelta(minutes=freq_minutes)
+                    if now < next_sync:
+                        mins_left = (next_sync - now).total_seconds() / 60
+                        print(f"    Connection {conn.get('email_address')}: not due yet ({mins_left:.1f}m remaining)")
+                        continue  # Not due yet
+
+                # Fetch user data separately (avoids JOIN/RLS issues)
+                user_id = conn.get('user_id')
+                if user_id:
+                    try:
+                        user_result = self.tm.supabase.table('users') \
+                            .select('id, email, full_name, company_name, timezone, ai_context') \
+                            .eq('id', user_id) \
+                            .single() \
+                            .execute()
+                        conn['users'] = user_result.data if user_result.data else {}
+                    except Exception as ue:
+                        print(f"    Warning: could not fetch user data for {user_id}: {ue}")
+                        conn['users'] = {}
+
+                due_connections.append(conn)
+
+            return due_connections
+
+        except Exception as e:
+            print(f"Error fetching active connections: {e}")
+            import traceback
+            traceback.print_exc()
+            return []
+
+    def _ensure_legacy_context(self):
+        """Build a default UserContext for the legacy single-inbox fallback.
+        Finds the first global_admin (or any user with ai_context) to use as default."""
+        if getattr(self, '_legacy_context', None):
+            return  # Already set
+        try:
+            # Find the admin user with ai_context
+            result = self.tm.supabase.table('users') \
+                .select('id, email, full_name, company_name, timezone, ai_context') \
+                .eq('role', 'global_admin') \
+                .limit(1) \
+                .execute()
+            if result.data:
+                user = result.data[0]
+                ai_ctx = user.get('ai_context') or {}
+                businesses = ai_ctx.get('businesses', {})
+                self._legacy_context = UserContext(
+                    user_id=user['id'],
+                    email_address=user.get('email', ''),
+                    company_name=user.get('company_name', ''),
+                    full_name=user.get('full_name', ''),
+                    timezone=user.get('timezone', 'Australia/Brisbane'),
+                    businesses=businesses,
+                    ai_context=ai_ctx,
+                    connection_id=None,
+                )
+                print(f"  Legacy context: using admin {user.get('full_name')} ({user['id'][:8]}...)")
+            else:
+                print("  WARNING: No global_admin user found for legacy context")
+                self._legacy_context = None
+        except Exception as e:
+            print(f"  Error building legacy context: {e}")
+            self._legacy_context = None
+
+    def _find_user_by_email(self, sender_email):
+        """Look up a registered user by their email or alternate_emails.
+        Returns a UserContext if found, None otherwise."""
+        if not sender_email:
+            return None
+        sender_lower = sender_email.lower()
+        try:
+            # Check primary email first
+            result = self.tm.supabase.table('users') \
+                .select('id, email, full_name, company_name, timezone, ai_context') \
+                .eq('email', sender_lower) \
+                .limit(1) \
+                .execute()
+            if result.data:
+                user = result.data[0]
+                ai_ctx = user.get('ai_context') or {}
+                businesses = ai_ctx.get('businesses', {})
+                print(f"  Sender match (primary): {sender_lower} → {user.get('full_name')} ({user['id'][:8]}...)")
+                return UserContext(
+                    user_id=user['id'],
+                    email_address=user.get('email', ''),
+                    company_name=user.get('company_name', ''),
+                    full_name=user.get('full_name', ''),
+                    timezone=user.get('timezone', 'Australia/Brisbane'),
+                    businesses=businesses,
+                    ai_context=ai_ctx,
+                    connection_id=None,
+                )
+
+            # Check alternate_emails (stored as JSONB array)
+            result = self.tm.supabase.table('users') \
+                .select('id, email, full_name, company_name, timezone, ai_context, alternate_emails') \
+                .not_.is_('alternate_emails', 'null') \
+                .execute()
+            for user in (result.data or []):
+                alt_emails = user.get('alternate_emails') or []
+                if sender_lower in [e.lower() for e in alt_emails]:
+                    ai_ctx = user.get('ai_context') or {}
+                    businesses = ai_ctx.get('businesses', {})
+                    print(f"  Sender match (alternate): {sender_lower} → {user.get('full_name')} ({user['id'][:8]}...)")
+                    return UserContext(
+                        user_id=user['id'],
+                        email_address=user.get('email', ''),
+                        company_name=user.get('company_name', ''),
+                        full_name=user.get('full_name', ''),
+                        timezone=user.get('timezone', 'Australia/Brisbane'),
+                        businesses=businesses,
+                        ai_context=ai_ctx,
+                        connection_id=None,
+                    )
+        except Exception as e:
+            print(f"  Error looking up sender {sender_email}: {e}")
+        return None
+
+    def _build_user_context(self, connection):
+        """Build a UserContext from an email_connections row (with joined user data)"""
+        user_data = connection.get('users') or {}
+        ai_context = user_data.get('ai_context') or {}
+
+        # Build businesses dict from ai_context, fall back to env vars
+        businesses = ai_context.get('businesses', {})
+        if not businesses:
+            businesses = self.businesses.copy()
+
+        return UserContext(
+            user_id=connection['user_id'],
+            email_address=connection['email_address'],
+            company_name=user_data.get('company_name', ''),
+            full_name=user_data.get('full_name', ''),
+            timezone=user_data.get('timezone', 'Australia/Brisbane'),
+            businesses=businesses,
+            ai_context=ai_context,
+            connection_id=str(connection['id']),
+        )
+
+    def process_connection(self, connection):
+        """Process emails for a single connection"""
+        user_ctx = self._build_user_context(connection)
+        use_env = connection.get('use_env_credentials', False)
+
+        if use_env:
+            imap_server = os.getenv('IMAP_SERVER', 'mail.privateemail.com')
+            imap_user = os.getenv('JOTTASK_EMAIL', 'jottask@flowquote.ai')
+            imap_password = os.getenv('JOTTASK_EMAIL_PASSWORD')
+        else:
+            imap_server = connection.get('imap_server', 'imap.gmail.com')
+            imap_user = connection['email_address']
+            imap_password = connection.get('imap_password', '')
+
+        if not imap_password:
+            print(f"  Skipping {user_ctx.email_address}: no IMAP password configured")
+            return
+
+        print(f"Processing connection: {user_ctx.email_address} (user: {user_ctx.full_name})")
+
+        # Load processed emails scoped to this connection
+        processed = self._load_processed_emails(connection_id=user_ctx.connection_id)
+
+        try:
+            mail = imaplib.IMAP4_SSL(imap_server)
+            mail.login(imap_user, imap_password)
+            mail.select('inbox')
+
+            seven_days_ago = (date.today() - timedelta(days=7)).strftime("%d-%b-%Y")
+            status, messages = mail.uid("search", None, f'(SINCE {seven_days_ago})')
+
+            if not messages[0]:
+                print(f"  No emails in last 7 days for {user_ctx.email_address}")
+                mail.close()
+                mail.logout()
+                self._update_last_sync(user_ctx.connection_id)
+                return
+
+            email_ids = messages[0].split()
+
+            unprocessed = []
+            for eid in email_ids:
+                uid_str = eid.decode() if isinstance(eid, bytes) else str(eid)
+                if uid_str not in processed:
+                    unprocessed.append(eid)
+
+            if not unprocessed:
+                print(f"  No new emails for {user_ctx.email_address}")
+                mail.close()
+                mail.logout()
+                self._update_last_sync(user_ctx.connection_id)
+                return
+
+            print(f"  Found {len(email_ids)} total ({len(unprocessed)} new)")
+
+            processed_count = 0
+            skipped_dupes = 0
+            seen_subjects = set()
+
+            for msg_id in reversed(unprocessed[-20:]):
+                msg_id_str = msg_id.decode() if isinstance(msg_id, bytes) else str(msg_id)
+
+                status, msg_data = mail.uid("fetch", msg_id, '(RFC822)')
+                if status != 'OK':
+                    self._mark_email_processed(
+                        f'fetch-fail-{msg_id_str}', msg_id_str,
+                        connection_id=user_ctx.connection_id, user_id=user_ctx.user_id
+                    )
+                    continue
+
+                email_body = email.message_from_bytes(msg_data[0][1])
+                message_id = email_body.get('Message-ID', msg_id_str)
+
+                if msg_id_str in processed or message_id in processed:
+                    continue
+
+                raw_subject = email_body.get('Subject', '')
+                if raw_subject:
+                    decoded_parts = decode_header(raw_subject)
+                    raw_subject = ''.join(
+                        part.decode(enc or 'utf-8') if isinstance(part, bytes) else part
+                        for part, enc in decoded_parts
+                    )
+
+                sender_raw = email_body.get('From', '')
+                sender_addr = self._get_sender_email_address(sender_raw)
+
+                result = self.process_single_email_body(email_body, user_context=user_ctx)
+                outcome, outcome_detail = result if result else ('error', 'No result returned')
+                processed_count += 1
+
+                self._mark_email_processed(
+                    message_id, msg_id_str,
+                    connection_id=user_ctx.connection_id, user_id=user_ctx.user_id,
+                    sender_email=sender_addr, sender_name=sender_raw,
+                    subject=raw_subject,
+                    outcome=outcome, outcome_detail=outcome_detail,
+                )
+
+                mail.uid('store', msg_id, '+FLAGS', '\\Seen')
+
+            print(f"  Processed {processed_count} emails ({skipped_dupes} duplicates skipped) for {user_ctx.email_address}")
+
+            mail.close()
+            mail.logout()
+
+        except Exception as e:
+            print(f"  Error processing connection {user_ctx.email_address}: {e}")
+            import traceback
+            traceback.print_exc()
+
+        self._update_last_sync(user_ctx.connection_id)
+
+    def _update_last_sync(self, connection_id):
+        """Stamp last_sync_at on the connection after processing"""
+        try:
+            self.tm.supabase.table('email_connections').update({
+                'last_sync_at': datetime.now(pytz.UTC).isoformat(),
+            }).eq('id', connection_id).execute()
+        except Exception as e:
+            print(f"  Error updating last_sync_at: {e}")
+
+    def process_all_connections(self):
+        """Main entry point: process all active connections, fall back to legacy single-inbox"""
+        connections = self._get_active_connections()
+
+        if connections:
+            print(f"Multi-tenant mode: {len(connections)} connection(s) due for sync")
+            for conn in connections:
+                try:
+                    self.process_connection(conn)
+                except Exception as e:
+                    email_addr = conn.get('email_address', 'unknown')
+                    print(f"Error processing connection {email_addr}: {e}")
+                    import traceback
+                    traceback.print_exc()
+        else:
+            # Fallback: if no DB connections found (or none due), try legacy single-inbox
+            # This keeps the system working even if email_connections table is empty
+            if self.email_password:
+                print("No DB connections due — falling back to legacy single-inbox mode")
+                self._ensure_legacy_context()
+                self.process_forwarded_emails()
+            else:
+                print("No active email connections found and no env credentials. Nothing to process.")
+
+    # =========================================================================
+    # LEGACY SINGLE-INBOX PROCESSING (preserved as fallback)
     # =========================================================================
 
     @staticmethod
@@ -94,8 +435,8 @@ class AIEmailProcessor:
         return cleaned.lower()
 
     def process_forwarded_emails(self):
-        """Check for new forwarded emails and analyze them"""
-        print("AI Email Processor v2 Starting...")
+        """Check for new forwarded emails and analyze them (legacy single-inbox mode)"""
+        print("AI Email Processor v2 Starting (legacy mode)...")
         print(f"Checking {self.email_user} on {self.imap_server} for emails...")
 
         # Reload processed emails from DB each cycle (catches entries from other services)
@@ -155,7 +496,7 @@ class AIEmailProcessor:
                 if msg_id_str in self.processed_emails or message_id in self.processed_emails:
                     continue
 
-                # Subject-level dedup: skip duplicate forwards of the same email
+                # Decode subject
                 raw_subject = email_body.get('Subject', '')
                 if raw_subject:
                     decoded_parts = decode_header(raw_subject)
@@ -163,21 +504,28 @@ class AIEmailProcessor:
                         part.decode(enc or 'utf-8') if isinstance(part, bytes) else part
                         for part, enc in decoded_parts
                     )
-                norm_subject = self._normalize_subject(raw_subject)
-                if norm_subject and norm_subject in seen_subjects:
-                    print(f"  ⏭️ Skipping duplicate subject: {raw_subject[:60]}")
-                    self._mark_email_processed(message_id, msg_id_str)
-                    skipped_dupes += 1
-                    continue
-                if norm_subject:
-                    seen_subjects.add(norm_subject)
 
-                # Process this email
-                self.process_single_email_body(email_body)
+                # Extract sender info for history tracking
+                sender_raw = email_body.get('From', '')
+                sender_addr = self._get_sender_email_address(sender_raw)
+
+                # Match sender to a registered user; fall back to admin context
+                matched_context = self._find_user_by_email(sender_addr)
+                if not matched_context:
+                    matched_context = getattr(self, '_legacy_context', None)
+
+                # Process this email with the matched user's context
+                result = self.process_single_email_body(email_body, user_context=matched_context)
+                outcome, outcome_detail = result if result else ('error', 'No result returned')
                 processed_count += 1
 
-                # Mark as processed in Supabase
-                self._mark_email_processed(message_id, msg_id_str)
+                # Mark as processed in Supabase with sender info + outcome
+                self._mark_email_processed(
+                    message_id, msg_id_str,
+                    sender_email=sender_addr, sender_name=sender_raw,
+                    subject=raw_subject,
+                    outcome=outcome, outcome_detail=outcome_detail,
+                )
 
                 # Also mark as read on the server
                 mail.uid('store', msg_id, '+FLAGS', '\\Seen')
@@ -192,32 +540,71 @@ class AIEmailProcessor:
             import traceback
             traceback.print_exc()
 
-    def _load_processed_emails(self):
+    # =========================================================================
+    # CONNECTION-AWARE DEDUP
+    # =========================================================================
+
+    def _load_processed_emails(self, connection_id=None):
         """Load set of already-processed email IDs and UIDs from Supabase"""
         try:
-            result = self.tm.supabase.table('processed_emails') \
-                .select('email_id,uid') \
-                .execute()
+            query = self.tm.supabase.table('processed_emails').select('email_id,uid')
+
+            if connection_id:
+                query = query.eq('connection_id', connection_id)
+
+            result = query.execute()
             ids = set()
             for row in (result.data or []):
                 if row.get('email_id'):
                     ids.add(row['email_id'])
                 if row.get('uid'):
                     ids.add(row['uid'])
-            print(f"📊 Loaded {len(ids)} processed email IDs")
+            print(f"Loaded {len(ids)} processed email IDs" + (f" for connection {connection_id[:8]}..." if connection_id else ""))
             return ids
         except Exception as e:
             print(f"Warning: Could not load processed emails: {e}")
             return set()
 
-    def _mark_email_processed(self, message_id, uid_str=''):
-        """Mark an email as processed in Supabase"""
+    def _mark_email_processed(self, message_id, uid_str='', connection_id=None,
+                              user_id=None, sender_email=None, sender_name=None,
+                              subject=None, outcome=None, outcome_detail=None):
+        """Mark an email as processed in Supabase, with optional sender info and outcome tracking"""
         try:
-            self.tm.supabase.table('processed_emails').insert({
+            data = {
                 'email_id': message_id,
                 'uid': uid_str,
-                'processed_at': datetime.now().isoformat(),
-            }).execute()
+                'processed_at': datetime.now(pytz.UTC).isoformat(),
+            }
+            if connection_id:
+                data['connection_id'] = connection_id
+            if user_id:
+                data['user_id'] = user_id
+
+            # Sender info columns (migration 017) + outcome columns (migration 020)
+            # We try with them first; if the columns don't exist yet, retry without.
+            extra_data = {}
+            if sender_email:
+                extra_data['sender_email'] = sender_email.lower()
+            if sender_name:
+                extra_data['sender_name'] = sender_name
+            if subject:
+                extra_data['subject'] = subject[:500]
+            if outcome:
+                extra_data['outcome'] = outcome
+            if outcome_detail:
+                extra_data['outcome_detail'] = str(outcome_detail)[:500]
+
+            insert_data = {**data, **extra_data}
+
+            try:
+                self.tm.supabase.table('processed_emails').insert(insert_data).execute()
+            except Exception as col_err:
+                if 'column' in str(col_err).lower() or 'schema' in str(col_err).lower():
+                    # Migration 017/020 not run yet — retry without new columns
+                    self.tm.supabase.table('processed_emails').insert(data).execute()
+                else:
+                    raise col_err
+
             self.processed_emails.add(message_id)
             if uid_str:
                 self.processed_emails.add(uid_str)
@@ -229,10 +616,23 @@ class AIEmailProcessor:
                 if uid_str:
                     self.processed_emails.add(uid_str)
             else:
-                print(f"❌ Failed to mark email processed: {e}")
+                print(f"Failed to mark email processed: {e}")
 
-    def process_single_email_body(self, email_body):
-        """Process one email from an already-fetched email body"""
+    # =========================================================================
+    # EMAIL PROCESSING
+    # =========================================================================
+
+    def process_single_email_body(self, email_body, user_context=None):
+        """Process one email from an already-fetched email body.
+
+        Returns (outcome, detail) tuple:
+        - ('task_created', 'title...') — AI created task(s)
+        - ('note_added', 'Added note to existing task') — AI routed to existing task
+        - ('approval_queued', 'N actions queued') — Tier 2 actions sent for approval
+        - ('opensolar', 'Install order for ...') — OpenSolar detection path
+        - ('no_action', 'AI found no actionable items') — AI returned empty actions
+        - ('error', 'Error: ...') — exception during processing
+        """
         try:
 
             subject = decode_header(email_body['Subject'])[0][0]
@@ -242,24 +642,50 @@ class AIEmailProcessor:
             sender = email_body['From']
             content = self.extract_email_content(email_body)
 
+            # --- OpenSolar "Customer Accepted" detection (before AI analysis) ---
+            # Lazy import: if install_order.py is broken, only this path fails
+            try:
+                from install_order import is_opensolar_accepted
+            except Exception as _io_err:
+                print(f"  [OPENSOLAR] install_order import failed: {_io_err}")
+                is_opensolar_accepted = lambda s, subj: False
+
+            if is_opensolar_accepted(sender, subject):
+                print(f"[OPENSOLAR] Detected: {subject}")
+                self._handle_opensolar_accepted(subject, content, user_context=user_context)
+                return ('opensolar', f'Install order: {subject[:200]}')
+
             # Detect email type
             is_plaud = self.is_plaud_transcription(sender)
             email_type = 'plaud_transcription' if is_plaud else 'forwarded_email'
 
             print(f"{'[PLAUD]' if is_plaud else '[EMAIL]'} Analyzing: {subject}")
-
-            # Rob forwarding his own leads/emails — use the DSW forward handler
-            # which strips his signature and validates the customer name.
-            if not is_plaud and self._is_from_rob(sender):
-                self.handle_dsw_forward(subject, sender, content)
-                return
+            sender_email_addr = self._get_sender_email_address(sender)
+            subject_lower = (subject or '').lower()
+            # Self-generated lead from rob.l@directsolarwholesaler.com.au — "New Lead: ..."
+            if subject_lower.startswith('new lead:') and 're:' not in subject_lower:
+                if handle_dsw_new_lead(subject, content, sender_email_addr):
+                    return ("task_created", f"DSW self-generated lead: {subject[:80]}")
+            # Reply from DSW with call notes — "Re: New Lead: ..." or "Re: DSW ..."
+            is_dsw_reply = subject_lower.startswith('re:') and (
+                'new lead:' in subject_lower or
+                subject_lower.startswith('re: dsw') or
+                subject_lower.startswith('re: new dsw')
+            )
+            if is_dsw_reply:
+                if handle_dsw_reply(subject, content, sender_email_addr):
+                    return ("dsw_reply", "DSW lead notes updated")
+            # Forwarded/unstructured lead from rob.l — FW:/Fwd: or body has AU phone
+            if handle_dsw_forward(subject, content, sender_email_addr):
+                return ("task_created", f"DSW forward lead: {subject[:80]}")
 
             # Parse with appropriate prompt
-            analysis = self.analyze_with_claude(subject, sender, content, email_type)
+            analysis = self.analyze_with_claude(subject, sender, content, email_type, user_context=user_context)
 
             if not analysis or not analysis.get('actions'):
                 print(f"  No actionable items found")
-                return
+                summary = (analysis or {}).get('summary', 'AI found no actionable items')
+                return ('no_action', summary[:500])
 
             # Process each action based on tier
             auto_actions = []
@@ -274,11 +700,21 @@ class AIEmailProcessor:
                 else:
                     approval_actions.append(action)
 
+            # Track what we did for outcome reporting
+            outcomes = []
+
             # Execute Tier 1 actions immediately
+            # batch_created tracks tasks created in this email to prevent within-batch duplicates
+            batch_created = {}
             if auto_actions:
                 print(f"  Auto-executing {len(auto_actions)} low-risk action(s)...")
                 for action in auto_actions:
-                    self.execute_action(action)
+                    self.execute_action(action, user_context=user_context, batch_created=batch_created)
+                    atype = action.get('action_type', '')
+                    if atype == 'update_task_notes':
+                        outcomes.append('note_added')
+                    else:
+                        outcomes.append('task_created')
 
             # Queue Tier 2 actions for email approval
             if approval_actions:
@@ -287,11 +723,25 @@ class AIEmailProcessor:
                     email_subject=subject,
                     email_sender=sender,
                     actions=approval_actions,
-                    context=analysis.get('summary', '')
+                    context=analysis.get('summary', ''),
+                    user_context=user_context,
                 )
+                outcomes.append('approval_queued')
+
+            # Determine primary outcome
+            if 'task_created' in outcomes:
+                titles = ', '.join(a.get('title', '')[:60] for a in auto_actions if a.get('action_type') != 'update_task_notes')
+                return ('task_created', titles[:500] or 'Task created')
+            elif 'approval_queued' in outcomes:
+                return ('approval_queued', f'{len(approval_actions)} action(s) queued for approval')
+            elif 'note_added' in outcomes:
+                return ('note_added', f'Added note to existing task')
+            else:
+                return ('no_action', 'No actions executed')
 
         except Exception as e:
             print(f"Error processing email: {e}")
+            return ('error', f'Error: {str(e)[:480]}')
 
     # =========================================================================
     # PLAUD DETECTION
@@ -303,60 +753,232 @@ class AIEmailProcessor:
         return any(plaud in sender_lower for plaud in self.plaud_senders)
 
     # =========================================================================
-    # CLAUDE AI ANALYSIS
+    # OPENSOLAR — "Customer Accepted" install order automation
     # =========================================================================
 
-    def analyze_with_claude(self, subject, sender, content, email_type):
+    def _handle_opensolar_accepted(self, subject, content, user_context=None):
+        """Handle an OpenSolar 'Customer Accepted' email:
+        parse → CRM lookup → format WhatsApp draft → create task → send email"""
+        from install_order import (
+            parse_opensolar_email, lookup_crm_by_address,
+            format_install_order_draft, send_install_order_email,
+        )
+
+        if not user_context:
+            print("  [OPENSOLAR] No user context — skipping")
+            return
+
+        # 1. Parse the email
+        notification = parse_opensolar_email(subject, content)
+        if not notification:
+            print(f"  [OPENSOLAR] Could not parse project details from email")
+            return
+
+        print(f"  [OPENSOLAR] Project {notification.project_id}: {notification.address}")
+
+        # 2. Look up CRM/task context by address
+        crm_context = lookup_crm_by_address(
+            user_id=user_context.user_id,
+            address=notification.address,
+            tm=self.tm,
+        )
+        if crm_context.customer_name:
+            print(f"  [OPENSOLAR] Found customer: {crm_context.customer_name}")
+        else:
+            print(f"  [OPENSOLAR] No customer name found — draft will have placeholder")
+
+        # 3. Format WhatsApp draft (equipment=None in Phase 1)
+        whatsapp_draft = format_install_order_draft(
+            notification=notification,
+            crm_context=crm_context,
+            equipment=None,
+        )
+
+        # 4. Create a task in the dashboard
+        customer_display = crm_context.customer_name or notification.address
+        task_title = f"Install Order - {customer_display}"
+
+        task_description = (
+            f"Customer accepted proposal on OpenSolar.\n"
+            f"Project: {notification.address}\n"
+            f"OpenSolar: {notification.project_link}\n"
+        )
+        if crm_context.customer_name:
+            task_description += f"Customer: {crm_context.customer_name}\n"
+
+        self._create_task({
+            'action_type': 'create_task',
+            'title': task_title,
+            'description': task_description,
+            'business': self._get_default_business(user_context),
+            'priority': 'high',
+            'due_date': _now_local(user_context).strftime('%Y-%m-%d'),
+            'due_time': '09:00',
+            'category': 'Install Order',
+            'customer_name': crm_context.customer_name,
+            'email_address': crm_context.client_email,
+        }, user_context=user_context)
+
+        # 5. Send install order email with WhatsApp draft
+        send_install_order_email(
+            recipient_email=user_context.email_address,
+            notification=notification,
+            whatsapp_draft=whatsapp_draft,
+            crm_context=crm_context,
+            user_name=user_context.full_name or 'User',
+        )
+
+        print(f"  [OPENSOLAR] Install order processed for {notification.address}")
+
+    def _get_default_business(self, user_context):
+        """Get the default business name from user context"""
+        if user_context and user_context.ai_context:
+            return user_context.ai_context.get('default_business', '')
+        if user_context and user_context.businesses:
+            return list(user_context.businesses.keys())[0]
+        return ''
+
+    # =========================================================================
+    # CLAUDE AI ANALYSIS — with per-user prompt context
+    # =========================================================================
+
+    def _build_user_prompt_context(self, user_context=None):
+        """Build prompt variables from user context. Falls back to Rob's defaults."""
+        if user_context and user_context.ai_context:
+            ctx = user_context.ai_context
+            return {
+                'user_name': user_context.full_name or 'the user',
+                'company_name': user_context.company_name or ctx.get('company_name', 'the company'),
+                'role_description': ctx.get('role_description', 'a sales professional'),
+                'crm_name': ctx.get('crm_name', 'their CRM'),
+                'workflow': ctx.get('workflow', 'Lead → Follow Up → Close'),
+                'businesses': user_context.businesses,
+                'default_business': ctx.get('default_business', list(user_context.businesses.keys())[0] if user_context.businesses else 'Default'),
+                'categories': ctx.get('categories', ['Remember to Callback', 'Quote Follow Up', 'CRM Update', 'New Lead', 'Research', 'General']),
+                'extra_context': ctx.get('extra_context', ''),
+            }
+
+        # Rob's hardcoded defaults (zero behavior change for legacy mode)
+        return {
+            'user_name': 'Rob Lowe',
+            'company_name': 'Direct Solar Wholesalers (DSW)',
+            'role_description': 'a solar & battery sales engineer at Direct Solar Wholesalers (DSW), QLD Australia',
+            'crm_name': 'PipeReply',
+            'workflow': 'Lead → Scoping Call → Quote (OpenSolar) → Price (DSW Tool) → Send Proposal → Follow Up → Close',
+            'businesses': self.businesses,
+            'default_business': 'Cloud Clean Energy',
+            'categories': ['Remember to Callback', 'Quote Follow Up', 'CRM Update', 'Site Visit', 'New Lead', 'Research', 'General'],
+            'extra_context': '',
+        }
+
+    def _get_sender_email_address(self, sender_raw):
+        """Extract clean email address from a From header like 'John Smith <john@example.com>'"""
+        import re
+        match = re.search(r'<([^>]+)>', sender_raw)
+        if match:
+            return match.group(1).lower()
+        # Maybe it's just a bare email
+        if '@' in sender_raw:
+            return sender_raw.strip().lower()
+        return ''
+
+    def _get_existing_tasks_for_sender(self, sender_email, user_context=None):
+        """Query open tasks that match this sender's email or name."""
+        if not sender_email:
+            return []
+        try:
+            query = self.tm.supabase.table('tasks')\
+                .select('id, title, due_date, status, client_name, client_email, created_at')\
+                .eq('status', 'pending')\
+                .eq('client_email', sender_email)\
+                .order('created_at', desc=True)\
+                .limit(5)
+
+            if user_context:
+                query = query.eq('user_id', user_context.user_id)
+
+            result = query.execute()
+            return result.data or []
+        except Exception as e:
+            print(f"  Warning: could not query sender tasks: {e}")
+            return []
+
+    def analyze_with_claude(self, subject, sender, content, email_type, user_context=None):
         """Use Claude to analyze email with solar-sales-aware prompt"""
 
+        # For regular emails, look up existing tasks for this sender
+        sender_tasks = []
+        sender_email = ''
+        if email_type != 'plaud_transcription':
+            sender_email = self._get_sender_email_address(sender)
+            if sender_email:
+                sender_tasks = self._get_existing_tasks_for_sender(sender_email, user_context)
+
         if email_type == 'plaud_transcription':
-            prompt = self._build_plaud_prompt(subject, content)
+            prompt = self._build_plaud_prompt(subject, content, user_context=user_context)
         else:
-            prompt = self._build_email_prompt(subject, sender, content)
+            prompt = self._build_email_prompt(subject, sender, content, user_context=user_context,
+                                              sender_email=sender_email, sender_tasks=sender_tasks)
 
         try:
+            # Log what we're sending to AI for debugging
+            print(f"  [AI INPUT] Subject: {subject}")
+            print(f"  [AI INPUT] Content length: {len(content)} chars")
+            print(f"  [AI INPUT] Content preview: {content[:200]}")
+
             response = self.claude.messages.create(
                 model="claude-sonnet-4-20250514",
                 max_tokens=2000,
+                system="You are a task extraction assistant. Your job is to ALWAYS create tasks from emails. NEVER return empty actions unless the email is pure spam. The subject line alone is enough to create a task.",
                 messages=[{"role": "user", "content": prompt}]
             )
 
             # Parse JSON response
             raw = response.content[0].text
+            print(f"  [AI OUTPUT] Raw response: {raw[:500]}")
             # Handle markdown code blocks
             if '```json' in raw:
                 raw = raw.split('```json')[1].split('```')[0]
             elif '```' in raw:
                 raw = raw.split('```')[1].split('```')[0]
 
-            return json.loads(raw.strip())
+            parsed = json.loads(raw.strip())
+            actions_count = len(parsed.get('actions', []))
+            print(f"  [AI OUTPUT] Parsed {actions_count} actions")
+            if actions_count == 0:
+                print(f"  [AI WARNING] Zero actions returned! Summary: {parsed.get('summary', 'none')}")
+            return parsed
 
         except json.JSONDecodeError:
-            print(f"  Could not parse AI response")
+            print(f"  Could not parse AI response: {raw[:300]}")
             return None
         except Exception as e:
             print(f"  Claude API error: {e}")
             return None
 
-    def _build_plaud_prompt(self, subject, content):
+    def _build_plaud_prompt(self, subject, content, user_context=None):
         """Build Claude prompt for Plaud voice transcription parsing"""
-        return f"""You are Rob Lowe's AI task assistant for his solar battery sales business.
+        ctx = self._build_user_prompt_context(user_context)
 
-Rob just recorded a voice memo after a call/site visit using his Plaud device.
+        businesses_list = '\n'.join(f'- {name}' for name in ctx['businesses'].keys())
+        categories_list = '|'.join(ctx['categories'])
+
+        return f"""You are {ctx['user_name']}'s AI task assistant for their business.
+
+{ctx['user_name']} just recorded a voice memo after a call/site visit using their Plaud device.
 The transcription below may contain MULTIPLE action items. Extract ALL of them.
 
 TRANSCRIPTION:
 {content}
 
-ROB'S BUSINESS CONTEXT:
-- Rob is a solar & battery sales engineer at Direct Solar Wholesalers (DSW), QLD Australia
-- He sells residential solar panel + battery systems (GoodWe, SolaX brands)
-- His workflow: Lead → Scoping Call → Quote (OpenSolar) → Price (DSW Tool) → Send Proposal → Follow Up → Close
-- CRM: PipeReply (company CRM at app.pipereply.com) — used for contact details and notes
-- Personal CRM: Jottask (his own task manager at jottask.app)
-- Quoting: OpenSolar (app.opensolar.com) + DSW Quoting Tool (dswenergygroup.com.au)
+{ctx['user_name'].upper()}'S BUSINESS CONTEXT:
+- {ctx['user_name']} is {ctx['role_description']}
+- Workflow: {ctx['workflow']}
+- CRM: {ctx['crm_name']}
+- Personal task manager: Jottask (jottask.app)
+{ctx['extra_context']}
 
-COMMON ACTION PATTERNS IN ROB'S VOICE MEMOS:
+COMMON ACTION PATTERNS:
 - "Call back [name]" → create_task (callback reminder)
 - "Update CRM for [name]" or "add notes to [name]'s CRM" → update_crm
 - "Send quote to [name]" → send_email (needs approval)
@@ -365,6 +987,9 @@ COMMON ACTION PATTERNS IN ROB'S VOICE MEMOS:
 - "Follow up with [name] in [X] days" → create_task with due date
 - "Need to check [something]" → create_task (research)
 - "[Name] wants [change to quote]" → create_task (quote revision)
+
+BUSINESSES:
+{businesses_list}
 
 EXTRACT actions as JSON:
 {{
@@ -377,12 +1002,12 @@ EXTRACT actions as JSON:
             "description": "What needs to be done — include specifics from the memo plus any useful context (e.g. referral source)",
             "customer_name": "Customer FULL NAME (first + last)",
             "email_address": "Customer email if visible anywhere in the content, null if not",
-            "business": "Cloud Clean Energy",
+            "business": "{ctx['default_business']}",
             "priority": "low|medium|high|urgent",
             "due_date": "YYYY-MM-DD or null",
             "due_time": "HH:MM or null",
-            "category": "Remember to Callback|Quote Follow Up|CRM Update|Site Visit|Research|General",
-            "crm_notes": "If action_type is update_crm, the exact text to add as a CRM note. Keep Rob's voice — punchy, not formal.",
+            "category": "{categories_list}",
+            "crm_notes": "If action_type is update_crm, the exact text to add as a CRM note. Keep {ctx['user_name']}'s voice — punchy, not formal.",
             "calendar_details": "If action_type is create_calendar_event: location, duration, attendees"
         }}
     ]
@@ -391,62 +1016,100 @@ EXTRACT actions as JSON:
 Rules:
 - CRITICAL: Task titles MUST use format "[Full Name]- [concise status/action]". Examples: "Graham Kildey- awaiting site photos and electricity bills", "Paul Thompson- follow up on battery quote", "Paul Van Zijl- call 8am re solar battery referral". NO space before the dash. Never use generic prefixes like "CRM Update:" or vague titles like "Follow up with Paul"
 - If only a first name is in the voice memo, use the full name from the email subject line or content
-- Extract EVERY action item, even if Rob mentions it casually
+- Extract EVERY action item, even if {ctx['user_name']} mentions it casually
 - If an email address is visible anywhere in the email content, headers, or signature, capture it in the email_address field
-- If Rob says "call back" or "follow up", create a callback task with the right date
-- If Rob mentions updating CRM or adding notes, set action_type to "update_crm" and write the crm_notes in Rob's voice (short, punchy, no corporate speak)
+- If {ctx['user_name']} says "call back" or "follow up", create a callback task with the right date
+- If {ctx['user_name']} mentions updating CRM or adding notes, set action_type to "update_crm" and write the crm_notes in {ctx['user_name']}'s voice (short, punchy, no corporate speak)
 - "Going with option X" = deal won, needs both change_deal_status and update_crm
-- Default business is "Cloud Clean Energy" unless Rob mentions AI Project Pro
+- Default business is "{ctx['default_business']}" unless another business is mentioned
 - For callbacks without a specific date, default to next business day
-- For follow-ups, "in X days" means X calendar days from today ({datetime.now().strftime('%Y-%m-%d')})
+- For follow-ups, "in X days" means X calendar days from today ({_now_local(user_context).strftime('%Y-%m-%d')})
+- ALWAYS set due_date — if no date mentioned, use today for urgent/high or next business day for medium/low
+- ALWAYS set due_time — if no time mentioned, use "09:00" for morning tasks, "14:00" for afternoon follow-ups. Never leave null
 """
 
-    def _build_email_prompt(self, subject, sender, content):
+    def _build_email_prompt(self, subject, sender, content, user_context=None,
+                            sender_email='', sender_tasks=None):
         """Build Claude prompt for regular forwarded emails"""
-        return f"""You are Rob Lowe's AI task assistant for his solar battery sales business.
+        ctx = self._build_user_prompt_context(user_context)
 
-Analyze this forwarded email and extract any action items.
+        businesses_list = '\n'.join(f'- {name}' for name in ctx['businesses'].keys())
+        categories_list = '|'.join(ctx['categories'])
+
+        # Build sender context section if we have existing tasks
+        sender_context = ''
+        if sender_tasks:
+            task_lines = []
+            for t in sender_tasks:
+                task_lines.append(f'  - [{t["id"][:8]}] "{t["title"]}" (due: {t.get("due_date", "none")}, status: {t["status"]})')
+            sender_context = f"""
+EXISTING OPEN TASKS FOR THIS SENDER ({sender_email}):
+{chr(10).join(task_lines)}
+
+IMPORTANT: If this email is a reply/update related to one of the above tasks, set action_type to "update_task_notes" and include "existing_task_id" with the task ID. Only create a NEW task if this email is about a genuinely different topic or request.
+"""
+        elif sender_email:
+            sender_context = f"""
+SENDER EMAIL: {sender_email}
+No existing open tasks found for this sender — treat as a new enquiry if actionable.
+"""
+
+        # Detect if this is an outgoing email CC'd to Jottask
+        user_email = ''
+        if user_context and user_context.email_address:
+            user_email = user_context.email_address.lower()
+
+        outgoing_note = ''
+        if user_email and user_email in sender_email:
+            outgoing_note = f"""
+CC'D OUTGOING EMAIL DETECTED:
+This email is FROM {ctx['user_name']} (the user) TO a customer. {ctx['user_name']} CC'd Jottask to track this outreach. This is NOT a forwarded email — it's {ctx['user_name']}'s own sent email.
+You MUST create a follow-up task so {ctx['user_name']} remembers to check if the customer replied.
+"""
+
+        return f"""You are {ctx['user_name']}'s AI task assistant for their business.
+
+Analyze this email and extract any action items.
 
 EMAIL DETAILS:
 From: {sender}
 Subject: {subject}
 Content: {content}
-
-ROB'S BUSINESS CONTEXT:
-- Rob is a solar & battery sales engineer at Direct Solar Wholesalers (DSW), QLD Australia
-- He sells residential solar panel + battery systems (GoodWe, SolaX brands)
-- His workflow: Lead → Scoping Call → Quote (OpenSolar) → Price (DSW Tool) → Send Proposal → Follow Up → Close
-- CRM: PipeReply (company CRM) for contact details and lead notes
-- Personal CRM: Jottask for task tracking and follow-ups
+{outgoing_note}{sender_context}
+{ctx['user_name'].upper()}'S BUSINESS CONTEXT:
+- {ctx['user_name']} is {ctx['role_description']}
+- Workflow: {ctx['workflow']}
+- CRM: {ctx['crm_name']}
+- Personal task manager: Jottask (jottask.app)
+{ctx['extra_context']}
 
 BUSINESSES:
-- Cloud Clean Energy (solar energy sales — main business)
-- AI Project Pro (AI consulting side business)
-
-COMMON EMAIL TYPES ROB RECEIVES:
-- New lead notifications from DSW ("Hi Rob, [name] has been assigned to you")
-- Customer replies to quotes (questions, acceptance, rejection)
-- Supplier/installer comms (scheduling, parts, delivery)
-- Internal DSW emails (team updates, policy changes)
-- SolarQuotes lead assignments
-- Customer follow-up enquiries
+{businesses_list}
 
 EXTRACT actions as JSON:
 {{
     "summary": "One-line summary of what this email is about",
     "customer_name": "Customer FULL NAME (first + last) if this relates to a customer, null if not",
+    "email_address": "{sender_email or 'null'}",
     "actions": [
         {{
-            "action_type": "create_task|update_crm|send_email|create_calendar_event|change_deal_status|set_callback",
+            "action_type": "create_task|update_task_notes|update_crm|send_email|create_calendar_event|change_deal_status|set_callback",
+            "existing_task_id": "If action_type is update_task_notes, the task ID to add notes to. null otherwise.",
             "title": "[Customer FULL NAME]- [concise status or action needed]",
             "description": "What needs to be done — include useful context like referral source, what they're waiting on, etc",
             "customer_name": "Customer FULL NAME (first + last)",
             "email_address": "Customer email if visible anywhere in the email headers, body, or signature, null if not",
-            "business": "Cloud Clean Energy or AI Project Pro",
+            "client_phone": "Phone number if found anywhere in the email (body, signature, contact info), null if not",
+            "client_address": "Street address or suburb if found in the email, null if not",
+            "system_size": "Solar system size if mentioned (e.g. '6.6kW', '10kW + 13.5kWh battery'), null if not",
+            "electricity_bill": "Electricity bill amount or usage if mentioned (e.g. '$400/qtr', '30kWh/day'), null if not",
+            "roof_type": "Roof type if mentioned (e.g. 'tin', 'tile', 'colorbond', 'flat'), null if not",
+            "referral_source": "How the lead found them (e.g. 'SolarQuotes', 'Google', 'referral from John', 'Facebook'), null if not",
+            "business": "{ctx['default_business']}",
             "priority": "low|medium|high|urgent",
             "due_date": "YYYY-MM-DD or null",
             "due_time": "HH:MM or null",
-            "category": "Remember to Callback|Quote Follow Up|CRM Update|New Lead|Research|General",
+            "category": "{categories_list}",
             "crm_notes": "If update_crm: the note text to add. null otherwise.",
             "calendar_details": "If create_calendar_event: details. null otherwise."
         }}
@@ -454,17 +1117,25 @@ EXTRACT actions as JSON:
 }}
 
 Rules:
+- CRITICAL — GOLDEN RULE: Every email forwarded to Jottask is an INSTRUCTION to create a task. NEVER return empty actions unless the email is genuinely automated spam/marketing with zero human intent. If in doubt, CREATE THE TASK. The user forwarded it for a reason.
+- CRITICAL: The SUBJECT LINE is often the entire instruction. If the subject contains any person name, time, action, or reminder — that IS the task. Create it even if the email body is empty or just a signature. Examples: "Mal smith send quote again and call 5pm today", "Rie Shresta site visit 1pm today", "Tony Mason - remind me 6pm today", "John 3pm", "Call Sarah back". ALL of these MUST create tasks.
+- CRITICAL: If a time (e.g. "5pm", "1pm", "6pm", "3pm", "10am") appears ANYWHERE in the subject or body, ALWAYS set that as due_time with today as due_date. If "remind me" appears, this is an explicit reminder request — priority high.
 - CRITICAL: Task titles MUST use format "[Full Name]- [concise status/action]". Examples: "Graham Kildey- awaiting site photos and electricity bills", "Paul Thompson- follow up on battery quote", "Todd McHenry- site visit 8am Black Milk". NO space before the dash. Never use generic prefixes like "CRM Update:" or "New Lead:" — put the customer name first, then what's happening
+- CRITICAL: If the email is FROM {ctx['user_name']} (CC'd to Jottask), this is an OUTGOING email. ALWAYS create a follow-up task like "[Customer Name]- follow up if no reply" with category "Remember to Callback", due in 2 business days, priority medium. Extract the customer name from the To field or subject line. This is the most common way {ctx['user_name']} uses Jottask — NEVER return empty actions for CC'd outgoing emails.
 - If only a first name appears in the subject, look in the email body/content for the full name
-- Always scrape and capture email addresses — check the From header, email body, signatures, and any contact info in the content
+- Always scrape and capture email addresses — check the From header, To header, email body, signatures, and any contact info in the content
+- LEAD DETAILS: For new leads or enquiries, extract ALL available details: phone numbers (Australian mobile 04xx, landline 07/02/03/08), street addresses or suburbs, system size requests, electricity bill amounts, roof type, and how they found us (referral source). These fields help auto-populate CRM entries. Check the entire email body and signature for this info.
+- If existing open tasks are listed above and this email is a follow-up, use action_type "update_task_notes" with the existing_task_id
 - New lead assignment emails → create_task with category "New Lead", priority "high", due today
 - Customer replies about quotes → create_task with category "Quote Follow Up"
 - If customer says yes/accepts → change_deal_status + create_task for next steps
 - If customer asks questions → create_task to respond, priority medium
 - Internal/admin emails → lower priority unless time-sensitive
-- Default business is "Cloud Clean Energy" unless email content clearly relates to AI Project Pro
-- Today's date: {datetime.now().strftime('%Y-%m-%d')}
-- If no actions needed, return {{"summary": "...", "customer_name": null, "actions": []}}
+- Default business is "{ctx['default_business']}" unless email content clearly relates to another business
+- Today's date: {_now_local(user_context).strftime('%Y-%m-%d')}
+- ALWAYS set due_date — if no date is mentioned, use today's date for urgent/high or next business day for medium/low
+- ALWAYS set due_time — if no time is mentioned, use "09:00" for morning tasks, "14:00" for afternoon follow-ups. Never leave due_time as null
+- Only return empty actions for bulk marketing emails, automated system notifications with no human action needed, or out-of-office replies. Everything else gets a task.
 """
 
     # =========================================================================
@@ -479,7 +1150,7 @@ Rules:
             return self.TIER_2_APPROVE
 
         # Default: auto-execute for known safe types, approve for unknown
-        if action_type in ['create_task', 'set_callback', 'set_reminder']:
+        if action_type in ['create_task', 'set_callback', 'set_reminder', 'update_task_notes']:
             return self.TIER_1_AUTO
 
         return self.TIER_2_APPROVE
@@ -488,59 +1159,320 @@ Rules:
     # ACTION EXECUTION (TIER 1 — AUTO)
     # =========================================================================
 
-    def execute_action(self, action):
-        """Execute a Tier 1 (auto) action"""
+    def execute_action(self, action, user_context=None, batch_created=None):
+        """Execute a Tier 1 (auto) action.
+
+        batch_created: shared dict for within-batch dedup (passed to _create_task).
+        """
         action_type = action.get('action_type', '')
 
         try:
-            if action_type in ['create_task', 'set_callback', 'set_reminder']:
-                self._create_task(action)
+            if action_type == 'update_task_notes':
+                self._update_existing_task(action, user_context=user_context)
+            elif action_type in ['create_task', 'set_callback', 'set_reminder']:
+                self._create_task(action, user_context=user_context, batch_created=batch_created)
             else:
                 print(f"  Unknown auto action type: {action_type}")
 
         except Exception as e:
             print(f"  Error executing action '{action.get('title', '')}': {e}")
 
-    def _create_task(self, action):
-        """Create a task in Supabase"""
-        business_id = self.businesses.get(
-            action.get('business', 'Cloud Clean Energy')
+    def _update_existing_task(self, action, user_context=None):
+        """Add a note to an existing task (AI-routed update, not a new task)"""
+        existing_task_id = action.get('existing_task_id', '')
+        if not existing_task_id:
+            # Fallback: create a new task if no ID provided
+            print(f"  Warning: update_task_notes without existing_task_id, creating new task")
+            self._create_task(action, user_context=user_context)
+            return
+
+        note_content = f"{action.get('title', 'Email update')}"
+        if action.get('description'):
+            note_content += f"\n{action['description']}"
+
+        self.tm.add_note(
+            task_id=existing_task_id,
+            content=note_content,
+            source='email',
         )
 
-        # Map category to Jottask categories
-        category = action.get('category', 'General')
+        # Update client email on the task if we now have it
+        client_email = action.get('email_address') or ''
+        if client_email:
+            try:
+                self.tm.update_task_client_info(
+                    existing_task_id,
+                    client_email=client_email,
+                )
+            except Exception:
+                pass
+
+        print(f"  [AUTO] Note added to task {existing_task_id[:8]}: {action.get('title', '')[:40]}")
+
+    def _create_task(self, action, user_context=None, batch_created=None):
+        """Create a task in Supabase, or add a note to an existing task if the
+        same client already has an open task.
+
+        batch_created: dict mapping client_name_lower -> task dict, for within-batch
+        dedup when a single email produces multiple actions for the same client.
+        """
+        if user_context:
+            business_id = user_context.businesses.get(
+                action.get('business', ''),
+                list(user_context.businesses.values())[0] if user_context.businesses else None
+            )
+            user_id = user_context.user_id
+        else:
+            print("[WARNING] _create_task called without user_context — skipping")
+            return None
+
+        if batch_created is None:
+            batch_created = {}
+
+        client_name = action.get('customer_name') or ''
+        client_email = action.get('email_address') or ''
+
+        # --- Within-batch dedup: check if we already created a task for this client in this email ---
+        client_key = (client_name.strip().lower() or client_email.strip().lower())
+        if client_key and client_key in batch_created:
+            existing_batch_task = batch_created[client_key]
+            note_content = f"Email update: {action['title']}"
+            if action.get('description'):
+                note_content += f"\n{action['description']}"
+            self.tm.add_note(
+                task_id=existing_batch_task['id'],
+                content=note_content,
+                source='email',
+            )
+            print(f"  [AUTO] Note added to batch task '{existing_batch_task['title'][:40]}' (within-batch dedup)")
+            return None
+
+        # --- Smart routing: check for existing open task for this client ---
+        existing_task = None
+        if client_email or client_name:
+            try:
+                existing_task = self.tm.find_existing_task_by_client(
+                    client_email=client_email or None,
+                    client_name=client_name or None,
+                    user_id=user_id,
+                )
+            except Exception as e:
+                print(f"  Warning: client match lookup failed: {e}")
+
+        if existing_task:
+            # Add a note to the existing task instead of creating a duplicate
+            note_content = f"Email update: {action['title']}"
+            if action.get('description'):
+                note_content += f"\n{action['description']}"
+
+            self.tm.add_note(
+                task_id=existing_task['id'],
+                content=note_content,
+                source='email',
+            )
+
+            # Update client_email on the existing task if we now have it
+            if client_email and not existing_task.get('client_email'):
+                try:
+                    self.tm.update_task_client_info(
+                        existing_task['id'],
+                        client_email=client_email,
+                    )
+                except Exception:
+                    pass
+
+            print(f"  [AUTO] Note added to existing task '{existing_task['title'][:40]}' instead of creating duplicate")
+            return
+
+        # --- No existing task: create a new one ---
+        # Default due_date to today and due_time to 09:00 if AI didn't extract them
+        # This ensures every task gets a reminder from the scheduler
+        due_date = action.get('due_date')
+        due_time = action.get('due_time')
+        if not due_date:
+            due_date = _now_local(user_context).strftime('%Y-%m-%d')
+        if not due_time:
+            due_time = '09:00:00'
+        elif len(due_time) == 5:  # "09:00" → "09:00:00"
+            due_time = due_time + ':00'
 
         task_data = {
             'business_id': business_id,
+            'user_id': user_id,
             'title': action['title'],
             'description': action.get('description', ''),
-            'due_date': action.get('due_date'),
-            'due_time': action.get('due_time'),
+            'due_date': due_date,
+            'due_time': due_time,
             'priority': action.get('priority', 'medium'),
+            'category': action.get('category') or 'DSW Solar',
             'is_meeting': action.get('action_type') == 'create_calendar_event',
             'status': 'pending',
         }
 
-        result = self.tm.supabase.table('tasks').insert(task_data).execute()
+        # Add client info to the task record (columns may not exist pre-migration)
+        if client_name:
+            task_data['client_name'] = client_name
+        if client_email:
+            task_data['client_email'] = client_email.lower()
+
+        # Add phone if extracted
+        client_phone = action.get('client_phone')
+        if client_phone:
+            task_data['client_phone'] = client_phone
+
+        # Build structured lead details block and append to description
+        lead_fields = []
+        for field_key, field_label in [
+            ('client_address', 'Address'),
+            ('system_size', 'System Size'),
+            ('electricity_bill', 'Electricity Bill'),
+            ('roof_type', 'Roof Type'),
+            ('referral_source', 'Referral Source'),
+        ]:
+            val = action.get(field_key)
+            if val and val != 'null':
+                lead_fields.append(f"{field_label}: {val}")
+
+        if lead_fields:
+            lead_block = "\n\n--- LEAD DETAILS ---\n" + "\n".join(lead_fields)
+            task_data['description'] = (task_data.get('description') or '') + lead_block
+
+        try:
+            result = self.tm.supabase.table('tasks').insert(task_data).execute()
+        except Exception as col_err:
+            if 'column' in str(col_err).lower() or 'schema' in str(col_err).lower():
+                # client columns may not exist yet — retry without them
+                task_data.pop('client_email', None)
+                task_data.pop('client_phone', None)
+                result = self.tm.supabase.table('tasks').insert(task_data).execute()
+            else:
+                raise col_err
 
         if result.data:
             task = result.data[0]
             print(f"  [AUTO] Task created: {task['title']}")
 
-            # Send confirmation email
-            try:
-                self.tm.send_task_confirmation_email(task['id'])
-            except Exception:
-                pass  # Don't fail if confirmation email fails
+            # Track in batch for within-batch dedup
+            if client_key:
+                batch_created[client_key] = task
+
+            # Send confirmation email to user
+            if user_context and user_context.email_address:
+                self._send_task_confirmation(
+                    user_email=user_context.email_address,
+                    user_name=user_context.full_name,
+                    task=task,
+                )
+
+            # Increment usage meter
+            self._increment_task_count(user_id)
         else:
             print(f"  Failed to create task: {action['title']}")
+
+    def _increment_task_count(self, user_id):
+        """Increment tasks_this_month for usage metering"""
+        try:
+            current_month_str = _now_local().strftime('%Y-%m')
+            current_month_date = _now_local().strftime('%Y-%m-01')
+            # Fetch current counter
+            result = self.tm.supabase.table('users') \
+                .select('tasks_this_month, tasks_month_reset') \
+                .eq('id', user_id).execute()
+
+            if result.data:
+                row = result.data[0]
+                count = row.get('tasks_this_month') or 0
+                reset_month = str(row.get('tasks_month_reset') or '')[:7]
+
+                if reset_month != current_month_str:
+                    # New month — reset counter
+                    count = 0
+
+                self.tm.supabase.table('users').update({
+                    'tasks_this_month': count + 1,
+                    'tasks_month_reset': current_month_date,
+                }).eq('id', user_id).execute()
+        except Exception as e:
+            print(f"  Warning: Could not update task count: {e}")
+
+    def _send_task_confirmation(self, user_email, user_name, task):
+        """Send confirmation email when worker auto-creates a task from email"""
+        try:
+            from email_utils import send_email
+
+            task_id = task['id']
+            task_title = task.get('title', 'Untitled')
+            due_date = task.get('due_date', '')
+            due_time = task.get('due_time', '')
+
+            action_base = os.getenv('TASK_ACTION_URL', 'https://www.jottask.app/action')
+            complete_url = f"{action_base}?action=complete&task_id={task_id}"
+            delay_1hour_url = f"{action_base}?action=delay_1hour&task_id={task_id}"
+            delay_1day_url = f"{action_base}?action=delay_1day&task_id={task_id}"
+
+            greeting = f"Hi {user_name}," if user_name else "Hi,"
+            due_display = f"{due_date} at {due_time[:5]}" if due_time else due_date
+
+            html = f"""
+            <html>
+            <body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
+                <div style="background: linear-gradient(135deg, #6366F1 0%, #8B5CF6 100%); padding: 24px; border-radius: 12px 12px 0 0;">
+                    <h1 style="color: white; margin: 0; font-size: 24px;">Task Created</h1>
+                </div>
+                <div style="background: #f9fafb; padding: 24px; border: 1px solid #e5e7eb; border-top: none; border-radius: 0 0 12px 12px;">
+                    <p style="color: #374151;">{greeting}</p>
+                    <p style="color: #374151;">A new task was created from your forwarded email:</p>
+                    <div style="background: white; border: 1px solid #e5e7eb; border-radius: 8px; padding: 16px; margin: 16px 0;">
+                        <a href="https://www.jottask.app/tasks/{task_id}/edit" style="color: #111827; text-decoration: none;">
+                            <h3 style="margin: 0 0 8px 0; color: #111827;">{task_title}</h3>
+                        </a>
+                        <p style="margin: 0; color: #6b7280; font-size: 14px;">Due: {due_display}</p>
+                    </div>
+                    <div style="margin-top: 16px; text-align: center;">
+                        <a href="{complete_url}" style="display: inline-block; background: #10B981; color: white; padding: 12px 20px; border-radius: 8px; text-decoration: none; margin: 4px; font-weight: 600;">Complete</a>
+                        <a href="{delay_1hour_url}" style="display: inline-block; background: #6b7280; color: white; padding: 12px 20px; border-radius: 8px; text-decoration: none; margin: 4px; font-weight: 600;">+1 Hour</a>
+                        <a href="{delay_1day_url}" style="display: inline-block; background: #6b7280; color: white; padding: 12px 20px; border-radius: 8px; text-decoration: none; margin: 4px; font-weight: 600;">+1 Day</a>
+                    </div>
+                    <p style="color: #6b7280; font-size: 13px; margin-top: 16px;">You'll get a reminder before this task is due.</p>
+                </div>
+                <p style="color: #9ca3af; font-size: 12px; text-align: center; margin-top: 24px;">
+                    Jottask - AI-Powered Task Management
+                </p>
+            </body>
+            </html>
+            """
+
+            success, error = send_email(
+                user_email,
+                f"Task Created: {task_title}",
+                html,
+                category='confirmation',
+                task_id=task_id,
+            )
+
+            if success:
+                print(f"  [AUTO] Confirmation email sent to {user_email}")
+            else:
+                print(f"  [AUTO] Confirmation email failed: {error}")
+
+        except Exception as e:
+            print(f"  Warning: Could not send confirmation email: {e}")
 
     # =========================================================================
     # APPROVAL FLOW (TIER 2 — EMAIL APPROVAL)
     # =========================================================================
 
-    def send_approval_email(self, email_subject, email_sender, actions, context):
+    def send_approval_email(self, email_subject, email_sender, actions, context, user_context=None):
         """Send approval email with action buttons for Tier 2 actions"""
+
+        # Determine recipient and company name
+        if user_context:
+            recipient_email = user_context.email_address
+            company_name = user_context.company_name or 'Jottask'
+            user_name = user_context.full_name or 'User'
+        else:
+            print("[WARNING] send_approval_email called without user_context — skipping")
+            return
 
         # Generate approval tokens for each action
         action_items_html = ""
@@ -548,7 +1480,7 @@ Rules:
             token = self._generate_action_token(action)
 
             # Store pending action in Supabase
-            self._store_pending_action(token, action)
+            self._store_pending_action(token, action, user_context=user_context)
 
             # Build approval URL
             base_url = os.getenv('APP_URL', 'https://www.jottask.app')
@@ -600,25 +1532,24 @@ Rules:
                 {action_items_html}
 
                 <div style="font-size: 12px; color: #999; margin-top: 20px; text-align: center;">
-                    Rob's AI Task Manager &bull; Cloud Clean Energy
+                    {user_name}'s AI Task Manager &bull; {company_name}
                 </div>
             </div>
         </div>
         """
 
-        # Send via Resend
-        try:
-            params = {
-                "from": self.from_email,
-                "to": [os.getenv('ROB_EMAIL', 'rob@cloudcleanenergy.com.au')],
-                "subject": f"Jottask Approval: {' '.join(email_subject.split())}",
-                "html": email_html
-            }
-            response = resend.Emails.send(params)
-            print(f"  Resend response: {response}")
-            print(f"  Approval email sent for {len(actions)} action(s)")
-        except Exception as e:
-            print(f"  Error sending approval email: {e}")
+        # Send via email_utils (retries + monitoring)
+        from email_utils import send_email
+        subject = f"Jottask Approval: {' '.join(email_subject.split())}"
+        success, error = send_email(
+            recipient_email, subject, email_html,
+            category='approval',
+            user_id=user_context.user_id if user_context else None,
+        )
+        if success:
+            print(f"  Approval email sent to {recipient_email} for {len(actions)} action(s)")
+        else:
+            print(f"  Error sending approval email: {error}")
 
     def _format_action_description(self, action):
         """Format a human-readable description for the approval email"""
@@ -647,29 +1578,33 @@ Rules:
 
     def _generate_action_token(self, action):
         """Generate a unique token for an action approval"""
-        raw = f"{action.get('title', '')}-{datetime.now().isoformat()}-{uuid.uuid4()}"
+        raw = f"{action.get('title', '')}-{datetime.now(pytz.UTC).isoformat()}-{uuid.uuid4()}"
         return hashlib.sha256(raw.encode()).hexdigest()[:32]
 
-    def _store_pending_action(self, token, action):
+    def _store_pending_action(self, token, action, user_context=None):
         """Store a pending action in Supabase for later approval/execution"""
         try:
-            self.tm.supabase.table('pending_actions').insert({
+            data = {
                 'token': token,
                 'action_type': action.get('action_type'),
                 'action_data': json.dumps(action),
                 'status': 'pending',
-                'created_at': datetime.now().isoformat(),
-                'expires_at': (datetime.now() + timedelta(days=7)).isoformat(),
-            }).execute()
+                'created_at': datetime.now(pytz.UTC).isoformat(),
+                'expires_at': (datetime.now(pytz.UTC) + timedelta(days=7)).isoformat(),
+            }
+            if user_context:
+                data['user_id'] = user_context.user_id
+
+            self.tm.supabase.table('pending_actions').insert(data).execute()
         except Exception as e:
             print(f"  Error storing pending action: {e}")
 
     # =========================================================================
-    # APPROVAL EXECUTION (called when Rob clicks Approve)
+    # APPROVAL EXECUTION (called when user clicks Approve)
     # =========================================================================
 
     def execute_approved_action(self, token):
-        """Execute an action that Rob has approved via email button"""
+        """Execute an action that has been approved via email button"""
         try:
             # Fetch pending action
             result = self.tm.supabase.table('pending_actions').select('*').eq('token', token).eq('status', 'pending').execute()
@@ -681,32 +1616,35 @@ Rules:
             action = json.loads(pending['action_data'])
             action_type = action.get('action_type', '')
 
+            # Build user_context from pending action's user_id if available
+            user_context = self._user_context_from_pending(pending)
+
             # Execute based on type
             success = False
             message = ''
 
             if action_type == 'update_crm':
-                success, message = self._execute_crm_update(action)
+                success, message = self._execute_crm_update(action, user_context=user_context)
 
             elif action_type == 'send_email':
-                success, message = self._execute_send_email(action)
+                success, message = self._execute_send_email(action, user_context=user_context)
 
             elif action_type == 'create_calendar_event':
-                success, message = self._execute_calendar_event(action)
+                success, message = self._execute_calendar_event(action, user_context=user_context)
 
             elif action_type == 'change_deal_status':
-                success, message = self._execute_deal_status_change(action)
+                success, message = self._execute_deal_status_change(action, user_context=user_context)
 
             else:
                 # Fallback: create as a task
-                self._create_task(action)
+                self._create_task(action, user_context=user_context)
                 success = True
                 message = f"Created task: {action.get('title', '')}"
 
             # Mark as processed
             self.tm.supabase.table('pending_actions').update({
                 'status': 'approved' if success else 'failed',
-                'processed_at': datetime.now().isoformat(),
+                'processed_at': datetime.now(pytz.UTC).isoformat(),
             }).eq('token', token).execute()
 
             return {'success': success, 'message': message}
@@ -714,12 +1652,44 @@ Rules:
         except Exception as e:
             return {'success': False, 'message': str(e)}
 
+    def _user_context_from_pending(self, pending_row):
+        """Build a minimal UserContext from a pending_actions row (for approval execution)"""
+        pending_user_id = pending_row.get('user_id')
+        if not pending_user_id:
+            return None
+
+        try:
+            result = self.tm.supabase.table('users') \
+                .select('id, email, full_name, company_name, timezone, ai_context') \
+                .eq('id', pending_user_id).execute()
+
+            if result.data:
+                user = result.data[0]
+                ai_ctx = user.get('ai_context') or {}
+                businesses = ai_ctx.get('businesses', {})
+                if not businesses:
+                    businesses = self.businesses.copy()
+
+                return UserContext(
+                    user_id=str(user['id']),
+                    email_address=user.get('email', ''),
+                    company_name=user.get('company_name', ''),
+                    full_name=user.get('full_name', ''),
+                    timezone=user.get('timezone', 'Australia/Brisbane'),
+                    businesses=businesses,
+                    ai_context=ai_ctx,
+                )
+        except Exception as e:
+            print(f"  Warning: Could not load user context for pending action: {e}")
+
+        return None
+
     def reject_action(self, token):
-        """Mark an action as rejected (Rob clicked Skip)"""
+        """Mark an action as rejected (user clicked Skip)"""
         try:
             self.tm.supabase.table('pending_actions').update({
                 'status': 'rejected',
-                'processed_at': datetime.now().isoformat(),
+                'processed_at': datetime.now(pytz.UTC).isoformat(),
             }).eq('token', token).execute()
             return {'success': True, 'message': 'Action skipped'}
         except Exception as e:
@@ -729,210 +1699,105 @@ Rules:
     # TIER 2 ACTION EXECUTORS
     # =========================================================================
 
-    def _execute_crm_update(self, action):
-        """Update PipeReply CRM with notes"""
-        # TODO: Implement PipeReply API integration
-        # For now, create a task to remind Rob to update CRM manually
+    def _execute_crm_update(self, action, user_context=None):
+        """Update CRM with notes — tries CRM push first, falls back to task creation"""
         customer = action.get('customer_name', 'Unknown')
         notes = action.get('crm_notes', '')
+
+        # Try CRM connector push first
+        if user_context and user_context.user_id:
+            try:
+                from crm_manager import CRMManager
+                crm = CRMManager()
+                result = crm.execute_crm_update(
+                    user_id=user_context.user_id,
+                    customer_name=customer,
+                    crm_notes=notes,
+                    customer_email=action.get('customer_email', ''),
+                )
+                if result.success:
+                    print(f"  CRM sync success for {customer}: {result.message}")
+                    return True, f"CRM updated for {customer}: {result.message}"
+                else:
+                    print(f"  CRM sync unavailable for {customer}: {result.message} — falling back to task")
+            except Exception as e:
+                print(f"  CRM sync error for {customer}: {e} — falling back to task")
+
+        # Fallback: create reminder task (original behavior)
+        default_business = 'Cloud Clean Energy'
+        if user_context and user_context.ai_context:
+            default_business = user_context.ai_context.get('default_business', default_business)
 
         self._create_task({
             'title': f"CRM Update: {customer}",
             'description': f"Add to CRM notes:\n{notes}",
-            'business': 'Cloud Clean Energy',
+            'business': default_business,
             'priority': 'high',
-            'due_date': datetime.now().strftime('%Y-%m-%d'),
+            'due_date': _now_local(user_context).strftime('%Y-%m-%d'),
             'category': 'CRM Update',
-        })
+        }, user_context=user_context)
 
         return True, f"CRM update task created for {customer}"
 
-    def _execute_send_email(self, action):
-        """Draft an email (creates task — actual sending done by Rob via Apple Mail)"""
+    def _execute_send_email(self, action, user_context=None):
+        """Draft an email (creates task — actual sending done by user)"""
         customer = action.get('customer_name', 'Unknown')
+
+        default_business = 'Cloud Clean Energy'
+        if user_context and user_context.ai_context:
+            default_business = user_context.ai_context.get('default_business', default_business)
 
         self._create_task({
             'title': f"Send email to {customer}",
             'description': action.get('description', ''),
-            'business': 'Cloud Clean Energy',
+            'business': default_business,
             'priority': 'high',
-            'due_date': datetime.now().strftime('%Y-%m-%d'),
+            'due_date': _now_local(user_context).strftime('%Y-%m-%d'),
             'category': 'Quote Follow Up',
-        })
+        }, user_context=user_context)
 
         return True, f"Email task created for {customer}"
 
-    def _execute_calendar_event(self, action):
-        """Create a calendar event"""
-        # TODO: Implement Google Calendar API integration
-        # For now, create a task with the calendar details
+    def _execute_calendar_event(self, action, user_context=None):
+        """Create a calendar event (creates task for now)"""
         customer = action.get('customer_name', 'Unknown')
         details = action.get('calendar_details', '')
+
+        default_business = 'Cloud Clean Energy'
+        if user_context and user_context.ai_context:
+            default_business = user_context.ai_context.get('default_business', default_business)
 
         self._create_task({
             'title': f"Calendar: {action.get('title', '')}",
             'description': f"Customer: {customer}\nDetails: {details}",
-            'business': 'Cloud Clean Energy',
+            'business': default_business,
             'priority': 'high',
             'due_date': action.get('due_date'),
             'due_time': action.get('due_time'),
             'category': 'Site Visit',
             'action_type': 'create_calendar_event',
-        })
+        }, user_context=user_context)
 
         return True, f"Calendar event task created for {customer}"
 
-    def _execute_deal_status_change(self, action):
-        """Change deal status"""
+    def _execute_deal_status_change(self, action, user_context=None):
+        """Change deal status (creates task for now)"""
         customer = action.get('customer_name', 'Unknown')
+
+        default_business = 'Cloud Clean Energy'
+        if user_context and user_context.ai_context:
+            default_business = user_context.ai_context.get('default_business', default_business)
 
         self._create_task({
             'title': f"Deal Update: {customer}",
             'description': action.get('description', ''),
-            'business': 'Cloud Clean Energy',
+            'business': default_business,
             'priority': 'urgent',
-            'due_date': datetime.now().strftime('%Y-%m-%d'),
+            'due_date': _now_local(user_context).strftime('%Y-%m-%d'),
             'category': 'General',
-        })
+        }, user_context=user_context)
 
         return True, f"Deal status task created for {customer}"
-
-    # =========================================================================
-    # DSW FORWARD HANDLING (Rob-forwarded / self-generated leads)
-    # =========================================================================
-
-    # Patterns that mark the start of Rob's email signature
-    _ROB_SIG_PATTERNS = [
-        r'^Best Regards\b',
-        r'^Rob Lowe\b',
-        r'^M:\s',
-        r'^E:\s',
-        r'^W:\s',
-        r'^(QLD|SA|VIC|NSW)\s*:',
-        r'^--\s*$',
-    ]
-
-    def _is_from_rob(self, sender):
-        """Return True if the sender is Rob himself"""
-        rob_email = os.getenv('ROB_EMAIL', 'rob@cloudcleanenergy.com.au').lower()
-        rob_emails = {rob_email}
-        alt = os.getenv('ROB_ALT_EMAIL', '')
-        if alt:
-            rob_emails.add(alt.strip().lower())
-        sender_lower = sender.lower()
-        return any(r in sender_lower for r in rob_emails)
-
-    def strip_rob_signature(self, content):
-        """
-        Strip Rob's email signature from content before AI analysis.
-        Cuts at the first line matching any of _ROB_SIG_PATTERNS.
-        """
-        lines = content.splitlines()
-        for i, line in enumerate(lines):
-            stripped = line.strip()
-            for pattern in self._ROB_SIG_PATTERNS:
-                if re.match(pattern, stripped, re.IGNORECASE):
-                    return '\n'.join(lines[:i]).strip()
-        return content.strip()
-
-    def _is_rob_name(self, name):
-        """Return True if the extracted name is Rob's own name, not a customer"""
-        if not name:
-            return False
-        return name.strip().lower() in ('rob lowe', 'rob')
-
-    def _extract_name_from_subject(self, subject):
-        """
-        Try to extract a customer name from the email subject line.
-        Looks for a 'First Last' pattern after stripping Fwd:/Re: prefixes.
-        """
-        cleaned = re.sub(r'^(fwd?|re)\s*:\s*', '', subject, flags=re.IGNORECASE).strip()
-        match = re.match(r'^([A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)', cleaned)
-        if match:
-            return match.group(1)
-        return None
-
-    def handle_dsw_forward(self, subject, sender, content):
-        """
-        Process an email that Rob forwarded or self-generated as a lead.
-
-        Key differences from the standard flow:
-        1. Rob's signature is stripped BEFORE passing content to Claude.
-        2. If Claude returns Rob's own name as the customer, fall back to
-           extracting a name from the subject line.
-        3. The approval/confirmation email subject uses
-           '{customer_name} — {first requirement}' instead of the raw
-           forwarded subject.
-        """
-        # 1. Strip Rob's signature
-        stripped = self.strip_rob_signature(content)
-        removed = len(content) - len(stripped)
-        if removed:
-            print(f"  [DSW Fwd] Stripped {removed} chars of Rob's signature")
-
-        # 2. Analyze with Claude
-        analysis = self.analyze_with_claude(subject, sender, stripped, 'forwarded_email')
-
-        if not analysis or not analysis.get('actions'):
-            print("  [DSW Fwd] No actionable items found")
-            return
-
-        # 3. Validate customer name — reject if it's Rob
-        customer_name = analysis.get('customer_name')
-        if self._is_rob_name(customer_name):
-            fallback = self._extract_name_from_subject(subject)
-            print(f"  [DSW Fwd] Rejected extracted name '{customer_name}' — "
-                  f"falling back to subject name: '{fallback}'")
-            customer_name = fallback
-            analysis['customer_name'] = customer_name
-            # Fix name in each action too
-            for action in analysis['actions']:
-                if self._is_rob_name(action.get('customer_name')):
-                    action['customer_name'] = customer_name
-                    # Rebuild title if it starts with Rob's name
-                    title = action.get('title', '')
-                    if re.match(r'^Rob\b', title, re.IGNORECASE):
-                        action_part = title.split('-', 1)[-1].strip() if '-' in title else title
-                        action['title'] = f"{customer_name or subject[:40]}- {action_part}"
-
-        # 4. Build a meaningful subject for the generated email
-        first_action = analysis['actions'][0]
-        first_req = (first_action.get('description') or first_action.get('title') or '').strip()
-        # Truncate requirement to keep subject concise
-        if len(first_req) > 60:
-            first_req = first_req[:57].rstrip() + '...'
-        if customer_name:
-            generated_subject = f"{customer_name} \u2014 {first_req}" if first_req else customer_name
-        else:
-            # Fallback: use de-prefixed original subject
-            generated_subject = re.sub(r'^(fwd?|re)\s*:\s*', '', subject, flags=re.IGNORECASE).strip()
-
-        print(f"  [DSW Fwd] Customer: {customer_name!r}  |  Email subject: {generated_subject!r}")
-
-        # 5. Standard tier routing
-        auto_actions = []
-        approval_actions = []
-        for action in analysis['actions']:
-            tier = self.classify_action_tier(action)
-            action['tier'] = tier
-            if tier == self.TIER_1_AUTO:
-                auto_actions.append(action)
-            else:
-                approval_actions.append(action)
-
-        if auto_actions:
-            print(f"  Auto-executing {len(auto_actions)} action(s)...")
-            for action in auto_actions:
-                self.execute_action(action)
-
-        if approval_actions:
-            print(f"  Queuing {len(approval_actions)} action(s) for approval...")
-            self.send_approval_email(
-                email_subject=generated_subject,
-                email_sender=sender,
-                actions=approval_actions,
-                context=analysis.get('summary', '')
-            )
 
     # =========================================================================
     # EMAIL CONTENT EXTRACTION
@@ -1048,15 +1913,823 @@ def edit_action():
 """
 
 
+def handle_dsw_forward(subject, body_text, sender_email):
+    """Handle a forwarded or unstructured lead email from rob.l@directsolarwholesaler.com.au.
+
+    Triggered when subject contains FW:/Fwd: OR body contains an Australian phone number.
+    Uses Claude Haiku to extract contact details (name, phone, email, address, referred_by,
+    notes, lead_source) from whatever is in the body — no fixed format required.
+
+    Steps:
+      1. Claude extracts contact details
+      2. Create/update Pipereply contact
+      3. Call dsw_lead_poller.process() → OpenSolar, Mac contact, CRM note, email, task
+      4. Patch the created task's due time to 30 min from now (urgent)
+    """
+    import re, os, requests, json, importlib.util as ilu
+    from datetime import datetime, timedelta
+    from anthropic import Anthropic
+
+    sender_lower = (sender_email or '').lower()
+    if 'rob.l@directsolarwholesaler.com.au' not in sender_lower:
+        return False
+
+    subject_lower = (subject or '').lower()
+    body_lower = (body_text or '').lower()
+
+    is_forward = any(subject_lower.startswith(p) for p in ('fw:', 'fwd:'))
+    has_au_phone = bool(re.search(r'\b0[0-9]{9}\b', body_text or ''))
+
+    # Skip known system/non-lead subject prefixes (new lead: and re: new lead: are
+    # already handled before this function is called, so only skip DSW system ones)
+    SKIP_PREFIXES = ('dsw reminder:', 'dsw:')
+    if any(subject_lower.startswith(p) for p in SKIP_PREFIXES):
+        print(f"[DSW FORWARD] SKIP — system subject prefix. Subject: '{subject}'")
+        return False
+
+    # Also fire for unstructured lead notes that don't have FW: or a phone number,
+    # e.g. "Joe hill referral aw his neighbour to send bill" or
+    # "Aw meeting energy retailer - Future X with Jack"
+    LEAD_KEYWORDS = (
+        'solar', 'battery', 'panel', 'inverter', 'energy', 'retailer',
+        'power', 'kwh', 'system', 'quote', 'install', 'referral', 'lead',
+        'customer', 'client', 'neighbour', 'neighbor', 'bill', 'meeting',
+    )
+    has_lead_keywords = any(kw in body_lower or kw in subject_lower for kw in LEAD_KEYWORDS)
+
+    if not is_forward and not has_au_phone and not has_lead_keywords:
+        print(f"[DSW FORWARD] SKIP — no FW:/Fwd: prefix, no AU phone, no solar/lead keywords. Subject: '{subject}'")
+        return False
+
+    trigger_reason = []
+    if is_forward:        trigger_reason.append('FW:/Fwd: prefix')
+    if has_au_phone:      trigger_reason.append('AU phone in body')
+    if has_lead_keywords: trigger_reason.append('solar/lead keywords')
+    print(f"[DSW FORWARD] Triggered by: {', '.join(trigger_reason)}. Subject: '{subject}'")
+
+    # ── Helper: send failure alert to Rob ─────────────────────────────────
+    def notify_failure(reason):
+        try:
+            from email_utils import send_email
+            html = f"""
+<div style="font-family:sans-serif;max-width:600px;margin:0 auto">
+  <p style="color:#b91c1c;font-weight:bold;">&#9888; Jottask could not process your lead email</p>
+  <p><strong>Subject:</strong> {subject}</p>
+  <p><strong>Reason:</strong> {reason}</p>
+  <p>Please forward the email again or create the lead manually in Jottask.</p>
+  <p style="color:#6b7280;font-size:12px;">— Jottask Automation</p>
+</div>"""
+            send_email('rob.l@directsolarwholesaler.com.au',
+                       f'⚠️ Lead not processed: {(subject or "")[:60]}',
+                       html, category='dsw_forward_failure')
+            print(f"[DSW FORWARD] Failure alert sent to Rob: {reason}")
+        except Exception as e:
+            print(f"[DSW FORWARD] Could not send failure alert: {e}")
+
+    # ── 1a. Strip Rob's signature before Claude sees the body ─────────────
+    _SIG_PATTERNS = [
+        r'^Best Regards\b', r'^Rob Lowe\b', r'^M:\s', r'^E:\s', r'^W:\s',
+        r'^(QLD|SA|VIC|NSW)\s*:', r'^--\s*$',
+    ]
+    body_lines = (body_text or '').splitlines()
+    sig_cut = len(body_lines)
+    for _i, _line in enumerate(body_lines):
+        _s = _line.strip()
+        if any(re.match(p, _s, re.IGNORECASE) for p in _SIG_PATTERNS):
+            sig_cut = _i
+            break
+    clean_body = '\n'.join(body_lines[:sig_cut]).strip()
+    if sig_cut < len(body_lines):
+        print(f"[DSW FORWARD] Stripped Rob's signature ({len(body_lines) - sig_cut} lines removed)")
+
+    # ── 1b. Claude Haiku extracts contact details ──────────────────────────
+    claude = Anthropic(api_key=os.getenv('ANTHROPIC_API_KEY'))
+    extraction_prompt = f"""Extract contact details from this email and return JSON only. No explanation.
+
+Subject: {subject}
+Body:
+{clean_body[:3000]}
+
+Return exactly this JSON:
+{{
+  "name": "full name or null",
+  "phone": "digits only (e.g. 0412345678) or null",
+  "email": "email address or null",
+  "address": "full street address with suburb, state, postcode or null",
+  "referred_by": "person/source that referred them or null",
+  "notes": "solar/battery interest, system size, urgency, bill amount, anything relevant or null",
+  "lead_source": "referral|website|sign|social_media|facebook|google|other or null"
+}}
+
+Rules:
+- Extract real data only, never invent anything
+- phone: Australian format — starts with 04 (mobile) or 02/03/07/08 (landline), 10 digits
+- Return null for any field not found in the email"""
+
+    try:
+        resp = claude.messages.create(
+            model='claude-haiku-4-5-20251001',
+            max_tokens=400,
+            messages=[{'role': 'user', 'content': extraction_prompt}],
+        )
+        raw = resp.content[0].text.strip()
+        # Strip markdown fences if present
+        raw = re.sub(r'^```(?:json)?\s*', '', raw, flags=re.MULTILINE)
+        raw = re.sub(r'\s*```$', '', raw, flags=re.MULTILINE)
+        extracted = json.loads(raw)
+    except Exception as e:
+        print(f"[DSW FORWARD] Claude extraction failed: {e}")
+        notify_failure(f"AI could not read the email content ({e})")
+        return False
+
+    name   = (extracted.get('name') or '').strip()
+    phone  = (extracted.get('phone') or '').strip()
+    email_addr = (extracted.get('email') or '').strip()
+    address    = (extracted.get('address') or '').strip()
+    referred_by = (extracted.get('referred_by') or '').strip()
+    notes       = (extracted.get('notes') or '').strip()
+    lead_source = (extracted.get('lead_source') or 'referral').strip()
+
+    # Never skip — even with no name/phone, create a task so the lead isn't lost.
+    # Reject Rob's own name and fall back to the subject line so we always
+    # get a meaningful customer name, never "Rob Lowe" in the task/email.
+    _ROB_NAMES = {'rob lowe', 'rob'}
+    if not name or name.lower() in _ROB_NAMES:
+        if name:
+            print(f"[DSW FORWARD] Rejected extracted name '{name}' (Rob's name, not customer)")
+        # Strip FW:/Fwd: prefix and use the remainder as the customer name
+        name = re.sub(r'^(fw|fwd)\s*:\s*', '', subject or 'Unknown Lead', flags=re.IGNORECASE).strip() or 'Unknown Lead'
+        print(f"[DSW FORWARD] Using subject as customer name fallback: '{name}'")
+
+    # Build the subject for the generated email: customer name + first requirement
+    first_req = notes[:60].rstrip() if notes else ''
+    generated_subject = f"{name} \u2014 {first_req}" if first_req else name
+    print(f"[DSW FORWARD] Extracted: {name} | {phone or '—'} | {address[:40] if address else '—'}")
+    print(f"[DSW FORWARD] Generated email subject: '{generated_subject}'")
+
+    TOKEN       = os.getenv('PIPEREPLY_TOKEN')
+    LOCATION_ID = os.getenv('PIPEREPLY_LOCATION_ID')
+    BASE = 'https://services.leadconnectorhq.com'
+    H = {'Authorization': f'Bearer {TOKEN}', 'Content-Type': 'application/json', 'Version': '2021-07-28'}
+
+    # ── 2. Create/update Pipereply contact ────────────────────────────────
+    parts = name.strip().split() if name else []
+    first_name = parts[0] if parts else (name or 'Unknown')
+    last_name  = ' '.join(parts[1:]) if len(parts) > 1 else ''
+
+    # Build contact notes for Claude summarisation in dsw.process()
+    note_parts = []
+    if referred_by:   note_parts.append(f'Referred by: {referred_by}')
+    if lead_source:   note_parts.append(f'Source: {lead_source}')
+    if notes:         note_parts.append(notes)
+    contact_notes = '\n'.join(note_parts)
+
+    cid = None
+
+    # ── Phone-first dedup search ───────────────────────────────────────────
+    if phone:
+        r_phone = requests.get(f'{BASE}/contacts/', headers=H,
+                               params={'locationId': LOCATION_ID, 'query': phone, 'limit': 5},
+                               timeout=10)
+        phone_contacts = r_phone.json().get('contacts', []) if r_phone.ok else []
+        phone_match = next(
+            (c for c in phone_contacts
+             if re.sub(r'\D', '', c.get('phone', '')) == re.sub(r'\D', '', phone)),
+            None,
+        )
+        if phone_match:
+            cid = phone_match['id']
+            print(f"[DSW FORWARD] Found existing contact by phone: "
+                  f"{phone_match.get('contactName','?')} ({cid[:8]})")
+
+    # ── Name fallback search (case-insensitive) ───────────────────────────
+    if not cid and name:
+        r_name = requests.get(f'{BASE}/contacts/', headers=H,
+                              params={'locationId': LOCATION_ID, 'query': name, 'limit': 3},
+                              timeout=10)
+        name_contacts = r_name.json().get('contacts', []) if r_name.ok else []
+        name_match = next(
+            (c for c in name_contacts
+             if name.lower() in (c.get('contactName') or '').lower()
+             or (c.get('contactName') or '').lower() in name.lower()),
+            None,
+        )
+        if name_match:
+            cid = name_match['id']
+            print(f"[DSW FORWARD] Found existing contact by name: "
+                  f"{name_match.get('contactName','?')} ({cid[:8]})")
+
+    if cid:
+        # Update existing contact with any new details
+        update_payload = {}
+        if phone:         update_payload['phone']    = phone
+        if email_addr:    update_payload['email']    = email_addr
+        if address:       update_payload['address1'] = address
+        # 'notes' not accepted by PUT contacts endpoint — notes go via /contacts/{id}/notes
+        if update_payload:
+            requests.put(f'{BASE}/contacts/{cid}', headers=H, json=update_payload, timeout=10)
+        print(f"[DSW FORWARD] Updated existing contact: {name} ({cid[:8]})")
+    else:
+        # No match — create new contact
+        contact_payload = {
+            'locationId': LOCATION_ID,
+            'firstName': first_name,
+            'lastName':  last_name,
+            'phone':     phone,
+            'email':     email_addr,
+            'address1':  address,
+            'tags':      [lead_source if lead_source else 'referral'],
+            'source':    lead_source.replace('_', ' ').title() if lead_source else 'Referral',
+            # 'notes' is not a valid field on contact creation (Pipereply returns 422)
+            # Notes are added separately via the /contacts/{id}/notes endpoint below
+        }
+        r_create = requests.post(f'{BASE}/contacts/', headers=H, json=contact_payload, timeout=10)
+        if r_create.ok:
+            created = r_create.json()
+            cid = (created.get('contact') or created).get('id', '')
+            print(f"[DSW FORWARD] Created new contact: {name} ({(cid or '?')[:8]})")
+        else:
+            err = f"Pipereply contact creation failed ({r_create.status_code}): {r_create.text[:120]}"
+            print(f"[DSW FORWARD] {err}")
+            notify_failure(err)
+
+    # ── 3. Save CRM note with all extracted info ───────────────────────────
+    if cid:
+        crm_note_lines = [f'Source: {lead_source.replace("_"," ").title()} — {datetime.now().strftime("%d %b %Y")}']
+        if referred_by:  crm_note_lines.append(f'Referred by: {referred_by}')
+        if phone:        crm_note_lines.append(f'Phone: {phone}')
+        if email_addr:   crm_note_lines.append(f'Email: {email_addr}')
+        if address:      crm_note_lines.append(f'Address: {address}')
+        if notes:        crm_note_lines.append(f'\nNotes:\n{notes}')
+        requests.post(f'{BASE}/contacts/{cid}/notes', headers=H,
+                      json={'body': '\n'.join(crm_note_lines)}, timeout=10)
+
+    if not cid:
+        print(f"[DSW FORWARD] No contact ID — cannot proceed")
+        notify_failure("Could not find or create a Pipereply contact for this lead. Check Pipereply API token/permissions.")
+        return False
+
+    # ── 4+5+6+7. dsw.process() → OpenSolar, Mac contact, task, email ──────
+    # process() creates task with due=tomorrow 09:00; we patch it after.
+    try:
+        _spec = ilu.spec_from_file_location('dsw_lead_poller',
+            os.path.join(os.path.dirname(os.path.abspath(__file__)), 'dsw_lead_poller.py'))
+        dsw = ilu.module_from_spec(_spec)
+        _spec.loader.exec_module(dsw)
+
+        minimal_contact = {
+            'id': cid, 'contactName': name, 'phone': phone,
+            'email': email_addr, 'address1': address,
+            'tags': [lead_source if lead_source else 'referral'],
+        }
+        dsw.process(minimal_contact, task_id=None, lead_status=None)
+
+    except Exception as e:
+        print(f"[DSW FORWARD] dsw.process error: {e}")
+        notify_failure(f"Lead was saved to Pipereply but task/reminder could not be created ({e}). Create the task manually in Jottask.")
+        return True  # Contact + note already created, still return True
+
+    # ── Patch task due time to 30 minutes from now ─────────────────────────
+    try:
+        from supabase import create_client
+        sb = create_client(os.getenv('SUPABASE_URL'), os.getenv('SUPABASE_KEY'))
+        due_dt = datetime.now() + timedelta(minutes=30)
+        task_search = sb.table('tasks')\
+            .select('id')\
+            .eq('category', 'DSW Solar')\
+            .eq('status', 'pending')\
+            .ilike('client_name', f'%{name}%')\
+            .order('created_at', desc=True)\
+            .limit(1)\
+            .execute()
+        if task_search.data:
+            tid = task_search.data[0]['id']
+            sb.table('tasks').update({
+                'due_date': due_dt.strftime('%Y-%m-%d'),
+                'due_time': due_dt.strftime('%H:%M:%S'),
+            }).eq('id', tid).execute()
+            print(f"[DSW FORWARD] Task due time patched to {due_dt.strftime('%H:%M')} ({tid[:8]})")
+    except Exception as e:
+        print(f"[DSW FORWARD] Task due-time patch error: {e}")
+
+    return True
+
+
+def handle_dsw_new_lead(subject, body_text, sender_email):
+    """Handle a self-generated lead email from rob.l@directsolarwholesaler.com.au.
+
+    Triggered when subject starts with "New Lead:" (not a reply).
+    Parses Name/Phone/Email/Address/Referred by/Notes from body, then:
+      a) Creates/updates Pipereply contact
+      b) Saves CRM note with referral source + notes
+      c) Calls dsw_lead_poller.process() → creates OpenSolar project, Mac contact,
+         Jottask task (due tomorrow 9am), and sends full DSW lead email.
+    """
+    import re, os, requests, importlib.util as ilu
+    from datetime import datetime, timedelta
+
+    sender_lower = (sender_email or '').lower()
+    if 'rob.l@directsolarwholesaler.com.au' not in sender_lower:
+        return False
+    subject_lower = (subject or '').lower()
+    # Must start with "new lead:" but must NOT be a reply (re:)
+    if not subject_lower.startswith('new lead:'):
+        return False
+
+    print(f"[DSW NEW LEAD] Processing self-generated lead: {subject}")
+
+    def parse_field(text, field_name):
+        m = re.search(rf'^{re.escape(field_name)}\s*:?\s*(.+)$', text, re.MULTILINE | re.IGNORECASE)
+        return m.group(1).strip() if m else ''
+
+    body = body_text or ''
+    name       = parse_field(body, 'Name')
+    phone      = parse_field(body, 'Phone')
+    email_addr = parse_field(body, 'Email')
+    address    = parse_field(body, 'Address')
+    referred_by = parse_field(body, 'Referred by')
+    notes      = parse_field(body, 'Notes')
+
+    if not name:
+        print("[DSW NEW LEAD] No Name: field found in body — skipping")
+        return False
+
+    TOKEN       = os.getenv('PIPEREPLY_TOKEN')
+    LOCATION_ID = os.getenv('PIPEREPLY_LOCATION_ID')
+    BASE = 'https://services.leadconnectorhq.com'
+    H = {'Authorization': f'Bearer {TOKEN}', 'Content-Type': 'application/json', 'Version': '2021-07-28'}
+
+    # a) Create/update Pipereply contact
+    parts = name.strip().split()
+    first_name = parts[0] if parts else name
+    last_name  = ' '.join(parts[1:]) if len(parts) > 1 else ''
+
+    # Search for existing contact
+    r_search = requests.get(f'{BASE}/contacts/', headers=H,
+                            params={'locationId': LOCATION_ID, 'query': name, 'limit': 3},
+                            timeout=10)
+    contacts_found = r_search.json().get('contacts', []) if r_search.ok else []
+    match = next((c for c in contacts_found
+                  if name.lower() in (c.get('contactName') or '').lower()), None)
+
+    if match:
+        cid = match['id']
+        update_payload = {}
+        if phone:      update_payload['phone']    = phone
+        if email_addr: update_payload['email']    = email_addr
+        if address:    update_payload['address1'] = address
+        if update_payload:
+            requests.put(f'{BASE}/contacts/{cid}', headers=H, json=update_payload, timeout=10)
+        print(f"[DSW NEW LEAD] Updated existing contact: {name} ({cid[:8]})")
+    else:
+        contact_payload = {
+            'locationId': LOCATION_ID,
+            'firstName': first_name,
+            'lastName':  last_name,
+            'phone':     phone or '',
+            'email':     email_addr or '',
+            'address1':  address or '',
+            'tags':      ['referral'],
+            'source':    'Referral',
+        }
+        # 'notes' not accepted by POST contacts endpoint (422) — added via /notes below
+        r_create = requests.post(f'{BASE}/contacts/', headers=H,
+                                 json=contact_payload, timeout=10)
+        if r_create.ok:
+            created = r_create.json()
+            cid = (created.get('contact') or created).get('id', '')
+            print(f"[DSW NEW LEAD] Created contact: {name} ({(cid or '?')[:8]})")
+        else:
+            print(f"[DSW NEW LEAD] Contact creation failed: {r_create.status_code} {r_create.text[:120]}")
+            cid = None
+
+    # b) Save CRM note with referral source + notes
+    if cid:
+        note_lines = [f'Source: Referral — {datetime.now().strftime("%d %b %Y")}']
+        if referred_by: note_lines.append(f'Referred by: {referred_by}')
+        if notes:       note_lines.append(f'Notes: {notes}')
+        requests.post(f'{BASE}/contacts/{cid}/notes', headers=H,
+                      json={'body': '\n'.join(note_lines)}, timeout=10)
+
+    if not cid:
+        print("[DSW NEW LEAD] No contact ID — cannot proceed")
+        return False
+
+    # c+d) Run dsw_lead_poller.process() — creates OpenSolar, Mac contact, task, email
+    try:
+        _spec = ilu.spec_from_file_location('dsw_lead_poller',
+            os.path.join(os.path.dirname(os.path.abspath(__file__)), 'dsw_lead_poller.py'))
+        dsw = ilu.module_from_spec(_spec)
+        _spec.loader.exec_module(dsw)
+        minimal_contact = {'id': cid, 'contactName': name, 'phone': phone,
+                           'email': email_addr, 'address1': address, 'tags': ['referral']}
+        dsw.process(minimal_contact, task_id=None, lead_status=None)
+    except Exception as e:
+        print(f"[DSW NEW LEAD] dsw.process error: {e}")
+
+    return True
+
+
+def handle_dsw_reply(subject, body_text, sender_email):
+    """Handle a reply email from rob.l updating notes on an existing DSW lead.
+
+    Triggered when subject starts with Re: and contains 'New Lead:' or 'DSW'.
+    Looks for a /task/{task_id} or task_id= URL in the body to identify the
+    exact task, then updates the MY NOTES section in the task description and
+    upserts a Pipereply CRM note. Sends a confirmation email back.
+    """
+    import re, os, requests
+    from datetime import datetime
+    import pytz
+
+    if 'directsolarwholesaler' not in (sender_email or '').lower():
+        return False
+
+    body = body_text or ''
+    subject = subject or ''
+
+    # ── Strip quoted/forwarded content ────────────────────────────────────
+    clean_lines = []
+    for line in body.split('\n'):
+        stripped = line.strip()
+        # Stop at quoted reply indicators
+        if stripped.startswith('>') or stripped.startswith('On ') or stripped == '---':
+            break
+        clean_lines.append(line)
+
+    # ── Strip email signature ─────────────────────────────────────────────
+    sig_patterns = [
+        r'^(best regards|kind regards|regards|cheers|thanks|thank you)\s*[,.]?\s*$',
+        r'^rob\s+lowe\s*$',
+        r'^m:\s*[\d\s\+]+$',
+        r'^e:\s*\S+@\S+$',
+        r'^w:\s*https?://',
+        r'^(qld|sa|vic|nsw|act|wa|nt|tas)\s*:',
+        r'^--\s*$',
+    ]
+    sig_re = re.compile('|'.join(sig_patterns), re.IGNORECASE)
+    trimmed = []
+    for line in clean_lines:
+        if sig_re.match(line.strip()):
+            break
+        trimmed.append(line)
+    notes_text = '\n'.join(trimmed).strip()
+
+    if not notes_text:
+        print('[DSW REPLY] No note text after stripping quoted content')
+        return False
+
+    # ── Extract task_id from body URL ─────────────────────────────────────
+    # Matches: /task/{uuid} or task_id={uuid}
+    task_id = None
+    m = re.search(r'/task/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})', body, re.IGNORECASE)
+    if m:
+        task_id = m.group(1)
+    else:
+        m = re.search(r'task_id=([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})', body, re.IGNORECASE)
+        if m: task_id = m.group(1)
+
+    print(f'[DSW REPLY] task_id from body: {task_id} | subject: {subject}')
+
+    # ── Fetch task from Supabase ──────────────────────────────────────────
+    from supabase import create_client
+    sb = create_client(os.getenv('SUPABASE_URL'), os.getenv('SUPABASE_KEY'))
+
+    task = None
+    if task_id:
+        try:
+            res = sb.table('tasks').select('id,title,client_name,description').eq('id', task_id).single().execute()
+            task = res.data
+        except Exception as e:
+            print(f'[DSW REPLY] Task fetch error: {e}')
+
+    # Fallback: search by name in subject ("Re: New Lead: Name - Call ASAP")
+    if not task:
+        nm = re.search(r'New Lead:\s+(.+?)\s*(?:-\s*Call ASAP)?$', subject, re.IGNORECASE)
+        if nm:
+            name_q = nm.group(1).strip()
+            try:
+                res = sb.table('tasks').select('id,title,client_name,description')\
+                    .eq('category', 'DSW Solar').ilike('client_name', f'%{name_q}%')\
+                    .eq('status', 'pending').order('created_at', desc=True).limit(1).execute()
+                task = res.data[0] if res.data else None
+                print(f'[DSW REPLY] Fallback name search "{name_q}": {"found" if task else "not found"}')
+            except Exception as e:
+                print(f'[DSW REPLY] Fallback search error: {e}')
+
+    if not task:
+        print('[DSW REPLY] Could not identify task — aborting')
+        return False
+
+    tid  = task['id']
+    name = task.get('client_name') or task.get('title') or 'Lead'
+    desc = task.get('description') or ''
+    aest = pytz.timezone('Australia/Brisbane')
+    ts   = datetime.now(aest).strftime('%-d %b %Y %I:%M %p')
+    now  = datetime.now(aest)
+
+    # ── Extract "Remind me" / "remind me" time from notes text ───────────
+    # Patterns: "remind me 10am tomorrow", "remind me 3pm today",
+    #           "remind me tuesday 9am", "remind me 3 May 10am"
+    task_update = {'description': None, 'reminder_sent_at': None}
+    remind_match = re.search(
+        r'remind\s+me\s+(.{3,40}?)(?:\s*[-–]|\s*$)',
+        notes_text, re.IGNORECASE | re.MULTILINE
+    )
+    if remind_match:
+        remind_str = remind_match.group(1).strip().rstrip('.,')
+        print(f'[DSW REPLY] Remind me: "{remind_str}"')
+        try:
+            # Parse common patterns
+            due_date = due_time = None
+            rl = remind_str.lower()
+
+            # Extract time (e.g. 10am, 3:30pm, 9am)
+            time_m = re.search(r'(\d{1,2})(?::(\d{2}))?\s*(am|pm)', rl)
+            hour = minute = None
+            if time_m:
+                hour = int(time_m.group(1))
+                minute = int(time_m.group(2) or 0)
+                if time_m.group(3) == 'pm' and hour != 12: hour += 12
+                if time_m.group(3) == 'am' and hour == 12: hour = 0
+
+            # Determine date
+            if 'today' in rl:
+                due_date = now.date()
+            elif 'tomorrow' in rl or 'tmrw' in rl:
+                due_date = (now + timedelta(days=1)).date()
+            elif 'monday' in rl or 'mon ' in rl:
+                days = (7 - now.weekday()) % 7 or 7
+                due_date = (now + timedelta(days=days)).date()
+            elif 'tuesday' in rl or 'tue ' in rl:
+                days = (1 - now.weekday()) % 7 or 7
+                due_date = (now + timedelta(days=days)).date()
+            elif 'wednesday' in rl or 'wed ' in rl:
+                days = (2 - now.weekday()) % 7 or 7
+                due_date = (now + timedelta(days=days)).date()
+            elif 'thursday' in rl or 'thu ' in rl:
+                days = (3 - now.weekday()) % 7 or 7
+                due_date = (now + timedelta(days=days)).date()
+            elif 'friday' in rl or 'fri ' in rl:
+                days = (4 - now.weekday()) % 7 or 7
+                due_date = (now + timedelta(days=days)).date()
+            else:
+                # Try "3 May", "May 3", "3/5" style dates
+                date_m = re.search(r'(\d{1,2})\s+(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)', rl)
+                if not date_m:
+                    date_m = re.search(r'(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\s+(\d{1,2})', rl)
+                if date_m:
+                    try:
+                        from dateutil import parser as dparser
+                        due_date = dparser.parse(remind_str, default=now.replace(day=1)).date()
+                    except Exception:
+                        pass
+
+            if due_date:
+                task_update['due_date'] = due_date.isoformat()
+                if hour is not None:
+                    task_update['due_time'] = f'{hour:02d}:{minute:02d}:00'
+                print(f'[DSW REPLY] Due → {due_date} {hour:02d}:{minute:02d}' if hour is not None else f'[DSW REPLY] Due → {due_date}')
+        except Exception as e:
+            print(f'[DSW REPLY] Remind me parse error: {e}')
+
+    # ── Extract lead status hint from notes ───────────────────────────────
+    STATUS_HINTS = {
+        'awaiting_docs':    ['send.*photo', 'send.*bill', 'power bill', 'photos', 'awaiting'],
+        'site_visit_booked':['site visit', 'booked', 'appointment'],
+        'build_quote':      ['work out.*option', 'proposal', 'build.*quote'],
+        'quote_followup':   ['follow.?up', 'chasing'],
+        'intro_call':       ['chat', 'call', 'spoke', 'spoke to'],
+    }
+    inferred_status = None
+    notes_lower = notes_text.lower()
+    for status, patterns in STATUS_HINTS.items():
+        if any(re.search(p, notes_lower) for p in patterns):
+            inferred_status = status
+            break
+    if inferred_status:
+        task_update['lead_status'] = inferred_status
+        print(f'[DSW REPLY] Inferred status: {inferred_status}')
+
+    # ── Update MY NOTES section in task description ───────────────────────
+    NOTES_SEP = 'MY NOTES:'
+    if NOTES_SEP in desc:
+        cust_part = desc.split(NOTES_SEP, 1)[0].rstrip()
+    else:
+        cust_part = desc.rstrip()
+    new_desc = cust_part + '\n\n' + NOTES_SEP + '\n' + notes_text
+    task_update['description'] = new_desc
+
+    # Apply all updates in one call
+    update_payload = {k: v for k, v in task_update.items() if v is not None}
+    sb.table('tasks').update(update_payload).eq('id', tid).execute()
+    print(f'[DSW REPLY] Task updated: {tid[:8]} fields={list(update_payload.keys())}')
+
+    # ── Upsert Pipereply CRM note ─────────────────────────────────────────
+    TOKEN = os.getenv('PIPEREPLY_TOKEN')
+    crm_url = ''
+    m2 = re.search(r'^CRM:\s*(.+)$', desc, re.MULTILINE)
+    if m2: crm_url = m2.group(1).strip()
+    crm_cid = ''
+    if crm_url:
+        m3 = re.search(r'/detail/([A-Za-z0-9]+)', crm_url)
+        if m3: crm_cid = m3.group(1)
+
+    if crm_cid and TOKEN:
+        H = {'Authorization': f'Bearer {TOKEN}', 'Content-Type': 'application/json', 'Version': '2021-07-28'}
+        PR = 'https://services.leadconnectorhq.com'
+        note_body = f'MY NOTES ({ts}):\n{notes_text}'
+        try:
+            r_list = requests.get(f'{PR}/contacts/{crm_cid}/notes', headers=H, timeout=8)
+            existing = r_list.json().get('notes', []) if r_list.ok else []
+            my_note = next((n for n in existing if 'MY NOTES' in (n.get('body') or '')), None)
+            if my_note:
+                requests.put(f'{PR}/contacts/{crm_cid}/notes/{my_note["id"]}',
+                             headers=H, json={'body': note_body}, timeout=8)
+                print(f'[DSW REPLY] Pipereply note updated')
+            else:
+                requests.post(f'{PR}/contacts/{crm_cid}/notes',
+                              headers=H, json={'body': note_body}, timeout=8)
+                print(f'[DSW REPLY] Pipereply note created')
+        except Exception as e:
+            print(f'[DSW REPLY] Pipereply error: {e}')
+    else:
+        print(f'[DSW REPLY] No Pipereply contact ID found — skipping CRM note')
+
+    # ── Send confirmation email ───────────────────────────────────────────
+    try:
+        from email_utils import send_email
+        # Extract the full MY NOTES block from the saved description
+        NOTES_SEP = 'MY NOTES:'
+        if NOTES_SEP in new_desc:
+            full_saved_notes = new_desc.split(NOTES_SEP, 1)[1].strip()
+        else:
+            full_saved_notes = notes_text
+        html = f"""
+<div style="font-family:sans-serif;max-width:560px;margin:0 auto">
+  <div style="background:#1e40af;color:white;padding:16px 20px;border-radius:8px 8px 0 0">
+    <strong>✅ Notes updated for {name}</strong>
+  </div>
+  <div style="padding:16px 20px;border:1px solid #e2e8f0;border-radius:0 0 8px 8px">
+    <p style="margin:0 0 12px;color:#6b7280;font-size:13px">Saved to Jottask + Pipereply · {ts}</p>
+    <p style="margin:0 0 6px;font-weight:600;font-size:13px;color:#374151">YOUR CURRENT NOTES:</p>
+    <div style="background:#f8fafc;padding:12px;border-radius:6px;
+       font-size:13px;white-space:pre-wrap;color:#374151;line-height:1.6;
+       border-left:3px solid #1e40af">{full_saved_notes}</div>
+    <p style="margin-top:16px">
+      <a href="https://www.jottask.app/task/{tid}"
+         style="background:#1e40af;color:white;padding:9px 16px;border-radius:7px;
+                text-decoration:none;font-weight:600;font-size:13px">Open Lead Page</a>
+    </p>
+    <p style="margin-top:16px;font-size:12px;color:#9ca3af">
+      Reply to this email to update notes.
+    </p>
+  </div>
+</div>"""
+        send_email('rob.l@directsolarwholesaler.com.au',
+                   f'✅ Notes updated for {name}', html,
+                   category='dsw_reply_confirm')
+        print(f'[DSW REPLY] Confirmation email sent for {name}')
+    except Exception as e:
+        print(f'[DSW REPLY] Confirmation email error: {e}')
+
+    return True
+
+
 if __name__ == "__main__":
     import time
+    from saas_scheduler import check_and_send_reminders, check_and_send_dsw_reminders, get_users_needing_summary, send_daily_summary
+    from monitoring import log_heartbeat, log_error, send_self_alert, cleanup_old_events, check_reminder_health, check_and_send_canary, check_email_processing_health, send_daily_health_digest
+
     processor = AIEmailProcessor()
-    poll_interval = int(os.getenv('POLL_INTERVAL_SECONDS', '900'))  # Default 15 minutes
-    print(f"Starting email polling loop (every {poll_interval}s)...")
+    poll_interval = int(os.getenv('POLL_INTERVAL_SECONDS', '60'))
+    print(f"Starting worker (email processor + scheduler) every {poll_interval}s...")
+    print(f"  Email processing: every cycle")
+    print(f"  Reminders + daily summaries: every cycle")
+    print(f"  Monitoring: heartbeat every cycle, cleanup daily")
+
+    tick = 0
+    consecutive_failures = 0
+    last_cleanup_date = None
+    last_audit_time = None
+
     while True:
+        tick += 1
+        tick_errors = 0
+        emails_processed = 0
+        reminders_sent = 0
+        summaries_sent = 0
+
         try:
-            processor.process_forwarded_emails()
+            # 1. Process emails
+            processor.process_all_connections()
         except Exception as e:
-            print(f"Error in polling cycle: {e}")
-        print(f"Sleeping {poll_interval}s until next check...")
+            print(f"Error in email processing: {e}")
+            log_error('email_processing', e, category='email')
+            tick_errors += 1
+
+        try:
+            # 2. Check and send task reminders
+            reminders_sent = check_and_send_reminders() or 0
+        except Exception as e:
+            print(f"Error in reminders: {e}")
+            log_error('reminders', e, category='reminder')
+            tick_errors += 1
+
+        try:
+            # 2a. Check and send DSW Solar lead reminders
+            check_and_send_dsw_reminders()
+        except Exception as e:
+            print(f"Error in DSW reminders: {e}")
+            log_error('dsw_reminders', e, category='reminder')
+
+        try:
+            # 2b. Functional reminder health check
+            if not check_reminder_health():
+                print("WARNING: Reminder health check detected a problem")
+                tick_errors += 1
+        except Exception as e:
+            print(f"Error in reminder health check: {e}")
+            log_error('reminder_health_check', e, category='reminder')
+
+        try:
+            # 2c. Canary email delivery check (7 AM + 5 PM AEST)
+            canary_result = check_and_send_canary()
+            if canary_result == 'sent':
+                print("Canary email sent — email delivery verified")
+            elif canary_result == 'failed':
+                print("WARNING: Canary email FAILED — email delivery may be broken")
+                send_self_alert(
+                    "Canary email failed — outbound email may be down",
+                    "check_and_send_canary() returned 'failed'. Resend API may be unreachable or misconfigured. "
+                    "Check RESEND_API_KEY and Railway logs."
+                )
+                tick_errors += 1
+        except Exception as e:
+            print(f"Error in canary check: {e}")
+            log_error('canary_check', e, category='canary')
+            tick_errors += 1
+
+        try:
+            # 2e. Daily health digest (8 AM AEST)
+            digest_result = send_daily_health_digest()
+            if digest_result == 'sent':
+                print("Daily health digest sent")
+            elif digest_result == 'failed':
+                print("WARNING: Failed to send daily health digest")
+                tick_errors += 1
+        except Exception as e:
+            print(f"Error in health digest: {e}")
+            log_error('health_digest', e, category='system')
+
+        try:
+            # 2d. Email processing audit (every 30 minutes)
+            now_utc = datetime.now(pytz.UTC)
+            if last_audit_time is None or (now_utc - last_audit_time).total_seconds() >= 1800:
+                audit_result = check_email_processing_health()
+                if audit_result == 'warning':
+                    print("WARNING: Email processing audit detected silent failures")
+                    tick_errors += 1
+                last_audit_time = now_utc
+        except Exception as e:
+            print(f"Error in email processing audit: {e}")
+            log_error('email_audit', e, category='audit')
+
+        try:
+            # 3. Check and send daily summaries
+            users = get_users_needing_summary()
+            if users:
+                print(f"📬 Found {len(users)} user(s) needing daily summary")
+                for user in users:
+                    send_daily_summary(user)
+                    summaries_sent += 1
+        except Exception as e:
+            print(f"Error in daily summaries: {e}")
+            log_error('daily_summaries', e, category='summary')
+            tick_errors += 1
+
+        # Track consecutive failures for self-alerting
+        if tick_errors > 0:
+            consecutive_failures += 1
+            if consecutive_failures >= 3:
+                send_self_alert(
+                    f"Worker has {consecutive_failures} consecutive failed ticks",
+                    f"Tick #{tick}: {tick_errors} error(s) this cycle. "
+                    f"Check Railway logs for details."
+                )
+        else:
+            consecutive_failures = 0
+
+        # Log heartbeat every cycle
+        log_heartbeat(tick, emails_processed=emails_processed, reminders_sent=reminders_sent,
+                       summaries_sent=summaries_sent, errors=tick_errors)
+
+        # Daily cleanup of old monitoring events
+        from datetime import date as _date
+        today = _date.today()
+        if last_cleanup_date != today:
+            cleanup_old_events(days=30)
+            last_cleanup_date = today
+
+        print(f"Sleeping {poll_interval}s until next check... (tick #{tick})")
         time.sleep(poll_interval)

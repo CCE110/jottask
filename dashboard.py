@@ -7,20 +7,28 @@ import os
 import json
 from flask import Flask, render_template_string, render_template, request, redirect, url_for, session, jsonify, flash
 from datetime import datetime, timedelta
-import pytz
 from functools import wraps
+import pytz
 from supabase import create_client, Client
 
 app = Flask(__name__)
 app.secret_key = os.getenv('FLASK_SECRET_KEY', os.urandom(24))
 
 # Register blueprints
+from auth import login_required, admin_required
+from email_utils import send_email
 from billing import billing_bp
 from onboarding import onboarding_bp
 from email_setup import email_setup_bp
+from crm_setup import crm_setup_bp
+from chat import chat_bp
+from squad_routes import squad_bp
 app.register_blueprint(billing_bp)
 app.register_blueprint(onboarding_bp)
 app.register_blueprint(email_setup_bp)
+app.register_blueprint(crm_setup_bp)
+app.register_blueprint(chat_bp)
+app.register_blueprint(squad_bp)
 
 # Supabase client
 SUPABASE_URL = os.getenv('SUPABASE_URL')
@@ -46,85 +54,10 @@ FROM_EMAIL = os.getenv('FROM_EMAIL', 'jottask@flowquote.ai')
 
 def send_admin_notification(subject, body_html):
     """Send notification email to admin using Resend"""
-    import requests
-
-    if not RESEND_API_KEY:
-        print("❌ RESEND_API_KEY not configured for admin notification")
-        return False
-
-    try:
-        response = requests.post(
-            'https://api.resend.com/emails',
-            headers={
-                'Authorization': f'Bearer {RESEND_API_KEY}',
-                'Content-Type': 'application/json',
-                'User-Agent': 'Jottask/1.0'
-            },
-            json={
-                'from': f'Jottask <{FROM_EMAIL}>',
-                'to': [ADMIN_EMAIL],
-                'subject': f'[Jottask Admin] {subject}',
-                'html': body_html
-            },
-            timeout=30
-        )
-        if response.status_code in [200, 201]:
-            print(f"✅ Admin notification sent: {subject}")
-            return True
-        else:
-            print(f"❌ Resend error ({response.status_code}): {response.text}")
-            return False
-    except Exception as e:
-        print(f"❌ Failed to send admin notification: {type(e).__name__}: {e}")
-        return False
-
-
-def send_email(to_email, subject, body_html):
-    """Send email using Resend API (using urllib for Railway compatibility)"""
-    import urllib.request
-    import urllib.error
-
-    if not RESEND_API_KEY:
-        print("❌ RESEND_API_KEY not configured")
-        return False, "RESEND_API_KEY not configured"
-
-    print(f"📧 Sending to {to_email} via Resend...")
-
-    try:
-        data = json.dumps({
-            'from': f'Jottask <{FROM_EMAIL}>',
-            'to': [to_email],
-            'subject': subject,
-            'html': body_html
-        }).encode('utf-8')
-
-        req = urllib.request.Request(
-            'https://api.resend.com/emails',
-            data=data,
-            headers={
-                'Authorization': f'Bearer {RESEND_API_KEY}',
-                'Content-Type': 'application/json',
-                'User-Agent': 'Jottask/1.0'
-            },
-            method='POST'
-        )
-
-        with urllib.request.urlopen(req, timeout=30) as response:
-            status = response.getcode()
-            print(f"📧 Resend response: {status}")
-            if status in [200, 201]:
-                print(f"✅ Email sent to {to_email}: {subject}")
-                return True, None
-            else:
-                return False, f"Status {status}"
-
-    except urllib.error.HTTPError as e:
-        error_msg = e.read().decode('utf-8', errors='ignore')
-        print(f"❌ Resend HTTP error ({e.code}): {error_msg}")
-        return False, error_msg
-    except Exception as e:
-        print(f"❌ Failed to send email: {type(e).__name__}: {e}")
-        return False, str(e)
+    success, error = send_email(ADMIN_EMAIL, f'[Jottask Admin] {subject}', body_html)
+    if not success:
+        print(f"Failed to send admin notification: {error}")
+    return success
 
 
 def send_task_confirmation_email(user_email, task_title, due_date, due_time, task_id, user_name=None):
@@ -142,6 +75,9 @@ def send_task_confirmation_email(user_email, task_title, due_date, due_time, tas
     complete_url = f"{action_base}?action=complete&task_id={task_id}"
     delay_1hour_url = f"{action_base}?action=delay_1hour&task_id={task_id}"
     delay_1day_url = f"{action_base}?action=delay_1day&task_id={task_id}"
+    delay_next_day_8am_url = f"{action_base}?action=delay_next_day_8am&task_id={task_id}"
+    delay_next_day_9am_url = f"{action_base}?action=delay_next_day_9am&task_id={task_id}"
+    delay_next_monday_9am_url = f"{action_base}?action=delay_next_monday_9am&task_id={task_id}"
     reschedule_url = f"{action_base}?action=delay_custom&task_id={task_id}"
 
     greeting = f"Hi {user_name}," if user_name else "Hi,"
@@ -164,6 +100,9 @@ def send_task_confirmation_email(user_email, task_title, due_date, due_time, tas
                 <a href="{complete_url}" style="display: inline-block; background: #10B981; color: white; padding: 12px 20px; border-radius: 8px; text-decoration: none; margin: 4px; font-weight: 600;">✅ Complete</a>
                 <a href="{delay_1hour_url}" style="display: inline-block; background: #6b7280; color: white; padding: 12px 20px; border-radius: 8px; text-decoration: none; margin: 4px; font-weight: 600;">⏰ +1 Hour</a>
                 <a href="{delay_1day_url}" style="display: inline-block; background: #6b7280; color: white; padding: 12px 20px; border-radius: 8px; text-decoration: none; margin: 4px; font-weight: 600;">📅 +1 Day</a>
+                <a href="{delay_next_day_8am_url}" style="display: inline-block; background: #0EA5E9; color: white; padding: 12px 20px; border-radius: 8px; text-decoration: none; margin: 4px; font-weight: 600;">🌅 Tmrw 8am</a>
+                <a href="{delay_next_day_9am_url}" style="display: inline-block; background: #0EA5E9; color: white; padding: 12px 20px; border-radius: 8px; text-decoration: none; margin: 4px; font-weight: 600;">☀️ Tmrw 9am</a>
+                <a href="{delay_next_monday_9am_url}" style="display: inline-block; background: #F59E0B; color: white; padding: 12px 20px; border-radius: 8px; text-decoration: none; margin: 4px; font-weight: 600;">📆 Mon 9am</a>
                 <a href="{reschedule_url}" style="display: inline-block; background: #6366F1; color: white; padding: 12px 20px; border-radius: 8px; text-decoration: none; margin: 4px; font-weight: 600;">🗓️ Change Time</a>
             </div>
             <p style="color: #6b7280; font-size: 13px; margin-top: 16px;">You'll receive a reminder 5-20 minutes before this task is due.</p>
@@ -175,7 +114,8 @@ def send_task_confirmation_email(user_email, task_title, due_date, due_time, tas
     </html>
     """
 
-    success, error = send_email(user_email, f"✅ Task Created: {task_title}", html_content)
+    success, error = send_email(user_email, f"Task Created: {task_title}", html_content,
+                               category='confirmation', task_id=task_id)
 
     if success:
         print(f"✅ Task confirmation email SENT successfully to {user_email}")
@@ -189,14 +129,6 @@ def send_task_confirmation_email(user_email, task_title, due_date, due_time, tas
 # AUTH HELPERS
 # ============================================
 
-def login_required(f):
-    @wraps(f)
-    def decorated_function(*args, **kwargs):
-        if 'user_id' not in session:
-            return redirect(url_for('login', next=request.url))
-        return f(*args, **kwargs)
-    return decorated_function
-
 def get_user_timezone():
     return pytz.timezone(session.get('timezone', 'Australia/Brisbane'))
 
@@ -208,7 +140,8 @@ def get_user_timezone():
 TIER_LIMITS = {
     'free_trial': {'tasks_per_month': 20, 'projects': True},
     'starter': {'tasks_per_month': 100, 'projects': True},
-    'pro': {'tasks_per_month': float('inf'), 'projects': True}
+    'pro': {'tasks_per_month': float('inf'), 'projects': True},
+    'business': {'tasks_per_month': float('inf'), 'projects': True},
 }
 
 def get_user_subscription(user_id):
@@ -227,7 +160,7 @@ def get_user_subscription(user_id):
     month_reset = data.get('tasks_month_reset')
 
     # Check if we need to reset monthly count
-    today = datetime.now().date()
+    today = datetime.now(pytz.timezone('Australia/Brisbane')).date()
     if month_reset:
         reset_date = datetime.fromisoformat(month_reset).date() if isinstance(month_reset, str) else month_reset
         if today.month != reset_date.month or today.year != reset_date.year:
@@ -872,280 +805,23 @@ BASE_TEMPLATE = """
                 console.error('Failed to delay task:', err);
             }
         }
+
+        async function delayTaskPreset(taskId, preset) {
+            try {
+                const response = await fetch(`/api/tasks/${taskId}/delay`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ preset })
+                });
+
+                if (response.ok) {
+                    location.reload();
+                }
+            } catch (err) {
+                console.error('Failed to delay task:', err);
+            }
+        }
     </script>
-</body>
-</html>
-"""
-
-# ============================================
-# AUTH PAGES
-# ============================================
-
-LOGIN_TEMPLATE = """
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Login - Jottask</title>
-    <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
-    <link rel="apple-touch-icon" href="/static/apple-touch-icon.png">
-    <meta name="theme-color" content="#6366F1">
-    <style>
-        :root {
-            --primary: #6366F1;
-            --primary-dark: #4F46E5;
-            --success: #10B981;
-            --gray-50: #F9FAFB;
-            --gray-100: #F3F4F6;
-            --gray-300: #D1D5DB;
-            --gray-500: #6B7280;
-            --gray-700: #374151;
-            --gray-900: #111827;
-        }
-        * { margin: 0; padding: 0; box-sizing: border-box; }
-        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; }
-        .auth-container {
-            min-height: 100vh;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            background: linear-gradient(135deg, #6366F1 0%, #8B5CF6 100%);
-            padding: 20px;
-        }
-        .auth-card {
-            background: white;
-            border-radius: 16px;
-            padding: 40px;
-            width: 100%;
-            max-width: 420px;
-            box-shadow: 0 20px 60px rgba(0,0,0,0.2);
-        }
-        .auth-logo { text-align: center; margin-bottom: 32px; }
-        .auth-logo svg { width: 48px; height: 48px; }
-        .auth-logo h1 { color: var(--primary); font-size: 24px; margin-top: 12px; }
-        .form-group { margin-bottom: 16px; }
-        .form-label { display: block; margin-bottom: 6px; font-weight: 500; font-size: 14px; color: var(--gray-700); }
-        .form-input {
-            width: 100%;
-            padding: 10px 14px;
-            border: 1px solid var(--gray-300);
-            border-radius: 8px;
-            font-size: 14px;
-        }
-        .form-input:focus { outline: none; border-color: var(--primary); box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.1); }
-        .btn {
-            padding: 10px 20px;
-            border-radius: 8px;
-            font-weight: 600;
-            font-size: 14px;
-            cursor: pointer;
-            border: none;
-            text-decoration: none;
-        }
-        .btn-primary { background: var(--primary); color: white; }
-        .btn-primary:hover { background: var(--primary-dark); }
-        .alert { padding: 12px 16px; border-radius: 8px; margin-bottom: 16px; font-size: 14px; }
-        .alert-error { background: #FEE2E2; color: #991B1B; }
-    </style>
-</head>
-<body>
-<div class="auth-container">
-    <div class="auth-card">
-        <div class="auth-logo">
-            <svg viewBox="0 0 512 512">
-                <defs>
-                    <linearGradient id="grad3" x1="0%" y1="0%" x2="0%" y2="100%">
-                        <stop offset="0%" style="stop-color:#8B5CF6" />
-                        <stop offset="100%" style="stop-color:#6366F1" />
-                    </linearGradient>
-                </defs>
-                <rect width="512" height="512" rx="96" fill="white"/>
-                <rect x="120" y="80" width="220" height="300" rx="24" fill="url(#grad3)"/>
-                <line x1="160" y1="150" x2="300" y2="150" stroke="white" stroke-width="12" stroke-linecap="round" opacity="0.5"/>
-                <line x1="160" y1="200" x2="300" y2="200" stroke="white" stroke-width="12" stroke-linecap="round" opacity="0.5"/>
-                <line x1="160" y1="250" x2="260" y2="250" stroke="white" stroke-width="12" stroke-linecap="round" opacity="0.5"/>
-                <circle cx="310" cy="350" r="70" fill="#10B981"/>
-                <path d="M275 350 L300 375 L355 315" fill="none" stroke="white" stroke-width="18" stroke-linecap="round" stroke-linejoin="round"/>
-            </svg>
-            <h1>Jottask</h1>
-        </div>
-
-        {% if error %}
-        <div class="alert alert-error">{{ error }}</div>
-        {% endif %}
-
-        <form method="POST">
-            <div class="form-group">
-                <label class="form-label">Email</label>
-                <input type="email" name="email" class="form-input" required autofocus>
-            </div>
-
-            <div class="form-group">
-                <label class="form-label">Password</label>
-                <input type="password" name="password" class="form-input" required>
-            </div>
-
-            <button type="submit" class="btn btn-primary" style="width: 100%; margin-top: 8px;">
-                Sign In
-            </button>
-        </form>
-
-        <p style="text-align: center; margin-top: 24px; color: var(--gray-500);">
-            Don't have an account? <a href="{{ url_for('signup') }}" style="color: var(--primary);">Sign up</a>
-        </p>
-    </div>
-</div>
-</body>
-</html>
-"""
-
-SIGNUP_TEMPLATE = """
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Sign Up - Jottask</title>
-    <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
-    <link rel="apple-touch-icon" href="/static/apple-touch-icon.png">
-    <meta name="theme-color" content="#6366F1">
-    <style>
-        :root {
-            --primary: #6366F1;
-            --primary-dark: #4F46E5;
-            --success: #10B981;
-            --gray-50: #F9FAFB;
-            --gray-100: #F3F4F6;
-            --gray-300: #D1D5DB;
-            --gray-500: #6B7280;
-            --gray-700: #374151;
-            --gray-900: #111827;
-        }
-        * { margin: 0; padding: 0; box-sizing: border-box; }
-        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; }
-        .auth-container {
-            min-height: 100vh;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            background: linear-gradient(135deg, #6366F1 0%, #8B5CF6 100%);
-            padding: 20px;
-        }
-        .auth-card {
-            background: white;
-            border-radius: 16px;
-            padding: 40px;
-            width: 100%;
-            max-width: 420px;
-            box-shadow: 0 20px 60px rgba(0,0,0,0.2);
-        }
-        .auth-logo { text-align: center; margin-bottom: 32px; }
-        .auth-logo svg { width: 48px; height: 48px; }
-        .auth-logo h1 { color: var(--primary); font-size: 24px; margin-top: 12px; }
-        .form-group { margin-bottom: 16px; }
-        .form-label { display: block; margin-bottom: 6px; font-weight: 500; font-size: 14px; color: var(--gray-700); }
-        .form-input {
-            width: 100%;
-            padding: 10px 14px;
-            border: 1px solid var(--gray-300);
-            border-radius: 8px;
-            font-size: 14px;
-        }
-        .form-input:focus { outline: none; border-color: var(--primary); box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.1); }
-        .btn {
-            padding: 10px 20px;
-            border-radius: 8px;
-            font-weight: 600;
-            font-size: 14px;
-            cursor: pointer;
-            border: none;
-            text-decoration: none;
-        }
-        .btn-primary { background: var(--primary); color: white; }
-        .btn-primary:hover { background: var(--primary-dark); }
-        .alert { padding: 12px 16px; border-radius: 8px; margin-bottom: 16px; font-size: 14px; }
-        .alert-error { background: #FEE2E2; color: #991B1B; }
-    </style>
-</head>
-<body>
-<div class="auth-container">
-    <div class="auth-card">
-        <div class="auth-logo">
-            <svg viewBox="0 0 512 512">
-                <defs>
-                    <linearGradient id="grad3" x1="0%" y1="0%" x2="0%" y2="100%">
-                        <stop offset="0%" style="stop-color:#8B5CF6" />
-                        <stop offset="100%" style="stop-color:#6366F1" />
-                    </linearGradient>
-                </defs>
-                <rect width="512" height="512" rx="96" fill="white"/>
-                <rect x="120" y="80" width="220" height="300" rx="24" fill="url(#grad3)"/>
-                <line x1="160" y1="150" x2="300" y2="150" stroke="white" stroke-width="12" stroke-linecap="round" opacity="0.5"/>
-                <line x1="160" y1="200" x2="300" y2="200" stroke="white" stroke-width="12" stroke-linecap="round" opacity="0.5"/>
-                <line x1="160" y1="250" x2="260" y2="250" stroke="white" stroke-width="12" stroke-linecap="round" opacity="0.5"/>
-                <circle cx="310" cy="350" r="70" fill="#10B981"/>
-                <path d="M275 350 L300 375 L355 315" fill="none" stroke="white" stroke-width="18" stroke-linecap="round" stroke-linejoin="round"/>
-            </svg>
-            <h1>Jottask</h1>
-        </div>
-
-        <p style="text-align: center; color: var(--gray-500); margin-bottom: 24px;">
-            Start your 14-day free trial
-        </p>
-
-        {% if referral_code %}
-        <div style="background: #ECFDF5; border: 1px solid #10B981; padding: 12px 16px; border-radius: 8px; margin-bottom: 16px; text-align: center;">
-            <span style="color: #059669; font-weight: 500;">🎁 You were referred! You'll both get $5 credit when you subscribe.</span>
-        </div>
-        {% endif %}
-
-        {% if error %}
-        <div class="alert alert-error">{{ error }}</div>
-        {% endif %}
-
-        <form method="POST">
-            <input type="hidden" name="referral_code" value="{{ referral_code or '' }}">
-
-            <div class="form-group">
-                <label class="form-label">Full Name</label>
-                <input type="text" name="full_name" class="form-input" required>
-            </div>
-
-            <div class="form-group">
-                <label class="form-label">Email</label>
-                <input type="email" name="email" class="form-input" required>
-            </div>
-
-            <div class="form-group">
-                <label class="form-label">Password</label>
-                <input type="password" name="password" class="form-input" required minlength="8">
-            </div>
-
-            <div class="form-group">
-                <label class="form-label">Timezone</label>
-                <select name="timezone" class="form-input">
-                    <option value="Australia/Brisbane">Australia/Brisbane (AEST)</option>
-                    <option value="Australia/Sydney">Australia/Sydney (AEST/AEDT)</option>
-                    <option value="Australia/Melbourne">Australia/Melbourne (AEST/AEDT)</option>
-                    <option value="Australia/Perth">Australia/Perth (AWST)</option>
-                    <option value="Pacific/Auckland">New Zealand (NZST)</option>
-                    <option value="America/New_York">US Eastern</option>
-                    <option value="America/Los_Angeles">US Pacific</option>
-                    <option value="Europe/London">UK (GMT/BST)</option>
-                </select>
-            </div>
-
-            <button type="submit" class="btn btn-primary" style="width: 100%; margin-top: 8px;">
-                Create Account
-            </button>
-        </form>
-
-        <p style="text-align: center; margin-top: 24px; color: var(--gray-500);">
-            Already have an account? <a href="{{ url_for('login') }}" style="color: var(--primary);">Sign in</a>
-        </p>
-    </div>
-</div>
 </body>
 </html>
 """
@@ -1328,6 +1004,9 @@ DASHBOARD_TEMPLATE = """
                 <button class="delay-btn" onclick="delayTask(currentTaskId, 3, 0)">+3 Hours</button>
                 <button class="delay-btn" onclick="delayTask(currentTaskId, 0, 1)">+1 Day</button>
                 <button class="delay-btn" onclick="delayTask(currentTaskId, 0, 7)">+1 Week</button>
+                <button class="delay-btn" style="background:#0EA5E9;color:white;" onclick="delayTaskPreset(currentTaskId, 'next_day_8am')">🌅 Tmrw 8am</button>
+                <button class="delay-btn" style="background:#0EA5E9;color:white;" onclick="delayTaskPreset(currentTaskId, 'next_day_9am')">☀️ Tmrw 9am</button>
+                <button class="delay-btn" style="background:#F59E0B;color:white;" onclick="delayTaskPreset(currentTaskId, 'next_monday_9am')">📆 Mon 9am</button>
             </div>
 
             <hr style="margin: 20px 0; border: none; border-top: 1px solid var(--gray-200);">
@@ -2070,13 +1749,11 @@ def index():
     if 'user_id' in session:
         return redirect(url_for('dashboard'))
     # Show landing page for non-logged in users
-    from templates import LANDING_TEMPLATE
-    return render_template_string(LANDING_TEMPLATE)
+    return render_template('landing.html')
 
 
 @app.route('/pricing')
 def pricing_page():
-    from templates import PRICING_TEMPLATE
     from billing import PLANS
 
     current_plan = 'starter'
@@ -2088,13 +1765,12 @@ def pricing_page():
             current_plan = user.data.get('subscription_tier', 'starter')
             subscription_status = user.data.get('subscription_status', 'none')
 
-    return render_template_string(
-        PRICING_TEMPLATE,
+    return render_template(
+        'pricing.html',
         title='Pricing',
         plans=PLANS,
         current_plan=current_plan,
-        subscription_status=subscription_status,
-        **{'base': BASE_TEMPLATE}
+        subscription_status=subscription_status
     )
 
 
@@ -2119,23 +1795,40 @@ def login():
                 if user.data:
                     session['user_name'] = user.data.get('full_name', email.split('@')[0])
                     session['timezone'] = user.data.get('timezone', 'Australia/Brisbane')
+                    session['user_role'] = user.data.get('role', 'user')
+                    session['organization_id'] = user.data.get('organization_id')
                 else:
                     session['user_name'] = email.split('@')[0]
                     session['timezone'] = 'Australia/Brisbane'
+                    session['user_role'] = 'user'
 
                 return redirect(url_for('dashboard'))
             else:
-                return render_template_string(LOGIN_TEMPLATE, error='Invalid credentials')
+                return render_template('login.html', error='Invalid credentials')
 
         except Exception as e:
             error_msg = 'Invalid email or password'
-            return render_template_string(LOGIN_TEMPLATE, error=error_msg)
+            return render_template('login.html', error=error_msg)
 
-    return render_template_string(LOGIN_TEMPLATE, error=None)
+    return render_template('login.html', error=None)
+
+
+@app.route('/forgot-password', methods=['GET', 'POST'])
+def forgot_password():
+    if request.method == 'POST':
+        email = request.form.get('email', '').strip().lower()
+        if email:
+            try:
+                supabase.auth.reset_password_email(email)
+            except Exception:
+                pass  # Don't reveal whether email exists
+        # Always show success (security: don't reveal if email exists)
+        return render_template('forgot_password.html', sent=True, email=email)
+    return render_template('forgot_password.html', sent=False, email=None)
 
 
 @app.route('/signup', methods=['GET', 'POST'])
-@app.route('/r/<referral_code>', methods=['GET'])
+@app.route('/r/<referral_code>', methods=['GET', 'POST'])
 def signup(referral_code=None):
     # Get referral code from URL or form
     ref_code = referral_code or request.args.get('ref') or request.form.get('referral_code')
@@ -2164,7 +1857,7 @@ def signup(referral_code=None):
             if auth_response.user:
                 # Create user profile with subscription info
                 import hashlib
-                new_ref_code = hashlib.md5(f"{auth_response.user.id}jottask{datetime.now().timestamp()}".encode()).hexdigest()[:8].upper()
+                new_ref_code = hashlib.md5(f"{auth_response.user.id}jottask{datetime.now(pytz.UTC).timestamp()}".encode()).hexdigest()[:8].upper()
 
                 user_data = {
                     'id': auth_response.user.id,
@@ -2172,11 +1865,11 @@ def signup(referral_code=None):
                     'full_name': full_name,
                     'timezone': timezone,
                     'subscription_status': 'trial',
-                    'subscription_tier': 'free_trial',
+                    'subscription_tier': 'starter',
                     'trial_ends_at': (datetime.now(pytz.UTC) + timedelta(days=14)).isoformat(),
                     'referral_code': new_ref_code,
                     'tasks_this_month': 0,
-                    'tasks_month_reset': datetime.now().date().replace(day=1).isoformat()
+                    'tasks_month_reset': datetime.now(pytz.timezone('Australia/Brisbane')).date().replace(day=1).isoformat()
                 }
 
                 if referrer_id:
@@ -2192,6 +1885,16 @@ def signup(referral_code=None):
                         'referral_code': ref_code,
                         'status': 'trial'
                     }).execute()
+
+                # Update referral invite status if this email was invited
+                try:
+                    supabase.table('referral_invites') \
+                        .update({'status': 'signed_up', 'signed_up_at': datetime.now(pytz.UTC).isoformat()}) \
+                        .eq('invited_email', email) \
+                        .eq('status', 'sent') \
+                        .execute()
+                except Exception:
+                    pass  # Table may not exist yet
 
                 # Log them in
                 session['user_id'] = auth_response.user.id
@@ -2209,7 +1912,7 @@ def signup(referral_code=None):
                     <p><strong>Email:</strong> {email}</p>
                     <p><strong>Timezone:</strong> {timezone}</p>
                     {referral_info}
-                    <p><strong>Time:</strong> {datetime.now().strftime('%Y-%m-%d %H:%M')}</p>
+                    <p><strong>Time:</strong> {datetime.now(pytz.timezone('Australia/Brisbane')).strftime('%Y-%m-%d %H:%M')} AEST</p>
                     <hr>
                     <p><a href="https://www.jottask.app/admin">View Admin Dashboard</a></p>
                     """
@@ -2219,11 +1922,16 @@ def signup(referral_code=None):
 
         except Exception as e:
             error_msg = str(e)
-            if 'already registered' in error_msg.lower():
-                error_msg = 'Email already registered'
-            return render_template_string(SIGNUP_TEMPLATE, error=error_msg, referral_code=ref_code)
+            print(f"Signup error: {error_msg}")
+            if 'already registered' in error_msg.lower() or 'already been registered' in error_msg.lower():
+                error_msg = 'This email is already registered. Try logging in instead.'
+            elif 'password' in error_msg.lower() and ('short' in error_msg.lower() or 'least' in error_msg.lower()):
+                error_msg = 'Password must be at least 6 characters.'
+            else:
+                error_msg = 'Something went wrong. Please try again or contact support.'
+            return render_template('signup.html', error=error_msg, referral_code=ref_code)
 
-    return render_template_string(SIGNUP_TEMPLATE, error=None, referral_code=ref_code)
+    return render_template('signup.html', error=None, referral_code=ref_code)
 
 
 @app.route('/logout')
@@ -2237,9 +1945,9 @@ def logout():
 
 
 @app.route('/debug-tasks')
-@login_required
+@admin_required
 def debug_tasks():
-    """Temporary debug endpoint to check task user_id mapping (requires login)"""
+    """Debug endpoint to check task user_id mapping (admin only)"""
     user_id = session['user_id']
     user_email = session.get('user_email')
 
@@ -2256,8 +1964,7 @@ def debug_tasks():
     <h2>Debug Task Info</h2>
     <p><strong>Session user_id:</strong> {user_id}</p>
     <p><strong>Session email:</strong> {user_email}</p>
-    <p><strong>Expected user_id:</strong> e515407e-dbd6-4331-a815-1878815c89bc</p>
-    <p><strong>Match:</strong> {'YES' if str(user_id) == 'e515407e-dbd6-4331-a815-1878815c89bc' else 'NO - MISMATCH!'}</p>
+    <p><strong>Role:</strong> {session.get('user_role', 'unknown')}</p>
     <hr>
     <h3>Tasks for your user_id ({len(user_tasks.data) if user_tasks.data else 0} found):</h3>
     <ul>
@@ -2276,9 +1983,10 @@ def debug_tasks():
 
 
 @app.route('/debug-db')
+@admin_required
 def debug_db():
-    """Public debug endpoint to check database state (REMOVE IN PRODUCTION)"""
-    expected_user_id = 'e515407e-dbd6-4331-a815-1878815c89bc'
+    """Debug endpoint to check database state (admin only)"""
+    expected_user_id = session['user_id']
 
     # Get status distribution
     all_statuses = supabase.table('tasks').select('status').limit(500).execute()
@@ -2348,33 +2056,42 @@ def dashboard():
         .order('due_time')\
         .execute()
 
-    # Get recent completed tasks (last 50)
-    completed_tasks_result = supabase.table('tasks')\
-        .select('*')\
-        .eq('user_id', user_id)\
-        .eq('status', 'completed')\
-        .order('completed_at', desc=True)\
-        .limit(50)\
-        .execute()
-
-    # Combine: pending/ongoing first, then recent completed
+    # Get completed tasks — search all when filtering, otherwise last 50
     pending_list = pending_tasks_result.data or []
-    completed_list = completed_tasks_result.data or []
-    all_tasks = pending_list + completed_list
 
-    # Filter by search query if provided
     if search_query:
         search_lower = search_query.lower()
-        all_tasks = [t for t in all_tasks if
-            search_lower in (t.get('title') or '').lower() or
-            search_lower in (t.get('description') or '').lower() or
-            search_lower in (t.get('client_name') or '').lower()
-        ]
+        # Escape chars that break PostgREST filter parsing
+        safe_q = search_query.replace(',', ' ').replace('(', '').replace(')', '')
+
+        # Search completed AND cancelled tasks at DB level
+        completed_query = supabase.table('tasks')\
+            .select('*')\
+            .eq('user_id', user_id)\
+            .in_('status', ['completed', 'cancelled'])\
+            .or_(f'title.ilike.%{safe_q}%,client_name.ilike.%{safe_q}%,description.ilike.%{safe_q}%')\
+            .order('completed_at', desc=True)\
+            .limit(100)\
+            .execute()
+        completed_list = completed_query.data or []
+
+        # Filter pending in Python (already fully loaded)
         pending_list = [t for t in pending_list if
             search_lower in (t.get('title') or '').lower() or
             search_lower in (t.get('description') or '').lower() or
             search_lower in (t.get('client_name') or '').lower()
         ]
+        all_tasks = pending_list + completed_list
+    else:
+        completed_tasks_result = supabase.table('tasks')\
+            .select('*')\
+            .eq('user_id', user_id)\
+            .eq('status', 'completed')\
+            .order('completed_at', desc=True)\
+            .limit(50)\
+            .execute()
+        completed_list = completed_tasks_result.data or []
+        all_tasks = pending_list + completed_list
 
     # Calculate stats (from unfiltered data)
     all_pending = pending_tasks_result.data or []
@@ -2382,8 +2099,17 @@ def dashboard():
         'pending': len(all_pending),
         'due_today': len([t for t in all_pending if t.get('due_date') == today]),
         'overdue': len([t for t in all_pending if t.get('due_date') and t['due_date'] < today]),
-        'completed_this_week': len([t for t in (completed_tasks_result.data or []) if t.get('completed_at')])
+        'completed_this_week': len([t for t in completed_list if t.get('completed_at')])
     }
+
+    # System health for admin banner
+    system_health = None
+    if session.get('user_role') == 'global_admin':
+        try:
+            from monitoring import get_system_health
+            system_health = get_system_health()
+        except Exception:
+            pass
 
     return render_template(
         'dashboard.html',
@@ -2391,7 +2117,8 @@ def dashboard():
         tasks=all_tasks,
         stats=stats,
         today=today,
-        search_query=search_query
+        search_query=search_query,
+        system_health=system_health
     )
 
 
@@ -2496,6 +2223,10 @@ def create_task():
                 task_id=task.get('id'),
                 user_name=user_name
             )
+        else:
+            print(f"⚠️ No user_email in session — skipping task confirmation email")
+    else:
+        print(f"⚠️ No result.data from task insert — skipping confirmation email")
 
     return redirect(url_for('dashboard'))
 
@@ -2503,60 +2234,70 @@ def create_task():
 @app.route('/tasks/<task_id>/edit', methods=['GET', 'POST'])
 @login_required
 def edit_task(task_id):
-    from templates import TASK_EDIT_TEMPLATE
     user_id = session['user_id']
 
-    # Verify ownership
-    task = supabase.table('tasks').select('*').eq('id', task_id).eq('user_id', user_id).single().execute()
-    if not task.data:
-        return redirect(url_for('dashboard'))
+    try:
+        # Verify ownership
+        task = supabase.table('tasks').select('*').eq('id', task_id).eq('user_id', user_id).maybe_single().execute()
+        if not task.data:
+            return redirect(url_for('dashboard'))
 
-    if request.method == 'POST':
-        update_data = {
-            'title': request.form.get('title'),
-            'description': request.form.get('description'),
-            'due_date': request.form.get('due_date'),
-            'due_time': request.form.get('due_time', '09:00') + ':00',
-            'priority': request.form.get('priority'),
-            'status': request.form.get('status'),
-            'client_name': request.form.get('client_name') or None,
-            'client_email': request.form.get('client_email') or None,
-            'client_phone': request.form.get('client_phone') or None,
-            'project_name': request.form.get('project_name') or None
-        }
+        if request.method == 'POST':
+            update_data = {
+                'title': request.form.get('title'),
+                'description': request.form.get('description'),
+                'due_date': request.form.get('due_date'),
+                'due_time': request.form.get('due_time', '09:00') + ':00',
+                'priority': request.form.get('priority'),
+                'status': request.form.get('status'),
+                'client_name': request.form.get('client_name') or None,
+                'client_email': request.form.get('client_email') or None,
+                'client_phone': request.form.get('client_phone') or None,
+                'project_name': request.form.get('project_name') or None
+            }
 
-        if update_data['status'] == 'completed':
-            update_data['completed_at'] = datetime.now(pytz.UTC).isoformat()
-        elif update_data['status'] in ('pending', 'ongoing'):
-            update_data['completed_at'] = None
+            if update_data['status'] == 'completed':
+                update_data['completed_at'] = datetime.now(pytz.UTC).isoformat()
+            elif update_data['status'] in ('pending', 'ongoing'):
+                update_data['completed_at'] = None
 
-        supabase.table('tasks').update(update_data).eq('id', task_id).execute()
-        return redirect(url_for('dashboard'))
+            supabase.table('tasks').update(update_data).eq('id', task_id).execute()
+            return redirect(url_for('dashboard'))
 
-    # Get checklist items
-    checklist = supabase.table('task_checklist_items')\
-        .select('*')\
-        .eq('task_id', task_id)\
-        .order('display_order')\
-        .execute()
+        # Get checklist items
+        checklist = supabase.table('task_checklist_items')\
+            .select('*')\
+            .eq('task_id', task_id)\
+            .order('display_order')\
+            .execute()
 
-    return render_template_string(
-        TASK_EDIT_TEMPLATE,
-        title='Edit Task',
-        task=task.data,
-        checklist=checklist.data or [],
-        **{'base': BASE_TEMPLATE}
-    )
+        # Ensure task data has safe defaults for template rendering
+        task_data = task.data
+        if task_data.get('due_date') is None:
+            task_data['due_date'] = ''
+        if task_data.get('due_time') is None:
+            task_data['due_time'] = ''
+
+        return render_template(
+            'task_edit.html',
+            title='Edit Task',
+            task=task_data,
+            checklist=checklist.data or []
+        )
+    except Exception as e:
+        import traceback
+        print(f"❌ Error editing task {task_id}: {e}")
+        traceback.print_exc()
+        return f"Error loading task: {e}", 500
 
 
 @app.route('/tasks/<task_id>')
 @login_required
 def task_detail(task_id):
-    from templates import TASK_DETAIL_TEMPLATE
     user_id = session['user_id']
 
     # Get task
-    task = supabase.table('tasks').select('*').eq('id', task_id).eq('user_id', user_id).single().execute()
+    task = supabase.table('tasks').select('*').eq('id', task_id).eq('user_id', user_id).maybe_single().execute()
     if not task.data:
         return redirect(url_for('dashboard'))
 
@@ -2575,13 +2316,12 @@ def task_detail(task_id):
         .limit(20)\
         .execute()
 
-    return render_template_string(
-        TASK_DETAIL_TEMPLATE,
+    return render_template(
+        'task_detail.html',
         title=task.data['title'],
         task=task.data,
         checklist=checklist.data or [],
-        notes=notes.data or [],
-        **{'base': BASE_TEMPLATE}
+        notes=notes.data or []
     )
 
 
@@ -2935,6 +2675,31 @@ def settings():
     referral_count = len(referrals.data) if referrals.data else 0
     converted_count = len([r for r in (referrals.data or []) if r.get('status') == 'converted'])
 
+    # Get active CRM connection (if any)
+    crm_connection = None
+    try:
+        from crm_manager import CRMManager
+        _crm = CRMManager()
+        crm_connections = _crm.get_user_connections(user_id)
+        crm_connection = next((c for c in crm_connections if c.get('is_active')), None)
+        if not crm_connection and crm_connections:
+            crm_connection = crm_connections[0]  # Show first connection even if inactive
+    except Exception:
+        pass
+
+    # Get sent invites
+    sent_invites = []
+    try:
+        invites_result = supabase.table('referral_invites') \
+            .select('invited_email, status, sent_at') \
+            .eq('referrer_id', user_id) \
+            .order('sent_at', desc=True) \
+            .limit(20) \
+            .execute()
+        sent_invites = invites_result.data or []
+    except Exception:
+        pass
+
     return render_template(
         'settings.html',
         title='Settings',
@@ -2943,6 +2708,8 @@ def settings():
         referral_count=referral_count,
         converted_count=converted_count,
         referral_link=f"https://www.jottask.app/r/{sub.get('referral_code', '')}",
+        crm_connection=crm_connection,
+        sent_invites=sent_invites,
         message=request.args.get('message')
     )
 
@@ -2952,9 +2719,13 @@ def settings():
 def update_profile():
     user_id = session['user_id']
 
-    # Parse alternate emails from comma-separated string
-    alternate_emails_str = request.form.get('alternate_emails', '')
-    alternate_emails = [e.strip().lower() for e in alternate_emails_str.split(',') if e.strip()]
+    # Parse alternate emails from individual inputs (or legacy comma-separated)
+    email_list = request.form.getlist('alternate_emails_list')
+    if email_list:
+        alternate_emails = [e.strip().lower() for e in email_list if e.strip()]
+    else:
+        alternate_emails_str = request.form.get('alternate_emails', '')
+        alternate_emails = [e.strip().lower() for e in alternate_emails_str.split(',') if e.strip()]
 
     update_data = {
         'full_name': request.form.get('full_name'),
@@ -2987,6 +2758,75 @@ def update_summary_settings():
     return redirect(url_for('settings', message='Summary settings updated successfully'))
 
 
+@app.route('/settings/invite', methods=['POST'])
+@login_required
+def send_referral_invite():
+    user_id = session['user_id']
+    invited_email = request.form.get('invited_email', '').strip().lower()
+
+    if not invited_email or '@' not in invited_email:
+        return redirect(url_for('settings', message='Please enter a valid email'))
+
+    # Get referrer info
+    user = supabase.table('users').select('full_name, referral_code').eq('id', user_id).single().execute()
+    if not user.data or not user.data.get('referral_code'):
+        return redirect(url_for('settings', message='Referral code not found'))
+
+    referrer_name = user.data.get('full_name', 'A Jottask user')
+    referral_code = user.data['referral_code']
+    referral_link = f"https://www.jottask.app/r/{referral_code}"
+
+    # Check if already invited
+    existing = supabase.table('referral_invites') \
+        .select('id').eq('referrer_id', user_id).eq('invited_email', invited_email).execute()
+    if existing.data:
+        return redirect(url_for('settings', message=f'You already invited {invited_email}'))
+
+    # Save the invite
+    try:
+        supabase.table('referral_invites').insert({
+            'referrer_id': user_id,
+            'invited_email': invited_email,
+            'referral_code': referral_code,
+            'status': 'sent',
+        }).execute()
+    except Exception as e:
+        print(f"Error saving invite: {e}")
+        return redirect(url_for('settings', message='Failed to save invite'))
+
+    # Send the invite email
+    html_content = f"""
+    <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 560px; margin: 0 auto;">
+        <div style="background: linear-gradient(135deg, #6366F1, #8B5CF6); padding: 32px; border-radius: 12px 12px 0 0; text-align: center;">
+            <h1 style="color: white; margin: 0; font-size: 24px;">You're Invited to Jottask</h1>
+        </div>
+        <div style="background: white; padding: 32px; border: 1px solid #E5E7EB; border-top: none; border-radius: 0 0 12px 12px;">
+            <p style="font-size: 16px; color: #374151; margin-bottom: 16px;">
+                <strong>{referrer_name}</strong> thinks you'd love Jottask — an AI-powered task management platform built for solar sales teams.
+            </p>
+            <p style="font-size: 15px; color: #6B7280; margin-bottom: 24px;">
+                Forward your emails to Jottask and it does the rest — creates tasks, tracks follow-ups, sends reminders, and syncs your CRM.
+            </p>
+            <div style="text-align: center; margin-bottom: 24px;">
+                <a href="{referral_link}" style="display: inline-block; background: #6366F1; color: white; padding: 14px 32px; border-radius: 8px; text-decoration: none; font-weight: 600; font-size: 16px;">
+                    Start Free Trial
+                </a>
+            </div>
+            <p style="font-size: 13px; color: #9CA3AF; text-align: center;">
+                You'll both get <strong>$5 credit</strong> when you subscribe.
+            </p>
+        </div>
+    </div>
+    """
+
+    success, error = send_email(invited_email, f'{referrer_name} invited you to Jottask', html_content)
+    if success:
+        return redirect(url_for('settings', message=f'Invite sent to {invited_email}!'))
+    else:
+        print(f"Failed to send referral invite: {error}")
+        return redirect(url_for('settings', message=f'Invite saved but email failed to send'))
+
+
 @app.route('/billing')
 @login_required
 def billing():
@@ -2998,6 +2838,37 @@ def billing():
 # ACTION ROUTE (Email Button Handler)
 # ============================================
 
+
+def _resend_dsw_email(task_id, task_data):
+    """Resend DSW lead email with current lead_status for delayed tasks."""
+    import importlib.util, sys, os
+    try:
+        spec = importlib.util.spec_from_file_location("dsw_lead_poller", 
+            os.path.join(os.path.dirname(__file__), "dsw_lead_poller.py"))
+        poller = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(poller)
+        from dotenv import load_dotenv
+        load_dotenv()
+        import requests as req
+        TOKEN = os.getenv("PIPEREPLY_TOKEN")
+        LOCATION_ID = os.getenv("PIPEREPLY_LOCATION_ID")
+        H = {"Authorization": f"Bearer {TOKEN}", "Content-Type": "application/json", "Version": "2021-07-28"}
+        # Extract name from task title e.g. "Call John Smith - New DSW Lead"
+        title = task_data.get('title', '')
+        name = title.replace('Call ', '').replace(' - New DSW Lead', '').strip()
+        r = req.get("https://services.leadconnectorhq.com/contacts/", headers=H,
+            params={"locationId": LOCATION_ID, "query": name, "limit": 1})
+        contacts = r.json().get("contacts", [])
+        if contacts:
+            contact = contacts[0]
+            lead_status = task_data.get('lead_status', 'new_lead')
+            poller.process(contact, task_id=task_id, lead_status=lead_status)
+            print(f"[DSW RESEND] Sent email for {name} status={lead_status}")
+        else:
+            print(f"[DSW RESEND] No contact found for: {name}")
+    except Exception as e:
+        print(f"[DSW RESEND] Error: {e}")
+
 @app.route('/action')
 def handle_action():
     """Handle action button clicks from emails - redirects to appropriate pages"""
@@ -3005,7 +2876,10 @@ def handle_action():
     project_id = request.args.get('project_id')
     task_id = request.args.get('task_id')
 
-    print(f"🎯 ACTION ROUTE HIT: action={action}, task_id={task_id}, project_id={project_id}")
+    # Audit log: track who accesses action routes
+    client_ip = request.headers.get('X-Forwarded-For', request.remote_addr)
+    user_agent = request.headers.get('User-Agent', 'unknown')[:100]
+    print(f"🎯 ACTION ROUTE HIT: action={action}, task_id={task_id}, project_id={project_id} | IP={client_ip} | UA={user_agent}")
 
     # Project actions
     if action == 'view_project' and project_id:
@@ -3072,21 +2946,23 @@ def handle_action():
                 """, title=task_title)
 
             elif action == 'delay_1hour':
-                current_time = task_data.get('due_time', '09:00:00')
-                try:
-                    parts = current_time.split(':')
-                    hour = int(parts[0]) + 1
-                    if hour >= 24:
-                        hour = 23
-                    new_time = f"{hour:02d}:{parts[1]}:00"
-                except:
-                    new_time = '10:00:00'
+                aest = pytz.timezone('Australia/Brisbane')
+                new_dt = datetime.now(aest) + timedelta(hours=1)
+                new_time = new_dt.strftime('%H:%M:00')
+                new_date = new_dt.date().isoformat()
 
                 supabase.table('tasks').update({
+                    'due_date': new_date,
                     'due_time': new_time,
                     'reminder_sent_at': None
                 }).eq('id', task_id).execute()
 
+                # If DSW Solar task, resend lead email with current status
+                if task_data.get('category') == 'DSW Solar':
+                    try:
+                        _resend_dsw_email(task_id, task_data)
+                    except Exception as e:
+                        print(f"DSW resend error: {e}")
                 return render_template_string("""
                 <html><head><title>Task Delayed</title></head>
                 <body style="font-family: sans-serif; text-align: center; padding: 50px; background: #eff6ff;">
@@ -3103,13 +2979,18 @@ def handle_action():
                     due_date = datetime.fromisoformat(current_date)
                     new_date = (due_date + timedelta(days=1)).date().isoformat()
                 except:
-                    new_date = (datetime.now() + timedelta(days=1)).date().isoformat()
+                    new_date = (datetime.now(pytz.timezone('Australia/Brisbane')) + timedelta(days=1)).date().isoformat()
 
                 supabase.table('tasks').update({
                     'due_date': new_date,
                     'reminder_sent_at': None
                 }).eq('id', task_id).execute()
 
+                if task_data.get('category') == 'DSW Solar':
+                    try:
+                        _resend_dsw_email(task_id, task_data)
+                    except Exception as e:
+                        print(f"DSW resend error: {e}")
                 return render_template_string("""
                 <html><head><title>Task Delayed</title></head>
                 <body style="font-family: sans-serif; text-align: center; padding: 50px; background: #eff6ff;">
@@ -3120,9 +3001,39 @@ def handle_action():
                 </body></html>
                 """, title=task_title, new_date=new_date)
 
+            elif action in ('delay_next_day_8am', 'delay_next_day_9am', 'delay_next_monday_9am'):
+                aest = pytz.timezone('Australia/Brisbane')
+                now_aest = datetime.now(aest)
+                if action == 'delay_next_day_8am':
+                    target = (now_aest + timedelta(days=1)).replace(hour=8, minute=0, second=0, microsecond=0)
+                    label = 'Tomorrow 8:00 AM'
+                elif action == 'delay_next_day_9am':
+                    target = (now_aest + timedelta(days=1)).replace(hour=9, minute=0, second=0, microsecond=0)
+                    label = 'Tomorrow 9:00 AM'
+                else:
+                    days_until_monday = (7 - now_aest.weekday()) % 7 or 7
+                    target = (now_aest + timedelta(days=days_until_monday)).replace(hour=9, minute=0, second=0, microsecond=0)
+                    label = 'Monday 9:00 AM'
+
+                supabase.table('tasks').update({
+                    'due_date': target.date().isoformat(),
+                    'due_time': target.strftime('%H:%M:%S'),
+                    'reminder_sent_at': None
+                }).eq('id', task_id).execute()
+
+                return render_template_string("""
+                <html><head><title>Task Rescheduled</title></head>
+                <body style="font-family: sans-serif; text-align: center; padding: 50px; background: #eff6ff;">
+                    <h2 style="color: #0EA5E9;">📅 Task Rescheduled</h2>
+                    <p><strong>{{ title }}</strong></p>
+                    <p>Moved to: {{ label }}</p>
+                    <a href="https://www.jottask.app/dashboard" style="color: #6366F1;">Open Dashboard</a>
+                </body></html>
+                """, title=task_title, label=label)
+
             elif action == 'delay_custom' or action == 'reschedule':
                 # Show reschedule form with full edit capability
-                current_date = task_data.get('due_date', datetime.now().date().isoformat())
+                current_date = task_data.get('due_date', datetime.now(pytz.timezone('Australia/Brisbane')).date().isoformat())
                 current_time = task_data.get('due_time', '09:00:00')[:5]
                 checklist = task_data.get('checklist', []) or []
 
@@ -3286,6 +3197,78 @@ def handle_action():
                 <h2>Error</h2><p>{{ error }}</p>
             </body></html>
             """, error=str(e))
+
+    elif action == 'set_custom' and task_id:
+        r_date = request.args.get('date', '')
+        r_time = request.args.get('time', '09:00')
+        if r_date:
+            supabase.table('tasks').update({
+                'due_date': r_date,
+                'due_time': r_time + ':00',
+                'reminder_sent_at': None,
+            }).eq('id', task_id).execute()
+        return redirect(url_for('lead_detail', task_id=task_id))
+
+    elif action == 'no_reply' and task_id:
+        try:
+            task_row = supabase.table('tasks').select('due_time').eq('id', task_id).single().execute()
+            current_time = (task_row.data or {}).get('due_time', '09:00:00') or '09:00:00'
+        except Exception:
+            current_time = '09:00:00'
+        aest = pytz.timezone('Australia/Brisbane')
+        tomorrow = (datetime.now(aest) + timedelta(days=1)).date().isoformat()
+        supabase.table('tasks').update({
+            'due_date': tomorrow,
+            'due_time': current_time,
+            'lead_status': 'no_reply',
+            'reminder_sent_at': None,
+        }).eq('id', task_id).execute()
+        return redirect(url_for('lead_detail', task_id=task_id))
+
+    elif action == 'set_status' and task_id:
+            status_val = request.args.get('status', '')
+            lost_reason = request.args.get('lost_reason', '')
+            update = {'lead_status': status_val, 'reminder_sent_at': None}
+            if status_val in ['won', 'lost']:
+                update['status'] = 'completed'
+                update['completed_at'] = datetime.now(pytz.UTC).isoformat()
+            if status_val == 'lost' and lost_reason:
+                update['lost_reason'] = lost_reason
+            supabase.table('tasks').update(update).eq('id', task_id).execute()
+            status_labels = {
+                'intro_call':'Intro Call','site_visit_booked':'Site Visit Booked',
+                'awaiting_docs':'Awaiting Docs','build_quote':'Build Quote',
+                'quote_submitted':'Quote Sent','quote_followup':'Quote Follow Up',
+                'revise_quote':'Revise Quote','customer_deciding':'Customer Deciding',
+                'nurture':'Nurture','won':'WON 🎉','lost':'LOST ❌'
+            }
+            label = status_labels.get(status_val, status_val.replace('_',' ').title())
+            color = '#10B981' if status_val == 'won' else '#ef4444' if status_val == 'lost' else '#1e40af'
+            au = "https://www.jottask.app/action"
+            delay_buttons = [
+                ("+1 Hour",    f"{au}?action=delay_1hour&task_id={task_id}"),
+                ("+1 Day",     f"{au}?action=delay_1day&task_id={task_id}"),
+                ("Tmrw 8am",   f"{au}?action=delay_next_day_8am&task_id={task_id}"),
+                ("Tmrw 9am",   f"{au}?action=delay_next_day_9am&task_id={task_id}"),
+                ("Mon 9am",    f"{au}?action=delay_next_monday_9am&task_id={task_id}"),
+            ]
+            btn_style = "display:inline-block;padding:8px 14px;background:#1e40af;color:white;text-decoration:none;border-radius:8px;font-size:13px;font-weight:600"
+            btns_html = " ".join(f'<a href="{url}" style="{btn_style}">{label_}</a>' for label_, url in delay_buttons)
+            return render_template_string("""
+            <html><head><title>Status Updated</title>
+            <meta name="viewport" content="width=device-width,initial-scale=1">
+            </head>
+            <body style="font-family:sans-serif;text-align:center;padding:50px;background:#f8fafc;">
+                <div style="font-size:48px;margin-bottom:16px">✅</div>
+                <h2 style="color:{{ color }}">{{ label }}</h2>
+                <p style="color:#6b7280">Lead status updated</p>
+                <div style="margin:28px 0 8px">
+                    <p style="color:#6b7280;font-size:13px;font-weight:600;margin-bottom:10px">Remind me again:</p>
+                    <div style="display:flex;flex-wrap:wrap;gap:8px;justify-content:center">{{ btns_html | safe }}</div>
+                </div>
+                <p style="margin-top:28px"><a href="https://www.jottask.app/dashboard" style="color:#6366F1">Open Dashboard</a></p>
+            </body></html>
+            """, label=label, color=color, btns_html=btns_html)
 
     # Default - show error (don't redirect to login-required dashboard)
     return render_template_string("""
@@ -3721,6 +3704,218 @@ def api_update_task_status(task_id):
     return jsonify({'success': True})
 
 
+@app.route('/api/tasks/reminder-debug', methods=['GET'])
+def api_reminder_debug():
+    """Diagnostic endpoint: show tasks that should get reminders.
+    Auth: logged-in session or internal API key.
+    """
+    user_id = session.get('user_id')
+    api_key = request.headers.get('X-Internal-Key') or request.args.get('key')
+    internal_key = os.getenv('INTERNAL_API_KEY', '')
+
+    if not user_id and not (api_key and internal_key and api_key == internal_key):
+        return jsonify({'error': 'Unauthorized'}), 401
+
+    aest = pytz.timezone('Australia/Brisbane')
+    now_aest = datetime.now(aest)
+    today_str = now_aest.strftime('%Y-%m-%d')
+    tomorrow_str = (now_aest + timedelta(days=1)).strftime('%Y-%m-%d')
+    fourteen_days_ago = (now_aest - timedelta(days=14)).strftime('%Y-%m-%d')
+
+    query = supabase.table('tasks')\
+        .select('id, title, due_date, due_time, priority, status, client_name, user_id, reminder_sent_at, created_at')\
+        .eq('status', 'pending')\
+        .gte('due_date', fourteen_days_ago)\
+        .lte('due_date', tomorrow_str)\
+        .order('due_date')\
+        .order('due_time')\
+        .limit(50)
+
+    if user_id:
+        query = query.eq('user_id', user_id)
+
+    result = query.execute()
+    tasks = result.data or []
+
+    output = []
+    for t in tasks:
+        reminded = t.get('reminder_sent_at')
+        output.append({
+            'id': t['id'][:8],
+            'title': t['title'][:60],
+            'due_date': t.get('due_date'),
+            'due_time': t.get('due_time'),
+            'client': t.get('client_name', ''),
+            'reminder_sent_at': reminded[:19] if reminded else None,
+            'created_at': t.get('created_at', '')[:19],
+            'user_id': t.get('user_id', '')[:8],
+        })
+
+    return jsonify({
+        'now_aest': now_aest.strftime('%Y-%m-%d %H:%M:%S'),
+        'query_range': f'{fourteen_days_ago} to {tomorrow_str}',
+        'total_pending': len(tasks),
+        'needs_reminder': len([t for t in tasks if not t.get('reminder_sent_at')]),
+        'tasks': output,
+    })
+
+
+@app.route('/api/emails/reprocess', methods=['POST'])
+def api_reprocess_emails():
+    """Re-process recent emails that were marked as no_action.
+    Auth: logged-in session or internal API key.
+    Clears processed_emails entries with outcome='no_action' from last 24h,
+    so the next email processor cycle will re-analyze them.
+    """
+    user_id = session.get('user_id')
+    api_key = request.headers.get('X-Internal-Key') or request.args.get('key')
+    internal_key = os.getenv('INTERNAL_API_KEY', '')
+
+    if not user_id and not (api_key and internal_key and api_key == internal_key):
+        return jsonify({'error': 'Unauthorized'}), 401
+
+    hours = request.args.get('hours', '24')
+    try:
+        hours = int(hours)
+    except ValueError:
+        hours = 24
+
+    cutoff = (datetime.now(pytz.UTC) - timedelta(hours=hours)).isoformat()
+
+    # Find no_action emails in the time window
+    try:
+        query = supabase.table('processed_emails')\
+            .select('id, subject, sender_email, outcome, processed_at')\
+            .eq('outcome', 'no_action')\
+            .gte('processed_at', cutoff)\
+            .order('processed_at', desc=True)\
+            .limit(50)
+
+        result = query.execute()
+        emails = result.data or []
+    except Exception as e:
+        return jsonify({'error': f'DB query failed: {str(e)}. Has migration 020 been run?'}), 500
+
+    if not emails:
+        return jsonify({'message': 'No no_action emails found in the last ' + str(hours) + ' hours', 'count': 0})
+
+    dry_run = request.args.get('dry_run', 'true').lower() == 'true'
+
+    if dry_run:
+        return jsonify({
+            'message': f'Found {len(emails)} no_action emails to reprocess (dry_run=true, POST with dry_run=false to execute)',
+            'count': len(emails),
+            'emails': [{'subject': e.get('subject', '')[:80], 'sender': e.get('sender_email', ''), 'processed_at': e.get('processed_at', '')[:19]} for e in emails],
+        })
+
+    # Delete the processed_emails entries so the processor picks them up again
+    deleted = 0
+    for e in emails:
+        try:
+            supabase.table('processed_emails').delete().eq('id', e['id']).execute()
+            deleted += 1
+        except Exception as err:
+            print(f"Failed to delete processed_email {e['id']}: {err}")
+
+    return jsonify({
+        'message': f'Cleared {deleted} no_action emails — they will be re-processed on the next cycle',
+        'count': deleted,
+    })
+
+
+@app.route('/api/tasks/cleanup-duplicates', methods=['POST'])
+def api_cleanup_duplicates():
+    """Find and cancel duplicate tasks for a user.
+    Groups tasks by client_name, keeps the newest pending task in each group,
+    and cancels the rest. Accepts logged-in session OR internal API key.
+    """
+    # Auth: logged-in user OR internal API key (header or query param)
+    api_key = request.headers.get('X-Internal-Key') or request.args.get('key')
+    internal_key = os.getenv('INTERNAL_API_KEY', '')
+    data = request.get_json() or {}
+
+    if api_key and internal_key and api_key == internal_key:
+        user_id = data.get('user_id')  # Optional: if omitted, cleans all users
+    elif 'user_id' in session:
+        user_id = session['user_id']
+    else:
+        return jsonify({'error': 'Authentication required'}), 401
+    client_name_filter = data.get('client_name')  # Optional: filter by client_name column
+    title_filter = data.get('title')  # Optional: filter by title (ilike)
+    dry_run = data.get('dry_run', False)
+
+    try:
+        # Get all pending tasks (filtered by user if specified)
+        query = supabase.table('tasks')\
+            .select('id, title, client_name, due_date, due_time, created_at, status, user_id')\
+            .eq('status', 'pending')\
+            .order('created_at', desc=True)\
+            .limit(500)
+
+        if user_id:
+            query = query.eq('user_id', user_id)
+
+        if client_name_filter:
+            query = query.ilike('client_name', f'%{client_name_filter}%')
+
+        if title_filter:
+            query = query.ilike('title', f'%{title_filter}%')
+
+        result = query.execute()
+        tasks = result.data or []
+
+        # Group by client_name (lowercased), falling back to title_filter as group key
+        from collections import defaultdict
+        groups = defaultdict(list)
+        for task in tasks:
+            key = (task.get('client_name') or '').strip().lower()
+            if not key and title_filter:
+                # No client_name — group all title-matched tasks together
+                key = title_filter.strip().lower()
+            if key:
+                groups[key].append(task)
+
+        cancelled_ids = []
+        kept_tasks = []
+
+        for client_key, client_tasks in groups.items():
+            if len(client_tasks) <= 1:
+                continue  # No duplicates
+
+            # Keep the newest (first, since sorted by created_at desc), cancel the rest
+            keep = client_tasks[0]
+            dupes = client_tasks[1:]
+            kept_tasks.append({'id': keep['id'], 'title': keep['title'], 'client_name': keep.get('client_name')})
+
+            for dupe in dupes:
+                cancelled_ids.append(dupe['id'])
+
+        if not dry_run and cancelled_ids:
+            # Cancel in batches of 20
+            for i in range(0, len(cancelled_ids), 20):
+                batch = cancelled_ids[i:i+20]
+                for task_id in batch:
+                    q = supabase.table('tasks').update({
+                        'status': 'cancelled'
+                    }).eq('id', task_id)
+                    if user_id:
+                        q = q.eq('user_id', user_id)
+                    q.execute()
+
+        return jsonify({
+            'success': True,
+            'dry_run': dry_run,
+            'duplicates_found': len(cancelled_ids),
+            'cancelled_ids': cancelled_ids if not dry_run else [],
+            'would_cancel': cancelled_ids if dry_run else [],
+            'kept_tasks': kept_tasks,
+        })
+
+    except Exception as e:
+        print(f"Cleanup error: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
 @app.route('/api/tasks/<task_id>/delay', methods=['POST'])
 @login_required
 def api_delay_task(task_id):
@@ -3728,20 +3923,31 @@ def api_delay_task(task_id):
     data = request.get_json()
     hours = data.get('hours', 0)
     days = data.get('days', 0)
+    preset = data.get('preset')
 
-    # Verify ownership and get task
-    task = supabase.table('tasks').select('*').eq('id', task_id).eq('user_id', user_id).single().execute()
+    # Verify ownership
+    task = supabase.table('tasks').select('*').eq('id', task_id).eq('user_id', user_id).maybe_single().execute()
     if not task.data:
         return jsonify({'error': 'Not found'}), 404
 
     tz = get_user_timezone()
     now = datetime.now(tz)
-    new_dt = now + timedelta(hours=hours, days=days)
+
+    if preset == 'next_day_8am':
+        new_dt = (now + timedelta(days=1)).replace(hour=8, minute=0, second=0, microsecond=0)
+    elif preset == 'next_day_9am':
+        new_dt = (now + timedelta(days=1)).replace(hour=9, minute=0, second=0, microsecond=0)
+    elif preset == 'next_monday_9am':
+        days_until_monday = (7 - now.weekday()) % 7 or 7
+        new_dt = (now + timedelta(days=days_until_monday)).replace(hour=9, minute=0, second=0, microsecond=0)
+    else:
+        new_dt = now + timedelta(hours=hours, days=days)
 
     supabase.table('tasks').update({
         'due_date': new_dt.date().isoformat(),
         'due_time': new_dt.strftime('%H:%M:%S'),
-        'status': 'pending'
+        'status': 'pending',
+        'reminder_sent_at': None
     }).eq('id', task_id).execute()
 
     return jsonify({'success': True, 'new_due': new_dt.isoformat()})
@@ -4065,6 +4271,428 @@ def validate_action_token(token):
     return token_data['task_id'], token_data['user_id'], token_data['action']
 
 
+@app.route('/task/<task_id>', methods=['GET'])
+def lead_detail(task_id):
+    """DSW lead detail page — no login required."""
+    import re, urllib.parse
+
+    aest = pytz.timezone('Australia/Brisbane')
+
+    STATUS_LABELS = {
+        'new_lead':          '🔵 NEW LEAD',
+        'intro_call':        '📞 INTRO CALL',
+        'site_visit_booked': '📅 SITE VISIT BOOKED',
+        'awaiting_docs':     '📋 AWAITING DOCS',
+        'build_quote':       '🔨 BUILD QUOTE',
+        'quote_submitted':   '📤 QUOTE SENT',
+        'quote_followup':    '🔔 QUOTE FOLLOW UP',
+        'revise_quote':      '✏️ REVISE QUOTE',
+        'customer_deciding': '🤔 DECIDING',
+        'nurture':           '💧 NURTURE',
+        'won':               '🎉 WON',
+        'lost':              '❌ LOST',
+        'no_reply':          '📵 NO REPLY',
+    }
+    STATUS_COLORS = {
+        'new_lead': '#1e40af', 'intro_call': '#1e40af',
+        'site_visit_booked': '#7c3aed', 'awaiting_docs': '#b45309',
+        'build_quote': '#0369a1', 'quote_submitted': '#0891b2',
+        'quote_followup': '#0e7490', 'revise_quote': '#7c3aed',
+        'customer_deciding': '#b45309', 'nurture': '#6b7280',
+        'won': '#10b981', 'lost': '#ef4444', 'no_reply': '#6b7280',
+    }
+
+    # ── Fetch task ────────────────────────────────────────────────────────
+    try:
+        res = supabase.table('tasks').select('*').eq('id', task_id).single().execute()
+        t = res.data
+    except Exception:
+        t = None
+    if not t:
+        return '<html><body style="font-family:sans-serif;text-align:center;padding:50px"><h2>Lead not found</h2></body></html>', 404
+
+    # ── Handle GET actions (delay / status) — redirect back to clean URL ──
+    action = request.args.get('action', '')
+    if action:
+        update = {}
+        if action == 'delay_1hour':
+            nd = datetime.now(aest) + timedelta(hours=1)
+            update = {'due_date': nd.date().isoformat(), 'due_time': nd.strftime('%H:%M:00'), 'reminder_sent_at': None}
+        elif action == 'delay_1day':
+            try:
+                base = datetime.fromisoformat(t.get('due_date', '')).replace(tzinfo=aest)
+            except Exception:
+                base = datetime.now(aest)
+            nd = base + timedelta(days=1)
+            update = {'due_date': nd.date().isoformat(), 'reminder_sent_at': None}
+        elif action == 'delay_next_day_8am':
+            tgt = (datetime.now(aest) + timedelta(days=1)).replace(hour=8, minute=0, second=0, microsecond=0)
+            update = {'due_date': tgt.date().isoformat(), 'due_time': '08:00:00', 'reminder_sent_at': None}
+        elif action == 'delay_next_day_9am':
+            tgt = (datetime.now(aest) + timedelta(days=1)).replace(hour=9, minute=0, second=0, microsecond=0)
+            update = {'due_date': tgt.date().isoformat(), 'due_time': '09:00:00', 'reminder_sent_at': None}
+        elif action == 'delay_next_monday_9am':
+            now = datetime.now(aest)
+            days = (7 - now.weekday()) % 7 or 7
+            tgt = (now + timedelta(days=days)).replace(hour=9, minute=0, second=0, microsecond=0)
+            update = {'due_date': tgt.date().isoformat(), 'due_time': '09:00:00', 'reminder_sent_at': None}
+        elif action == 'set_status':
+            sv = request.args.get('status', '')
+            if sv in STATUS_LABELS:
+                update = {'lead_status': sv, 'reminder_sent_at': None}
+                if sv in ('won', 'lost'):
+                    update['status'] = 'completed'
+                    update['completed_at'] = datetime.now(pytz.UTC).isoformat()
+        elif action == 'set_custom':
+            r_date = request.args.get('date', '')
+            r_time = request.args.get('time', '09:00')
+            if r_date:
+                update = {
+                    'due_date': r_date,
+                    'due_time': r_time + ':00',
+                    'reminder_sent_at': None,
+                }
+                supabase.table('tasks').update(update).eq('id', task_id).execute()
+                return redirect(url_for('lead_detail', task_id=task_id,
+                                        reminder_set='1', rdate=r_date, rtime=r_time))
+        if update:
+            supabase.table('tasks').update(update).eq('id', task_id).execute()
+        return redirect(url_for('lead_detail', task_id=task_id))
+
+    # ── Parse description ─────────────────────────────────────────────────
+    desc = t.get('description') or ''
+
+    def _field(prefix, text):
+        m = re.search(rf'^{re.escape(prefix)}\s*(.+)$', text, re.MULTILINE)
+        return m.group(1).strip() if m else ''
+
+    phone   = _field('Phone:', desc)
+    email   = _field('Email:', desc)
+    crm_url = _field('CRM:', desc)
+    os_url  = _field('OpenSolar:', desc)
+    if os_url.lower() in ('pending', ''): os_url = ''
+
+    # Split description into CUSTOMER REQUIREMENTS / MY NOTES sections
+    NOTES_SEP = 'MY NOTES:'
+    if NOTES_SEP in desc:
+        cust_raw, notes_raw = desc.split(NOTES_SEP, 1)
+        notes_raw = notes_raw.strip()
+    else:
+        cust_raw, notes_raw = desc, ''
+
+    # Strip Phone/Email/CRM/OpenSolar/Sub-note header lines from customer requirements
+    cust_lines = [ln for ln in cust_raw.splitlines()
+                  if not ln.startswith(('Phone:', 'Email:', 'CRM:', 'OpenSolar:', 'Sub-note:'))]
+    cust_text = '\n'.join(cust_lines).strip()
+
+    sub_note = _field('Sub-note:', desc)
+
+    # Extract Pipereply contact ID from CRM URL
+    crm_cid = ''
+    if crm_url:
+        m = re.search(r'/detail/([A-Za-z0-9]+)', crm_url)
+        if m: crm_cid = m.group(1)
+
+    # ── Page data ─────────────────────────────────────────────────────────
+    name        = t.get('client_name') or t.get('title') or 'Unknown Lead'
+    lead_status = t.get('lead_status') or 'new_lead'
+    badge_text  = STATUS_LABELS.get(lead_status, '🔵 NEW LEAD')
+    badge_color = STATUS_COLORS.get(lead_status, '#1e40af')
+    src = t.get('source') or t.get('category') or 'DSW Solar'
+    try:
+        cdt = datetime.fromisoformat(t['created_at'].replace('Z', '+00:00')).astimezone(aest)
+        created_str = cdt.strftime('%-d %b %Y')
+    except Exception:
+        created_str = (t.get('created_at') or '')[:10]
+
+    addr_raw = _field('Address:', desc)
+    maps_url = ('https://maps.google.com/?q=' + urllib.parse.quote(addr_raw)) if addr_raw else ''
+
+    STATUSES = [
+        ('Intro Call',        'intro_call',        '#1e40af'),
+        ('Site Visit',        'site_visit_booked', '#7c3aed'),
+        ('Awaiting Docs',     'awaiting_docs',     '#b45309'),
+        ('Build Quote',       'build_quote',       '#0369a1'),
+        ('Quote Sent',        'quote_submitted',   '#0891b2'),
+        ('Quote Follow Up',   'quote_followup',    '#0e7490'),
+        ('Revise Quote',      'revise_quote',      '#7c3aed'),
+        ('Deciding',          'customer_deciding', '#b45309'),
+        ('Nurture',           'nurture',           '#6b7280'),
+        ('No Reply 📵',       'no_reply',          '#6b7280'),
+        ('WON 🎉',            'won',               '#10b981'),
+        ('LOST ❌',           'lost',              '#ef4444'),
+    ]
+
+    tomorrow = (datetime.now(aest) + timedelta(days=1)).strftime('%Y-%m-%d')
+
+    return render_template_string(r"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{{ name }}</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#f1f5f9;min-height:100vh}
+.hdr{background:#1e40af;color:#fff;padding:18px 16px 14px}
+.hdr-row{display:flex;justify-content:space-between;align-items:center;gap:8px}
+.hdr h1{font-size:17px;font-weight:700;opacity:.85;margin-bottom:6px}
+.badge{display:inline-block;padding:5px 13px;border-radius:20px;font-size:12px;font-weight:700;white-space:nowrap;background:rgba(255,255,255,.22)}
+.hdr-meta{font-size:12px;opacity:.7;margin-top:6px}
+.card{background:#fff;border-radius:12px;padding:16px;margin:10px 12px;box-shadow:0 1px 4px rgba(0,0,0,.08)}
+.sec{font-size:10px;font-weight:700;color:#9ca3af;text-transform:uppercase;letter-spacing:.8px;margin-bottom:10px}
+.name-row{display:flex;justify-content:space-between;align-items:center;gap:10px}
+.lead-name{font-size:20px;font-weight:700;color:#111;flex:1}
+.call-btn{display:inline-flex;align-items:center;gap:6px;background:#10b981;color:#fff;padding:10px 16px;border-radius:9px;text-decoration:none;font-weight:700;font-size:14px;white-space:nowrap;flex-shrink:0}
+.addr-link{display:block;color:#1e40af;text-decoration:none;font-size:14px;margin-top:10px;font-weight:500}
+.btn-row{display:flex;flex-wrap:wrap;gap:8px}
+.btn{display:inline-block;padding:10px 18px;border-radius:9px;text-decoration:none;font-weight:700;font-size:14px;color:#fff;text-align:center;border:none;cursor:pointer}
+.btn-blue{background:#1e40af}
+.btn-amber{background:#f59e0b}
+.req-box{background:#f8fafc;border-radius:8px;padding:13px;font-size:14px;line-height:1.7;white-space:pre-wrap;color:#374151}
+textarea{width:100%;border:1.5px solid #e2e8f0;border-radius:9px;padding:11px;font-size:14px;font-family:inherit;resize:vertical;min-height:110px;outline:none;color:#111}
+textarea:focus{border-color:#1e40af;box-shadow:0 0 0 3px rgba(30,64,175,.1)}
+.save-btn{background:#1e40af;color:#fff;border:none;border-radius:9px;padding:11px;font-size:14px;font-weight:700;cursor:pointer;width:100%;margin-top:8px}
+.sbtn{display:inline-block;padding:8px 12px;border-radius:8px;font-size:12px;font-weight:700;color:#fff;text-decoration:none;white-space:nowrap}
+.dbtn{display:inline-block;padding:8px 13px;border-radius:8px;font-size:13px;font-weight:600;color:#fff;text-decoration:none;background:#6b7280}
+.toast{position:fixed;top:16px;left:50%;transform:translateX(-50%);background:#065f46;color:#fff;padding:10px 20px;border-radius:10px;font-size:14px;font-weight:600;z-index:999;display:none}
+</style>
+</head>
+<body>
+
+<div id="toast" class="toast"></div>
+
+<div class="hdr">
+  <div>
+    <h1>New DSW Lead</h1>
+    <form action="/task/{{ task_id }}/sub_note" method="POST" style="margin:6px 0 4px">
+      <input type="text" name="sub_note" value="{{ sub_note | e }}"
+             placeholder="Sub-status note (e.g. Tried once — try again tomorrow)..."
+             style="width:100%;background:rgba(255,255,255,0.15);border:1px solid rgba(255,255,255,0.3);border-radius:6px;padding:7px 10px;color:#fff;font-size:13px;outline:none;font-family:inherit"
+             onblur="this.form.submit()">
+    </form>
+    <div class="hdr-row">
+      <span class="badge" style="background:{{ badge_color }}">{{ badge_text }}</span>
+    </div>
+    <div class="hdr-meta">{{ created_str }} &middot; {{ src }}</div>
+  </div>
+</div>
+
+<!-- Name + Call -->
+<div class="card">
+  <div class="name-row">
+    <div class="lead-name">{{ name }}</div>
+    {% if phone %}<a href="tel:{{ phone }}" class="call-btn">📞 Call</a>{% endif %}
+  </div>
+  {% if email %}<a href="mailto:{{ email }}" class="addr-link">✉️ {{ email }}</a>{% endif %}
+  {% if addr_raw %}<a href="{{ maps_url }}" class="addr-link" target="_blank">📍 {{ addr_raw }}</a>{% endif %}
+</div>
+
+<!-- Pipereply + OpenSolar -->
+{% if crm_url or os_url %}
+<div class="card">
+  <div class="btn-row">
+    {% if crm_url %}<a href="{{ crm_url }}" class="btn btn-blue" target="_blank">Pipereply</a>{% endif %}
+    {% if os_url %}<a href="{{ os_url }}" class="btn btn-amber" target="_blank">☀️ OpenSolar</a>{% endif %}
+  </div>
+</div>
+{% endif %}
+
+<!-- Customer Requirements -->
+{% if cust_text %}
+<div class="card">
+  <div class="sec">Customer Requirements</div>
+  <div class="req-box">{{ cust_text }}</div>
+</div>
+{% endif %}
+
+<!-- My Notes -->
+<div class="card">
+  <div class="sec">My Notes</div>
+  <form action="/task/{{ task_id }}/notes" method="POST">
+    <textarea name="notes" placeholder="Call notes, outcome, next steps...">{{ notes_raw }}</textarea>
+    <button type="submit" class="save-btn">Save Notes</button>
+  </form>
+</div>
+
+<!-- Lead Status -->
+<div class="card">
+  <div class="sec">Lead Status</div>
+  <div class="btn-row">
+    {% for label, slug, col in statuses %}
+    <a href="?action=set_status&status={{ slug }}"
+       class="sbtn"
+       style="background:{{ col }};{% if lead_status == slug %}outline:3px solid #000;{% endif %}">{{ label }}</a>
+    {% endfor %}
+  </div>
+</div>
+
+<!-- Task Delay -->
+<div class="card">
+  <div class="sec">Remind Me</div>
+  <div class="btn-row">
+    <a href="?action=delay_1hour"          class="dbtn">+1 Hour</a>
+    <a href="?action=delay_1day"           class="dbtn">+1 Day</a>
+    <a href="?action=delay_next_day_8am"   class="dbtn">Tmrw 8am</a>
+    <a href="?action=delay_next_day_9am"   class="dbtn">Tmrw 9am</a>
+    <a href="?action=delay_next_monday_9am" class="dbtn">Mon 9am</a>
+  </div>
+  <form method="GET" action="" style="margin-top:12px;display:flex;flex-wrap:wrap;gap:8px;align-items:center">
+    <input type="hidden" name="action" value="set_custom">
+    <input type="date" name="date" value="{{ tomorrow }}"
+           style="flex:1;min-width:130px;border:1.5px solid #e2e8f0;border-radius:8px;padding:9px 10px;font-size:14px;font-family:inherit;outline:none;color:#111">
+    <input type="time" name="time" value="09:00"
+           style="width:110px;border:1.5px solid #e2e8f0;border-radius:8px;padding:9px 10px;font-size:14px;font-family:inherit;outline:none;color:#111">
+    <button type="submit"
+            style="background:#7c3aed;color:#fff;border:none;border-radius:8px;padding:9px 16px;font-size:14px;font-weight:700;cursor:pointer;white-space:nowrap">Set Reminder</button>
+  </form>
+</div>
+
+<script>
+// Show toast if ?saved=1
+if(location.search.includes('saved=1')){
+  var t=document.getElementById('toast');
+  t.textContent='Notes saved ✓';
+  t.style.display='block';
+  setTimeout(function(){t.style.display='none';
+    history.replaceState(null,'',location.pathname);},2500);
+}
+// Show toast if ?reminder_set=1
+var sp=new URLSearchParams(location.search);
+if(sp.get('reminder_set')==='1'){
+  var rd=sp.get('rdate')||'';
+  var rt=sp.get('rtime')||'';
+  var t=document.getElementById('toast');
+  t.textContent='Reminder set for '+rd+' at '+rt+' ✓';
+  t.style.display='block';
+  setTimeout(function(){t.style.display='none';
+    history.replaceState(null,'',location.pathname);},3000);
+}
+</script>
+</body>
+</html>""",
+        name=name, badge_text=badge_text, badge_color=badge_color,
+        src=src, created_str=created_str,
+        phone=phone, email=email, addr_raw=addr_raw, maps_url=maps_url,
+        crm_url=crm_url, os_url=os_url,
+        cust_text=cust_text, notes_raw=notes_raw,
+        lead_status=lead_status, statuses=STATUSES,
+        task_id=task_id, tomorrow=tomorrow, sub_note=sub_note,
+    )
+
+
+@app.route('/task/<task_id>/notes', methods=['POST'])
+def lead_save_notes(task_id):
+    """Save MY NOTES section to task description and replace Pipereply CRM note."""
+    import re, requests as rq
+
+    notes_text = request.form.get('notes', '').strip()
+
+    # Strip email signature lines
+    _sig_re = re.compile(
+        r'^(best regards|kind regards|regards|cheers|thanks|thank you)\s*[,.]?\s*$'
+        r'|^rob\s+lowe\s*$'
+        r'|^m:\s*[\d\s\+]+$'
+        r'|^e:\s*\S+@\S+$'
+        r'|^w:\s*https?://'
+        r'|^(qld|sa|vic|nsw|act|wa|nt|tas)\s*:'
+        r'|^--\s*$',
+        re.IGNORECASE,
+    )
+    trimmed = []
+    for _line in notes_text.split('\n'):
+        if _sig_re.match(_line.strip()):
+            break
+        trimmed.append(_line)
+    notes_text = '\n'.join(trimmed).strip()
+
+    # Fetch current task
+    try:
+        res = supabase.table('tasks').select('description').eq('id', task_id).single().execute()
+        t = res.data
+    except Exception:
+        return redirect(url_for('lead_detail', task_id=task_id, saved='1'))
+
+    desc = t.get('description') or ''
+    NOTES_SEP = 'MY NOTES:'
+
+    # Rebuild description: keep everything before MY NOTES:, replace after
+    if NOTES_SEP in desc:
+        cust_part = desc.split(NOTES_SEP, 1)[0].rstrip()
+    else:
+        cust_part = desc.rstrip()
+
+    new_desc = cust_part + '\n\n' + NOTES_SEP + '\n' + notes_text if notes_text else cust_part
+    supabase.table('tasks').update({'description': new_desc}).eq('id', task_id).execute()
+
+    # Replace Pipereply CRM note body
+    PIPEREPLY_TOKEN = os.getenv('PIPEREPLY_TOKEN')
+    crm_url = ''
+    m = re.search(r'^CRM:\s*(.+)$', desc, re.MULTILINE)
+    if m: crm_url = m.group(1).strip()
+    crm_cid = ''
+    if crm_url:
+        m2 = re.search(r'/detail/([A-Za-z0-9]+)', crm_url)
+        if m2: crm_cid = m2.group(1)
+
+    if crm_cid and PIPEREPLY_TOKEN and notes_text:
+        PR_H = {'Authorization': f'Bearer {PIPEREPLY_TOKEN}',
+                'Content-Type': 'application/json', 'Version': '2021-07-28'}
+        PR_BASE = 'https://services.leadconnectorhq.com'
+        aest = pytz.timezone('Australia/Brisbane')
+        ts = datetime.now(aest).strftime('%-d %b %Y %I:%M %p')
+        try:
+            # Find existing notes for this contact and replace the latest, or create new
+            r_notes = rq.get(f'{PR_BASE}/contacts/{crm_cid}/notes', headers=PR_H, timeout=8)
+            existing_notes = r_notes.json().get('notes', []) if r_notes.ok else []
+            # Look for a note with "MY NOTES" tag to replace
+            my_note = next((n for n in existing_notes if 'MY NOTES' in (n.get('body') or '')), None)
+            note_body = f'MY NOTES ({ts}):\n{notes_text}'
+            if my_note:
+                rq.put(f'{PR_BASE}/contacts/{crm_cid}/notes/{my_note["id"]}',
+                       headers=PR_H, json={'body': note_body}, timeout=8)
+            else:
+                rq.post(f'{PR_BASE}/contacts/{crm_cid}/notes',
+                        headers=PR_H, json={'body': note_body}, timeout=8)
+        except Exception as e:
+            print(f'[LEAD NOTES] Pipereply note error: {e}')
+
+    return redirect(url_for('lead_detail', task_id=task_id, saved='1'))
+
+
+@app.route('/task/<task_id>/sub_note', methods=['POST'])
+def lead_save_sub_note(task_id):
+    """Save the Sub-status note line in the task description."""
+    import re as _re
+    sub_note = request.form.get('sub_note', '').strip()
+
+    try:
+        res = supabase.table('tasks').select('description').eq('id', task_id).single().execute()
+        t = res.data
+    except Exception:
+        return redirect(url_for('lead_detail', task_id=task_id))
+
+    desc = t.get('description') or ''
+
+    if _re.search(r'^Sub-note:.*$', desc, _re.MULTILINE):
+        if sub_note:
+            new_desc = _re.sub(r'^Sub-note:.*$', f'Sub-note: {sub_note}', desc, flags=_re.MULTILINE)
+        else:
+            new_desc = _re.sub(r'^Sub-note:.*\n?', '', desc, flags=_re.MULTILINE)
+    else:
+        if sub_note:
+            # Insert after the OpenSolar line if present, otherwise prepend
+            if _re.search(r'^OpenSolar:', desc, _re.MULTILINE):
+                new_desc = _re.sub(r'^(OpenSolar:[^\n]*)', rf'\1\nSub-note: {sub_note}', desc, flags=_re.MULTILINE, count=1)
+            else:
+                new_desc = f'Sub-note: {sub_note}\n' + desc
+        else:
+            new_desc = desc
+
+    supabase.table('tasks').update({'description': new_desc}).eq('id', task_id).execute()
+    return redirect(url_for('lead_detail', task_id=task_id, saved='1'))
+
+
 @app.route('/action/<token>')
 def email_action(token):
     """Handle email action links without login"""
@@ -4115,18 +4743,14 @@ def email_action(token):
         return redirect(url_for('edit_task', task_id=task_id))
 
     elif action == 'delay_1hour':
-        # Delay task by 1 hour
-        current_time = task_data.get('due_time', '09:00:00')
-        try:
-            parts = current_time.split(':')
-            hour = int(parts[0]) + 1
-            if hour >= 24:
-                hour = 23
-            new_time = f"{hour:02d}:{parts[1]}:00"
-        except:
-            new_time = '10:00:00'
+        # Delay task by 1 hour from NOW (not from original due time)
+        aest = pytz.timezone('Australia/Brisbane')
+        new_dt = datetime.now(aest) + timedelta(hours=1)
+        new_time = new_dt.strftime('%H:%M:00')
+        new_date = new_dt.date().isoformat()
 
         supabase.table('tasks').update({
+            'due_date': new_date,
             'due_time': new_time,
             'reminder_sent_at': None  # Allow new reminder
         }).eq('id', task_id).execute()
@@ -4149,7 +4773,7 @@ def email_action(token):
             due_date = datetime.fromisoformat(current_date)
             new_date = (due_date + timedelta(days=1)).date().isoformat()
         except:
-            new_date = (datetime.now() + timedelta(days=1)).date().isoformat()
+            new_date = (datetime.now(pytz.timezone('Australia/Brisbane')) + timedelta(days=1)).date().isoformat()
 
         supabase.table('tasks').update({
             'due_date': new_date,
@@ -4166,6 +4790,37 @@ def email_action(token):
         </body>
         </html>
         """, title=task_data.get('title', 'Task'), new_date=new_date)
+
+    elif action in ('delay_next_day_8am', 'delay_next_day_9am', 'delay_next_monday_9am'):
+        aest = pytz.timezone('Australia/Brisbane')
+        now_aest = datetime.now(aest)
+        if action == 'delay_next_day_8am':
+            target = (now_aest + timedelta(days=1)).replace(hour=8, minute=0, second=0, microsecond=0)
+            label = 'Tomorrow 8:00 AM'
+        elif action == 'delay_next_day_9am':
+            target = (now_aest + timedelta(days=1)).replace(hour=9, minute=0, second=0, microsecond=0)
+            label = 'Tomorrow 9:00 AM'
+        else:
+            days_until_monday = (7 - now_aest.weekday()) % 7 or 7
+            target = (now_aest + timedelta(days=days_until_monday)).replace(hour=9, minute=0, second=0, microsecond=0)
+            label = 'Monday 9:00 AM'
+
+        supabase.table('tasks').update({
+            'due_date': target.date().isoformat(),
+            'due_time': target.strftime('%H:%M:%S'),
+            'reminder_sent_at': None
+        }).eq('id', task_id).execute()
+
+        return render_template_string("""
+        <html>
+        <body style="font-family: sans-serif; text-align: center; padding: 50px;">
+            <h2 style="color: #0EA5E9;">📅 Task Rescheduled</h2>
+            <p><strong>{{ title }}</strong></p>
+            <p>Moved to: {{ label }}</p>
+            <a href="https://www.jottask.app/dashboard" style="color: #6366F1;">Open Dashboard</a>
+        </body>
+        </html>
+        """, title=task_data.get('title', 'Task'), label=label)
 
     return redirect(url_for('login'))
 
@@ -4231,7 +4886,7 @@ def chat_message():
             f"""
             <h2>Support Chat Escalated</h2>
             <p><strong>User:</strong> {user.data['full_name']} ({user.data['email']})</p>
-            <p><strong>Time:</strong> {datetime.now().strftime('%Y-%m-%d %H:%M')}</p>
+            <p><strong>Time:</strong> {datetime.now(pytz.timezone('Australia/Brisbane')).strftime('%Y-%m-%d %H:%M')} AEST</p>
             <hr>
             <h3>Conversation History:</h3>
             {history}
@@ -4263,22 +4918,48 @@ def chat_message():
 
 
 # ============================================
-# ADMIN DASHBOARD
+# SYSTEM HEALTH ENDPOINTS
 # ============================================
 
-def admin_required(f):
-    """Decorator to require admin access"""
-    @wraps(f)
-    def decorated_function(*args, **kwargs):
-        if 'user_id' not in session:
-            return redirect(url_for('login'))
-        # Check if user is admin (your user ID)
-        admin_id = 'e515407e-dbd6-4331-a815-1878815c89bc'
-        if session['user_id'] != admin_id:
-            return "Access denied", 403
-        return f(*args, **kwargs)
-    return decorated_function
+@app.route('/health')
+def health_check():
+    """Public health endpoint for uptime monitors. No auth required.
 
+    Returns 200 as long as the web process can serve requests and reach
+    the database.  Worker/canary status is included in the JSON body for
+    informational purposes but does NOT cause a 503 — the web service
+    being up is what the uptime monitor cares about.  Worker-down alerts
+    are handled separately by send_self_alert / daily health digest.
+    """
+    try:
+        from monitoring import get_system_health, get_last_canary_status
+        health = get_system_health()
+        canary = get_last_canary_status()
+        return jsonify({
+            'status': 'ok',
+            'web': 'healthy',
+            'worker': health['worker_status'],
+            'last_heartbeat': health['last_heartbeat'],
+            'heartbeat_age_minutes': health['heartbeat_age_minutes'],
+            'canary_status': canary['status'],
+            'last_canary': canary['last_canary'],
+        }), 200
+    except Exception as e:
+        # If we can't even query the DB, THEN the web service is unhealthy
+        return jsonify({'status': 'error', 'web': 'unhealthy', 'detail': str(e)}), 503
+
+
+@app.route('/api/system/health')
+@login_required
+def api_system_health():
+    """Authenticated endpoint with full health data."""
+    from monitoring import get_system_health
+    return jsonify(get_system_health())
+
+
+# ============================================
+# ADMIN DASHBOARD
+# ============================================
 
 @app.route('/admin')
 @admin_required
@@ -4357,6 +5038,43 @@ def admin_dashboard():
                     <div class="stat-value">{stats['total_projects']}</div>
                     <div class="stat-label">Total Projects</div>
                 </div>
+            </div>
+
+            <div class="card" style="padding: 20px;">
+                <div style="display: flex; align-items: center; gap: 12px; flex-wrap: wrap;">
+                    <div style="flex: 1; min-width: 200px;">
+                        <strong>Reminder Tools</strong>
+                        <div style="color: #6B7280; font-size: 14px; margin-top: 2px;">Resend sends emails now. Reset clears reminder flags so the scheduler picks them up again.</div>
+                    </div>
+                    <button id="resendBtn" onclick="resendReminders()" style="background: #6366F1; color: white; border: none; padding: 10px 16px; border-radius: 8px; font-weight: 600; cursor: pointer; white-space: nowrap; font-size: 13px;">Resend Now</button>
+                    <button id="resetBtn" onclick="resetReminders()" style="background: #F59E0B; color: white; border: none; padding: 10px 16px; border-radius: 8px; font-weight: 600; cursor: pointer; white-space: nowrap; font-size: 13px;">Reset Flags</button>
+                </div>
+                <div id="reminderResult" style="display: none; margin-top: 12px; padding: 12px; background: #F9FAFB; border-radius: 8px; font-size: 13px; font-family: monospace; white-space: pre-wrap; max-height: 300px; overflow-y: auto;"></div>
+                <script>
+                async function adminAction(url, btn, label) {{
+                    const result = document.getElementById('reminderResult');
+                    btn.disabled = true;
+                    btn.textContent = 'Working...';
+                    btn.style.opacity = '0.6';
+                    result.style.display = 'block';
+                    result.textContent = 'Processing...';
+                    try {{
+                        const res = await fetch(url, {{ method: 'POST' }});
+                        const data = await res.json();
+                        btn.textContent = data.message ? 'Done' : 'No results';
+                        btn.style.background = '#10B981';
+                        result.textContent = JSON.stringify(data, null, 2);
+                        setTimeout(() => {{ btn.textContent = label; btn.style.background = url.includes('reset') ? '#F59E0B' : '#6366F1'; btn.style.opacity = '1'; btn.disabled = false; }}, 5000);
+                    }} catch(e) {{
+                        btn.textContent = 'Error';
+                        btn.style.background = '#EF4444';
+                        result.textContent = 'Error: ' + e.message;
+                        setTimeout(() => {{ btn.textContent = label; btn.style.background = url.includes('reset') ? '#F59E0B' : '#6366F1'; btn.style.opacity = '1'; btn.disabled = false; }}, 5000);
+                    }}
+                }}
+                function resendReminders() {{ adminAction('/admin/resend-reminders', document.getElementById('resendBtn'), 'Resend Now'); }}
+                function resetReminders() {{ adminAction('/admin/reset-reminders', document.getElementById('resetBtn'), 'Reset Flags'); }}
+                </script>
             </div>
 
             <div class="card">
@@ -4508,6 +5226,111 @@ def admin_chat_reply(conversation_id):
     return redirect(url_for('admin_chat_view', conversation_id=conversation_id))
 
 
+@app.route('/admin/resend-reminders', methods=['POST'])
+@admin_required
+def admin_resend_reminders():
+    """Resend reminders for ALL tasks due in the last 48 hours (whether or not they were already sent)."""
+    from saas_scheduler import generate_reminder_email_html
+
+    today = datetime.now(pytz.UTC).strftime('%Y-%m-%d')
+    cutoff = (datetime.now(pytz.UTC) - timedelta(hours=48)).strftime('%Y-%m-%d')
+
+    print(f"[resend-reminders] cutoff={cutoff} today={today}")
+
+    # Find PENDING tasks due between cutoff and today (skip completed — they don't need reminders)
+    result = supabase.table('tasks') \
+        .select('id, title, due_date, due_time, priority, status, client_name, user_id') \
+        .eq('status', 'pending') \
+        .gte('due_date', cutoff) \
+        .lte('due_date', today) \
+        .execute()
+
+    all_tasks = result.data or []
+    print(f"[resend-reminders] found {len(all_tasks)} pending tasks due {cutoff} to {today}")
+
+    if not all_tasks:
+        return jsonify({
+            'message': 'No tasks due in the last 48 hours',
+            'sent': 0,
+            'debug_cutoff': cutoff,
+            'debug_today': today
+        })
+
+    # Get user details for each task
+    user_ids = list(set(t['user_id'] for t in all_tasks if t.get('user_id')))
+    users = {}
+    for uid in user_ids:
+        u = supabase.table('users').select('id, email, full_name, timezone, alternate_emails').eq('id', uid).execute()
+        if u.data:
+            users[uid] = u.data[0]
+
+    sent_count = 0
+    details = []
+    for task in all_tasks:
+        user_id = task.get('user_id')
+        user = users.get(user_id)
+        if not user:
+            continue
+
+        display_time = task.get('due_time', 'today')
+        subject = f"Overdue: {task['title'][:50]} - due {task.get('due_date')} {display_time or ''}"
+        html_content = generate_reminder_email_html(task, display_time or 'today', user.get('full_name', ''), is_overdue=True)
+
+        # Send to primary email only
+        success, error = send_email(user['email'], subject, html_content,
+                                   category='reminder', user_id=user_id, task_id=task['id'])
+        if success:
+            sent_count += 1
+            details.append(f"{task['title'][:40]} -> {user['email']}")
+        else:
+            details.append(f"FAILED {task['title'][:40]} -> {user['email']}: {error}")
+
+        # NOTE: Do NOT update reminder_sent_at here — this is a manual resend,
+        # the scheduler should continue its normal reminder cycle independently
+
+    return jsonify({
+        'message': f'Sent {sent_count} reminder(s) for {len(all_tasks)} task(s)',
+        'sent': sent_count,
+        'tasks': details
+    })
+
+
+@app.route('/admin/reset-reminders', methods=['POST'])
+@admin_required
+def admin_reset_reminders():
+    """Reset reminder_sent_at to NULL for pending overdue tasks so the scheduler picks them up again."""
+    today = datetime.now(pytz.UTC).strftime('%Y-%m-%d')
+    seven_days_ago = (datetime.now(pytz.UTC) - timedelta(days=7)).strftime('%Y-%m-%d')
+
+    # Find pending tasks that are overdue (due_date <= today) and have reminder_sent_at set
+    result = supabase.table('tasks') \
+        .select('id, title, due_date, due_time, reminder_sent_at') \
+        .eq('status', 'pending') \
+        .not_.is_('reminder_sent_at', 'null') \
+        .lte('due_date', today) \
+        .gte('due_date', seven_days_ago) \
+        .execute()
+
+    tasks = result.data or []
+    if not tasks:
+        return jsonify({'message': 'No pending overdue tasks with reminder flags to reset', 'reset': 0})
+
+    reset_count = 0
+    details = []
+    for task in tasks:
+        supabase.table('tasks').update({
+            'reminder_sent_at': None
+        }).eq('id', task['id']).execute()
+        reset_count += 1
+        details.append(f"{task['title'][:50]} (due {task.get('due_date')})")
+
+    return jsonify({
+        'message': f'Reset {reset_count} task(s) — scheduler will re-remind on next tick',
+        'reset': reset_count,
+        'tasks': details
+    })
+
+
 # ============================================
 # MAIN
 # ============================================
@@ -4517,6 +5340,34 @@ def admin_chat_reply(conversation_id):
 # ============================================
 # V2 APPROVAL ROUTES (Tiered Action System)
 # ============================================
+
+def _resolve_user_for_action(sb, pending_row):
+    """Resolve user_id and business_id from a pending_actions row.
+    Uses the row's user_id when present, falls back to env var for legacy actions."""
+    action_user_id = pending_row.get('user_id')
+    fallback_admin_id = os.getenv('FALLBACK_ADMIN_ID', '')
+
+    if not action_user_id:
+        if fallback_admin_id:
+            print(f"[WARNING] pending_action has no user_id, using FALLBACK_ADMIN_ID")
+            action_user_id = fallback_admin_id
+        else:
+            print(f"[WARNING] pending_action has no user_id and no FALLBACK_ADMIN_ID set")
+            return None, None
+
+    try:
+        user_result = sb.table('users').select('id, ai_context').eq('id', action_user_id).execute()
+        if user_result.data:
+            user = user_result.data[0]
+            ai_ctx = user.get('ai_context') or {}
+            businesses = ai_ctx.get('businesses', {})
+            default_biz = ai_ctx.get('default_business', '')
+            business_id = businesses.get(default_biz, '')
+            return str(user['id']), business_id
+    except Exception:
+        pass
+
+    return str(action_user_id), ''
 
 @app.route('/action/approve')
 def approve_action():
@@ -4544,14 +5395,15 @@ def approve_action():
         action_type = action.get('action_type', '')
         action_title = action.get('title', 'Unknown action')
         today_str = datetime.now(pytz.timezone('Australia/Brisbane')).strftime('%Y-%m-%d')
+        resolved_user_id, resolved_business_id = _resolve_user_for_action(sb, action_data)
         task_data = {
             'title': action_title,
             'description': action.get('description', action.get('crm_notes', '')),
             'status': 'pending',
             'created_at': datetime.now(pytz.UTC).isoformat(),
             'due_date': action.get('due_date') or today_str,
-            'business_id': os.getenv('BUSINESS_ID_CCE', 'feb14276-5c3d-4fcf-af06-9a8f54cf7159'),
-            'user_id': os.getenv('ROB_USER_ID', 'e515407e-dbd6-4331-a815-1878815c89bc'),
+            'business_id': resolved_business_id,
+            'user_id': resolved_user_id,
             'client_name': action.get('customer_name', ''),
             'priority': 'medium',
         }
@@ -4564,6 +5416,37 @@ def approve_action():
             task_data['category'] = 'calendar'
         elif action_type == 'change_deal_status':
             task_data['category'] = 'deals'
+        # Try CRM push for update_crm actions before falling back to task creation
+        crm_synced = False
+        crm_message = ''
+        if action_type == 'update_crm':
+            try:
+                from crm_manager import CRMManager
+                _crm = CRMManager()
+                crm_result = _crm.execute_crm_update(
+                    user_id=resolved_user_id,
+                    customer_name=action.get('customer_name', ''),
+                    crm_notes=action.get('crm_notes', action.get('description', '')),
+                    customer_email=action.get('customer_email', ''),
+                )
+                if crm_result.success:
+                    crm_synced = True
+                    crm_message = crm_result.message
+                    print(f"CRM sync success: {crm_message}")
+                else:
+                    print(f"CRM sync skipped (falling back to task): {crm_result.message}")
+            except Exception as crm_err:
+                print(f"CRM sync error (falling back to task): {crm_err}")
+        if crm_synced:
+            # CRM push succeeded — mark synced, skip task creation
+            sb.table('pending_actions').update({
+                'status': 'approved',
+                'crm_synced': True,
+                'crm_synced_at': datetime.now(pytz.UTC).isoformat(),
+                'processed_at': datetime.now(pytz.UTC).isoformat()
+            }).eq('token', token).execute()
+            return f'<html><body style="font-family:-apple-system,sans-serif;max-width:500px;margin:50px auto;text-align:center"><div style="background:#dcfce7;border-radius:12px;padding:30px"><h2 style="color:#166534">CRM Updated</h2><p><strong>{_escape_html(action_title)}</strong></p><p>{_escape_html(crm_message)}</p><a href="https://www.jottask.app/dashboard" style="display:inline-block;margin-top:16px;padding:10px 24px;background:#22c55e;color:white;text-decoration:none;border-radius:8px;font-weight:bold">Dashboard</a></div></body></html>'
+        # Fallback: create task (original behavior)
         sb.table('tasks').insert(task_data).execute()
         sb.table('pending_actions').update({
             'status': 'approved',
@@ -4784,14 +5667,15 @@ def save_action():
             is_complete = (submit_action == 'save_complete')
             action_type = existing_action.get('action_type', '')
             today_str = datetime.now(pytz.timezone('Australia/Brisbane')).strftime('%Y-%m-%d')
+            resolved_user_id, resolved_business_id = _resolve_user_for_action(sb, action_row)
             task_data = {
                 'title': existing_action.get('title', 'Unknown action'),
                 'description': existing_action.get('description', existing_action.get('crm_notes', '')),
                 'status': 'completed' if is_complete else 'pending',
                 'created_at': datetime.now(pytz.UTC).isoformat(),
                 'due_date': existing_action.get('due_date') or today_str,
-                'business_id': os.getenv('BUSINESS_ID_CCE', 'feb14276-5c3d-4fcf-af06-9a8f54cf7159'),
-                'user_id': os.getenv('ROB_USER_ID', 'e515407e-dbd6-4331-a815-1878815c89bc'),
+                'business_id': resolved_business_id,
+                'user_id': resolved_user_id,
                 'client_name': existing_action.get('customer_name', ''),
                 'priority': existing_action.get('priority', 'medium'),
             }
@@ -4807,12 +5691,38 @@ def save_action():
             elif action_type == 'change_deal_status':
                 task_data['category'] = 'deals'
 
-            sb.table('tasks').insert(task_data).execute()
-            new_status = 'completed' if is_complete else 'approved'
-            sb.table('pending_actions').update({
-                'status': new_status,
-                'processed_at': datetime.now(pytz.UTC).isoformat()
-            }).eq('token', token).execute()
+            # Try CRM push for update_crm actions
+            crm_synced = False
+            if action_type == 'update_crm' and not is_complete:
+                try:
+                    from crm_manager import CRMManager
+                    _crm = CRMManager()
+                    crm_result = _crm.execute_crm_update(
+                        user_id=resolved_user_id,
+                        customer_name=existing_action.get('customer_name', ''),
+                        crm_notes=existing_action.get('crm_notes', existing_action.get('description', '')),
+                        customer_email=existing_action.get('customer_email', ''),
+                    )
+                    if crm_result.success:
+                        crm_synced = True
+                        print(f"CRM sync success (save_approve): {crm_result.message}")
+                except Exception as crm_err:
+                    print(f"CRM sync error in save_action (falling back to task): {crm_err}")
+
+            if crm_synced:
+                sb.table('pending_actions').update({
+                    'status': 'approved',
+                    'crm_synced': True,
+                    'crm_synced_at': datetime.now(pytz.UTC).isoformat(),
+                    'processed_at': datetime.now(pytz.UTC).isoformat()
+                }).eq('token', token).execute()
+            else:
+                sb.table('tasks').insert(task_data).execute()
+                new_status = 'completed' if is_complete else 'approved'
+                sb.table('pending_actions').update({
+                    'status': new_status,
+                    'processed_at': datetime.now(pytz.UTC).isoformat()
+                }).eq('token', token).execute()
 
             action_title = existing_action.get('title', 'Unknown action')
             if is_complete:
@@ -4838,6 +5748,145 @@ def save_action():
     except Exception as e:
         print(f'Error saving action: {e}')
         return f'<html><body style="font-family:-apple-system,sans-serif;max-width:500px;margin:50px auto;text-align:center"><div style="background:#fee2e2;border-radius:12px;padding:30px"><h2 style="color:#991b1b">Error</h2><p>{str(e)}</p></div></body></html>', 500
+
+
+@app.route('/debug/reminders')
+def debug_reminders():
+    """Diagnostic: show what the scheduler sees and optionally send missed reminders.
+    Add ?send=1 to actually send them. Protected by internal API key or logged-in admin."""
+    api_key = request.args.get('key', '')
+    internal_key = os.getenv('INTERNAL_API_KEY', '')
+    user_id = session.get('user_id')
+    if api_key != internal_key and not user_id:
+        return 'Unauthorized', 401
+
+    from email_utils import send_email as _send_email
+    should_send = request.args.get('send') == '1'
+
+    lines = []
+    lines.append(f"<h2>Reminder Diagnostics</h2>")
+    lines.append(f"<pre>")
+    _aest = pytz.timezone('Australia/Brisbane')
+    _now_utc = datetime.now(pytz.UTC)
+    _now_aest = datetime.now(_aest)
+    lines.append(f"Server UTC:  {_now_utc.strftime('%Y-%m-%d %H:%M:%S')}")
+    lines.append(f"AEST local:  {_now_aest.strftime('%Y-%m-%d %H:%M:%S')}")
+    lines.append(f"AEST date:   {_now_aest.date().isoformat()}")
+    lines.append(f"")
+
+    try:
+        sb = create_client(SUPABASE_URL, SUPABASE_KEY)
+
+        # Users
+        users_result = sb.table('users').select('id, email, full_name, timezone').execute()
+        users = {u['id']: u for u in (users_result.data or [])}
+        lines.append(f"Users: {len(users)}")
+
+        # All pending tasks
+        all_tasks = sb.table('tasks') \
+            .select('id, title, due_date, due_time, status, client_name, user_id, reminder_sent_at, priority') \
+            .eq('status', 'pending') \
+            .execute()
+
+        raw = all_tasks.data or []
+        with_time = [t for t in raw if t.get('due_time')]
+        lines.append(f"Pending tasks total: {len(raw)}")
+        lines.append(f"Pending with due_time: {len(with_time)}")
+        lines.append(f"")
+
+        from datetime import timedelta as _td
+        sent_count = 0
+
+        for t in with_time:
+            uid = t.get('user_id')
+            user = users.get(uid)
+            if not user:
+                lines.append(f"TASK {t['id'][:8]}  '{t['title'][:40]}'  -> NO USER FOUND (uid={uid})")
+                continue
+
+            user_tz = pytz.timezone(user.get('timezone', 'Australia/Brisbane'))
+            now = datetime.now(user_tz)
+            today_str = now.date().isoformat()
+            yesterday_str = (now.date() - _td(days=1)).isoformat()
+
+            due_date = str(t.get('due_date', ''))[:10]
+            due_time = str(t.get('due_time', ''))
+            reminder_sent = t.get('reminder_sent_at')
+
+            is_today = (due_date == today_str)
+            is_yesterday = (due_date == yesterday_str)
+
+            # For send mode, look back up to 7 days; for display, just today+yesterday
+            if should_send:
+                try:
+                    due_dt = datetime.strptime(due_date, '%Y-%m-%d').date()
+                    days_ago = (now.date() - due_dt).days
+                    if days_ago < 0 or days_ago > 7:
+                        continue
+                except:
+                    if not is_today and not is_yesterday:
+                        continue
+            else:
+                if not is_today and not is_yesterday:
+                    continue
+
+            # Parse time
+            parts = due_time.split(':')
+            try:
+                hour, minute = int(parts[0]), int(parts[1])
+            except:
+                lines.append(f"TASK {t['id'][:8]}  BAD TIME FORMAT: '{due_time}'")
+                continue
+
+            try:
+                due_dt = datetime.strptime(due_date, '%Y-%m-%d').date()
+                task_due = user_tz.localize(datetime(due_dt.year, due_dt.month, due_dt.day, hour, minute, 0))
+            except:
+                if is_today:
+                    task_due = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+                else:
+                    task_due = (now - _td(days=1)).replace(hour=hour, minute=minute, second=0, microsecond=0)
+
+            diff = (task_due - now).total_seconds() / 60
+
+            # Check already sent — simple: if reminder_sent_at is set, it's done
+            already_sent = bool(reminder_sent)
+
+            status_str = "ALREADY SENT" if already_sent else ("IN WINDOW" if diff <= 30 else f"not yet ({diff:.0f}m)")
+            if not already_sent and diff < 0:
+                status_str = f"OVERDUE {abs(diff):.0f}m - NEEDS SEND"
+
+            lines.append(f"TASK {t['id'][:8]}  '{t['title'][:40]}'  due={due_date} {due_time}  diff={diff:.0f}m  sent={reminder_sent}  -> {status_str}")
+
+            # Actually send if requested
+            if should_send and not already_sent and diff < 0:
+                display_time = task_due.strftime('%I:%M %p')
+                from saas_scheduler import generate_reminder_email_html
+                html = generate_reminder_email_html(t, display_time, user.get('full_name', ''), is_overdue=True)
+                subject = f"Overdue: {t['title'][:50]} - was due {display_time}"
+                ok, err = _send_email(user['email'], subject, html)
+                if ok:
+                    sb.table('tasks').update({
+                        'reminder_sent_at': datetime.now(pytz.UTC).isoformat()
+                    }).eq('id', t['id']).execute()
+                    lines.append(f"   >>> SENT to {user['email']}")
+                    sent_count += 1
+                else:
+                    lines.append(f"   >>> SEND FAILED: {err}")
+                import time as _time
+                _time.sleep(1)  # Resend rate limit: 2 req/sec
+
+        if should_send:
+            lines.append(f"\nSent {sent_count} reminder(s)")
+        else:
+            lines.append(f"\nAdd ?send=1 to actually send overdue reminders")
+
+    except Exception as e:
+        import traceback
+        lines.append(f"ERROR: {e}\n{traceback.format_exc()}")
+
+    lines.append("</pre>")
+    return f'<html><body style="font-family:monospace;padding:20px;">{"<br>".join(lines)}</body></html>'
 
 
 if __name__ == '__main__':

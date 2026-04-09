@@ -1,0 +1,693 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"><meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<link rel="apple-touch-icon" href="/static/squad-icon.png">
+
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Squad — Team</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+         background: #f0fdf4; min-height: 100vh; color: #1a2e1a; }
+
+  .header {
+    background: linear-gradient(135deg, #15803d 0%, #166534 60%, #14532d 100%);
+    padding: 0 24px; box-shadow: 0 2px 8px rgba(0,0,0,.25);
+  }
+  .header-inner {
+    max-width: 1200px; margin: 0 auto;
+    display: flex; align-items: center; justify-content: space-between; height: 64px;
+  }
+  .header-logo { color: white; text-decoration: none; font-size: 20px; font-weight: 700; display:flex;align-items:center;gap:8px; }
+  .header-nav a {
+    color: rgba(255,255,255,.8); text-decoration: none; padding: 8px 14px;
+    border-radius: 8px; font-size: 14px; margin-left: 4px;
+  }
+  .header-nav a:hover, .header-nav a.active { background: rgba(255,255,255,.15); color: white; }
+  .back-link {
+    color: rgba(255,255,255,.7); text-decoration: none; font-size: 13px;
+    padding: 6px 12px; border: 1px solid rgba(255,255,255,.3); border-radius: 6px;
+  }
+
+  .page { max-width: 1200px; margin: 0 auto; padding: 28px 24px; }
+
+  /* ── Upload zone ───────────────────────────────── */
+  .upload-zone {
+    border: 2px dashed #86efac; border-radius: 12px; padding: 24px;
+    text-align: center; background: white; cursor: pointer; transition: all .15s;
+    margin-bottom: 24px;
+  }
+  .upload-zone:hover, .upload-zone.drag-over { border-color: #15803d; background: #f0fdf4; }
+  .upload-icon { font-size: 32px; display: block; margin-bottom: 6px; }
+  .upload-title { font-size: 14px; font-weight: 700; color: #15803d; margin-bottom: 3px; }
+  .upload-sub { font-size: 12px; color: #6b7280; }
+  .upload-input { display: none; }
+  .upload-btn {
+    display: inline-block; margin-top: 10px; background: #15803d; color: white;
+    padding: 8px 18px; border-radius: 8px; font-size: 13px; font-weight: 600;
+    border: none; cursor: pointer;
+  }
+  .upload-btn:hover { background: #166534; }
+  .file-chosen { margin-top: 6px; font-size: 12px; color: #166534; font-weight: 600; display: none; }
+
+  /* ── Tabs ───────────────────────────────────────── */
+  .tabs { display: flex; gap: 4px; margin-bottom: 20px; border-bottom: 2px solid #dcfce7; }
+  .tab-btn {
+    padding: 10px 22px; border-radius: 8px 8px 0 0; font-size: 14px; font-weight: 600;
+    border: none; background: transparent; cursor: pointer; color: #4b5563;
+    position: relative; bottom: -2px; border-bottom: 2px solid transparent;
+    transition: all .15s;
+  }
+  .tab-btn.active { color: #15803d; border-bottom-color: #15803d; background: white; }
+  .tab-btn:hover:not(.active) { background: #f0fdf4; color: #15803d; }
+  .tab-pane { display: none; }
+  .tab-pane.active { display: block; }
+
+  /* ── Card ──────────────────────────────────────── */
+  .card { background: white; border-radius: 14px; box-shadow: 0 1px 4px rgba(0,0,0,.07); overflow: hidden; }
+
+  /* ── Table ──────────────────────────────────────── */
+  table { width: 100%; border-collapse: collapse; }
+  thead th {
+    text-align: left; padding: 10px 12px; background: #f0fdf4;
+    color: #15803d; font-size: 11px; text-transform: uppercase; letter-spacing: .4px;
+  }
+  tbody td { padding: 9px 12px; border-bottom: 1px solid #f0fdf4; font-size: 14px; color: #374151; vertical-align: middle; }
+  tbody tr:last-child td { border-bottom: none; }
+  tbody tr:hover td { background: #f9fef9; }
+  .number { font-weight: 800; color: #15803d; font-size: 16px; }
+
+  /* ── Parent chips on Players tab ────────────────── */
+  .parent-chips { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; }
+  .btn-add-parent { padding:2px 8px;background:#eff6ff;color:#1e40af;border:1px solid #bfdbfe;border-radius:12px;font-size:11px;font-weight:600;cursor:pointer;white-space:nowrap; }
+  .btn-add-parent:hover { background:#dbeafe; }
+  .parent-chip {
+    font-size: 11px; background: #f0fdf4; color: #15803d; border: 1px solid #bbf7d0;
+    border-radius: 20px; padding: 2px 9px; white-space: nowrap;
+  }
+  .no-parents { font-size: 12px; color: #9ca3af; font-style: italic; }
+
+  /* ── Inline edit inputs ─────────────────────────── */
+  .row-input {
+    width: 100%; padding: 5px 8px; border: 1.5px solid #86efac; border-radius: 6px;
+    font-size: 13px; background: white; color: #1a2e1a; font-family: inherit;
+  }
+  .row-input:focus { outline: none; border-color: #15803d; }
+
+  /* ── Add row form ────────────────────────────────── */
+  .add-row { background: #f0fdf4; }
+  .add-row td { padding: 9px 12px; }
+  .add-row input, .add-row select {
+    width: 100%; padding: 7px 10px; border: 1.5px solid #86efac; border-radius: 7px;
+    font-size: 13px; background: white; color: #1a2e1a;
+  }
+  .add-row input:focus, .add-row select:focus { outline: none; border-color: #15803d; }
+
+  /* ── Buttons ─────────────────────────────────────── */
+  .btn-add {
+    background: #15803d; color: white; border: none; border-radius: 7px;
+    padding: 7px 14px; font-size: 13px; font-weight: 600; cursor: pointer; white-space: nowrap;
+  }
+  .btn-add:hover { background: #166534; }
+  .btn-remove {
+    background: #fef2f2; color: #dc2626; border: 1px solid #fecaca; border-radius: 6px;
+    padding: 4px 8px; font-size: 12px; font-weight: 600; cursor: pointer;
+  }
+  .btn-remove:hover { background: #fee2e2; }
+  .btn-edit {
+    background: #f0fdf4; color: #15803d; border: 1px solid #86efac; border-radius: 6px;
+    padding: 4px 8px; font-size: 12px; font-weight: 600; cursor: pointer;
+  }
+  .btn-edit:hover { background: #dcfce7; }
+  .btn-save {
+    background: #15803d; color: white; border: none; border-radius: 6px;
+    padding: 4px 10px; font-size: 12px; font-weight: 600; cursor: pointer;
+  }
+  .btn-save:hover { background: #166534; }
+  .btn-cancel {
+    background: #f3f4f6; color: #374151; border: 1px solid #e5e7eb; border-radius: 6px;
+    padding: 4px 8px; font-size: 12px; cursor: pointer;
+  }
+  .btn-send {
+    background: #eff6ff; color: #1d4ed8; border: 1px solid #bfdbfe; border-radius: 6px;
+    padding: 4px 8px; font-size: 12px; font-weight: 600; cursor: pointer; white-space: nowrap;
+  }
+  .btn-send:hover { background: #dbeafe; }
+  .btn-send:disabled { opacity: .5; cursor: not-allowed; }
+  .row-actions { display: flex; gap: 5px; align-items: center; flex-wrap: wrap; }
+
+  /* ── Magic link ──────────────────────────────────── */
+  .magic-link {
+    font-size: 11px; color: #6b7280; font-family: monospace;
+    background: #f3f4f6; padding: 2px 6px; border-radius: 4px;
+    max-width: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    display: inline-block; vertical-align: middle; cursor: pointer;
+  }
+  .magic-link:hover { background: #e5e7eb; }
+
+  /* ── Section heading ────────────────────────────── */
+  .section-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px; }
+  .section-title { font-size: 17px; font-weight: 800; color: #15803d; }
+
+  /* ── Empty ───────────────────────────────────────── */
+  .empty { text-align: center; padding: 36px; color: #6b7280; font-size: 14px; }
+  .empty-icon { font-size: 36px; display: block; margin-bottom: 8px; }
+
+  /* ── Toast ───────────────────────────────────────── */
+  #toast {
+    position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%);
+    background: #15803d; color: white; padding: 10px 22px; border-radius: 10px;
+    font-size: 14px; font-weight: 600; display: none; z-index: 9999;
+  }
+</style>
+
+<style id="squad-mobile">
+@media (max-width: 768px) {
+  body { background: #f0fdf4; -webkit-text-size-adjust: 100%; }
+
+  /* Safe area: push header below status bar / Dynamic Island */
+  .header { padding-top: env(safe-area-inset-top); }
+
+  /* Slim 44px nav */
+  .header-inner { height: 44px !important; }
+  .header-nav { display: none !important; }
+  .back-link { display: none !important; }
+  .header-logo { font-size: 16px !important; }
+
+  /* Full-width page, pad bottom for tab bar + home bar */
+  .page { padding: 16px 0 calc(72px + env(safe-area-inset-bottom)) !important; }
+
+  /* Full-width card panels */
+  .card { border-radius: 0 !important; margin-bottom: 8px;
+          box-shadow: none !important;
+          border-top: 1px solid #e5e7eb; border-bottom: 1px solid #e5e7eb; }
+
+  /* Upload zone padded */
+  .upload-zone { border-radius: 0 !important; margin: 0 0 8px !important; }
+
+  /* Tabs touch-friendly */
+  .tab-btn { min-height: 44px !important; padding: 0 16px !important; font-size: 14px !important; }
+
+  /* 44px touch targets across the board */
+  button, .btn, a.btn, input[type=submit],
+  .btn-edit, .btn-send, .btn-del, .btn-add { min-height: 44px !important; }
+
+  /* Prevent iOS font bump */
+  input, select, textarea { font-size: 16px !important; }
+
+  /* Scrollable tables */
+  .card { overflow-x: auto; }
+  table { font-size: 13px !important; min-width: 540px; }
+  tbody td { padding: 10px 10px !important; }
+}
+
+/* ── Bottom tab bar ── */
+.sq-tab-bar { display: none; }
+
+@media (max-width: 768px) {
+  .sq-tab-bar {
+    display: flex;
+    position: fixed;
+    bottom: 0; left: 0; right: 0;
+    background: rgba(255,255,255,.97);
+    -webkit-backdrop-filter: blur(12px);
+    backdrop-filter: blur(12px);
+    border-top: 1px solid rgba(0,0,0,.1);
+    padding-bottom: env(safe-area-inset-bottom);
+    z-index: 9999;
+    box-shadow: 0 -1px 0 rgba(0,0,0,.08);
+  }
+  .sq-tab-bar a {
+    flex: 1; display: flex; flex-direction: column;
+    align-items: center; justify-content: center;
+    padding: 8px 2px 4px; text-decoration: none;
+    color: #9ca3af; font-size: 10px; font-weight: 500;
+    gap: 3px; min-height: 54px; position: relative;
+    -webkit-tap-highlight-color: transparent;
+    transition: color .15s;
+  }
+  .sq-tab-bar a.active { color: #15803d; }
+  .sq-tab-bar a .tab-icon { font-size: 24px; line-height: 1; }
+  .sq-tab-bar a.tab-add {
+    color: white; background: #15803d; border-radius: 14px;
+    margin: 7px 6px; padding: 0; min-height: 44px;
+    font-size: 28px; font-weight: 300; flex: 0 0 50px; line-height: 1;
+  }
+  .sq-tab-badge {
+    position: absolute; top: 6px; right: calc(50% - 20px);
+    background: #ef4444; color: white; border-radius: 999px;
+    font-size: 9px; font-weight: 700; padding: 1px 5px;
+    line-height: 1.4; min-width: 16px; text-align: center;
+  }
+}
+</style>
+</head>
+<body>
+
+<header class="header">
+  <div class="header-inner">
+    <a href="/squad/" class="header-logo">⚽ Squad</a>
+    <nav class="header-nav">
+      <a href="/squad/">Dashboard</a>
+      <a href="/squad/inbox">Inbox</a>
+      <a href="/squad/team" class="active">Team</a>
+      <a href="/squad/inbox/paste">Paste</a>
+    </nav>
+    <a href="/dashboard" class="back-link">← Jottask</a>
+  </div>
+</header>
+
+<main class="page">
+
+  <!-- ── Upload Team Sheet ──────────────────────────────────────── -->
+  <form method="POST" action="/squad/team/upload" enctype="multipart/form-data" id="uploadForm">
+    <div class="upload-zone" id="uploadZone" onclick="document.getElementById('teamSheetFile').click()">
+      <span class="upload-icon">📋</span>
+      <div class="upload-title">Drop a team sheet here or click to upload</div>
+      <div class="upload-sub">Image or CSV — Claude will extract players and parents automatically</div>
+      <input type="file" name="team_sheet" id="teamSheetFile" class="upload-input"
+             accept=".jpg,.jpeg,.png,.gif,.webp,.csv,.txt,.pdf">
+      <div class="file-chosen" id="fileChosen"></div>
+      <button type="submit" class="upload-btn" id="uploadBtn" style="display:none;">
+        🤖 Parse with AI
+      </button>
+    </div>
+  </form>
+
+  <!-- ── Tabs ───────────────────────────────────────────────────── -->
+  <div class="tabs">
+    <button class="tab-btn active" onclick="switchTab('players', this)">⚽ Players ({{ players | length }})</button>
+    <button class="tab-btn"        onclick="switchTab('parents', this)">👨‍👩‍👧 Parents ({{ parents | length }})</button>
+  </div>
+
+  <!-- ══════════════════════════════════════════════════════════════
+       TAB: PLAYERS
+  ══════════════════════════════════════════════════════════════ -->
+
+  {# Build a lookup: player_id → list of parents #}
+  {% set parent_map = {} %}
+  {% for pa in parents %}
+    {% if pa.player_id %}
+      {% if pa.player_id not in parent_map %}
+        {% set _ = parent_map.update({pa.player_id: []}) %}
+      {% endif %}
+      {% set _ = parent_map[pa.player_id].append(pa) %}
+    {% endif %}
+  {% endfor %}
+
+  <div class="tab-pane active" id="tab-players">
+    <div class="card">
+      <table>
+        <thead>
+          <tr>
+            <th style="width:55px">#</th>
+            <th>Player Name</th>
+            <th>Position</th>
+            <th>Parents</th>
+            <th style="width:150px"></th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for p in players %}
+          {% set linked_parents = parent_map.get(p.id, []) %}
+          <tr id="player-{{ p.id }}">
+            <td>
+              <span class="vw number">{{ p.shirt_number if p.shirt_number else '—' }}</span>
+              <input class="ed row-input" data-f="shirt_number" type="number" min="1" max="99"
+                     value="{{ p.shirt_number or '' }}" placeholder="#" style="display:none;width:50px">
+            </td>
+            <td>
+              <strong class="vw disp-name">{{ p.player_name }}</strong>
+              <input class="ed row-input" data-f="player_name"
+                     value="{{ p.player_name }}" placeholder="Player name" style="display:none">
+            </td>
+            <td>
+              <span class="vw disp-pos">{{ p.position or '—' }}</span>
+              <input class="ed row-input" data-f="position" list="position-options"
+                     value="{{ p.position or '' }}" placeholder="Position" style="display:none">
+            </td>
+            <td>
+              <div class="parent-chips" id="chips-{{ p.id }}">
+                {% if linked_parents %}
+                  {% for pa in linked_parents %}
+                  <span class="parent-chip" title="{{ pa.parent_email or '' }}">{{ pa.parent_name }}</span>
+                  {% endfor %}
+                {% else %}
+                  <span class="no-parents" id="no-parents-{{ p.id }}">None linked</span>
+                {% endif %}
+                <button class="btn-add-parent" onclick="showAddParent('{{ p.id }}')" title="Add parent">+ Add</button>
+              </div>
+              <!-- Inline add-parent form (hidden by default) -->
+              <div id="add-parent-form-{{ p.id }}" style="display:none;margin-top:6px">
+                <form method="POST" action="/squad/team/parents/add" style="display:flex;flex-wrap:wrap;gap:4px;align-items:center">
+                  <input type="hidden" name="player_id" value="{{ p.id }}">
+                  <input type="text"  name="parent_name"  placeholder="Name *" required
+                         style="width:120px;padding:4px 7px;border:1px solid #d1d5db;border-radius:6px;font-size:13px">
+                  <input type="email" name="parent_email" placeholder="Email"
+                         style="width:150px;padding:4px 7px;border:1px solid #d1d5db;border-radius:6px;font-size:13px">
+                  <input type="tel"   name="parent_phone" placeholder="Phone"
+                         style="width:110px;padding:4px 7px;border:1px solid #d1d5db;border-radius:6px;font-size:13px">
+                  <button type="submit"
+                          style="padding:4px 10px;background:#16a34a;color:white;border:none;border-radius:6px;font-size:13px;font-weight:600;cursor:pointer">Save</button>
+                  <button type="button" onclick="hideAddParent('{{ p.id }}')"
+                          style="padding:4px 8px;background:#f3f4f6;color:#374151;border:1px solid #d1d5db;border-radius:6px;font-size:13px;cursor:pointer">✕</button>
+                </form>
+              </div>
+            </td>
+            <td>
+              <div class="vw row-actions">
+                <button class="btn-edit" onclick="editRow('player','{{ p.id }}')">Edit</button>
+                <form method="POST" action="/squad/team/players/{{ p.id }}/remove" style="display:inline"
+                      onsubmit="return confirm('Remove {{ p.player_name }}?')">
+                  <button type="submit" class="btn-remove">Remove</button>
+                </form>
+              </div>
+              <div class="ed row-actions" style="display:none">
+                <button class="btn-save" onclick="savePlayer('{{ p.id }}')">Save</button>
+                <button class="btn-cancel" onclick="cancelRow('player','{{ p.id }}')">Cancel</button>
+              </div>
+            </td>
+          </tr>
+          {% endfor %}
+
+          <!-- Add player row -->
+          <tr class="add-row">
+            <form method="POST" action="/squad/team/players/add">
+              <td><input type="number" name="shirt_number" placeholder="#" min="1" max="99" style="width:50px"></td>
+              <td><input type="text" name="player_name" placeholder="Player name" required></td>
+              <td><input type="text" name="position" list="position-options" placeholder="Position (optional)"></td>
+              <td></td>
+              <td><button type="submit" class="btn-add">+ Add Player</button></td>
+            </form>
+          </tr>
+        </tbody>
+      </table>
+      {% if not players %}
+      <div class="empty">
+        <span class="empty-icon">⚽</span>
+        No players yet — add one above or upload a team sheet.
+      </div>
+      {% endif %}
+    </div>
+  </div>
+
+  <!-- ══════════════════════════════════════════════════════════════
+       TAB: PARENTS
+  ══════════════════════════════════════════════════════════════ -->
+  <div class="tab-pane" id="tab-parents">
+    <p style="font-size:13px;color:#6b7280;margin-bottom:12px;">
+      Each parent gets their <strong>own</strong> magic link and RSVP — add Mum <em>and</em> Dad as separate entries linked to the same player.
+    </p>
+    <div class="card">
+      <table>
+        <thead>
+          <tr>
+            <th>Parent Name</th>
+            <th>Email</th>
+            <th>Phone</th>
+            <th>Player</th>
+            <th>Magic Link</th>
+            <th style="width:190px"></th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for pa in parents %}
+          {% set player = pa.squad_players %}
+          <tr id="parent-{{ pa.id }}">
+            <td>
+              <strong class="vw disp-pname">{{ pa.parent_name }}</strong>
+              <input class="ed row-input" data-f="parent_name"
+                     value="{{ pa.parent_name }}" placeholder="Parent name" style="display:none">
+            </td>
+            <td>
+              <span class="vw disp-email">{{ pa.parent_email or '—' }}</span>
+              <input class="ed row-input" data-f="parent_email" type="email"
+                     value="{{ pa.parent_email or '' }}" placeholder="Email" style="display:none">
+            </td>
+            <td>
+              <span class="vw disp-phone">{{ pa.parent_phone or '—' }}</span>
+              <input class="ed row-input" data-f="parent_phone" type="tel"
+                     value="{{ pa.parent_phone or '' }}" placeholder="Phone" style="display:none">
+            </td>
+            <td>
+              <span class="vw disp-pplayer">{{ player.player_name if player else '—' }}</span>
+              <select class="ed row-input" data-f="player_id" style="display:none">
+                <option value="">— None —</option>
+                {% for p in players %}
+                <option value="{{ p.id }}" {{ 'selected' if pa.player_id == p.id else '' }}>{{ p.player_name }}</option>
+                {% endfor %}
+              </select>
+            </td>
+            <td>
+              {% if pa.magic_token %}
+              <span class="magic-link" title="{{ app_url }}/p/{{ pa.magic_token }}"
+                    onclick="copyLink('{{ app_url }}/p/{{ pa.magic_token }}', this)">
+                /p/{{ pa.magic_token[:12] }}…
+              </span>
+              {% else %}—{% endif %}
+            </td>
+            <td>
+              <div class="vw row-actions">
+                <button class="btn-edit" onclick="editRow('parent','{{ pa.id }}')">Edit</button>
+                <button class="btn-send" id="send-{{ pa.id }}"
+                        {% if not (pa.parent_email and pa.magic_token) %}disabled title="Add email first"{% endif %}
+                        onclick="sendLink('{{ pa.id }}', this)">
+                  📧 Send Link
+                </button>
+                <form method="POST" action="/squad/team/parents/{{ pa.id }}/remove" style="display:inline"
+                      onsubmit="return confirm('Remove {{ pa.parent_name }}?')">
+                  <button type="submit" class="btn-remove">Remove</button>
+                </form>
+              </div>
+              <div class="ed row-actions" style="display:none">
+                <button class="btn-save" onclick="saveParent('{{ pa.id }}')">Save</button>
+                <button class="btn-cancel" onclick="cancelRow('parent','{{ pa.id }}')">Cancel</button>
+              </div>
+            </td>
+          </tr>
+          {% endfor %}
+
+          <!-- Add parent row -->
+          <tr class="add-row">
+            <form method="POST" action="/squad/team/parents/add">
+              <td><input type="text" name="parent_name" placeholder="Parent name" required></td>
+              <td><input type="email" name="parent_email" placeholder="Email (optional)"></td>
+              <td><input type="tel" name="parent_phone" placeholder="Phone (optional)"></td>
+              <td>
+                <select name="player_id">
+                  <option value="">Link to player (optional)</option>
+                  {% for p in players %}
+                  <option value="{{ p.id }}">{{ p.player_name }}</option>
+                  {% endfor %}
+                </select>
+              </td>
+              <td colspan="2"><button type="submit" class="btn-add">+ Add Parent</button></td>
+            </form>
+          </tr>
+        </tbody>
+      </table>
+      {% if not parents %}
+      <div class="empty">
+        <span class="empty-icon">👨‍👩‍👧</span>
+        No parents added yet. Add manually or upload a team sheet.
+      </div>
+      {% endif %}
+    </div>
+  </div>
+
+</main>
+
+<datalist id="position-options">
+  <option value="Goalkeeper">
+  <option value="Defender">
+  <option value="Centre Back">
+  <option value="Full Back">
+  <option value="Left Back">
+  <option value="Right Back">
+  <option value="Midfielder">
+  <option value="Central Midfielder">
+  <option value="Defensive Midfielder">
+  <option value="Attacking Midfielder">
+  <option value="Left Midfielder">
+  <option value="Right Midfielder">
+  <option value="Forward">
+  <option value="Striker">
+  <option value="Centre Forward">
+  <option value="Left Wing">
+  <option value="Right Wing">
+  <option value="Winger">
+</datalist>
+
+<!-- ── iOS bottom tab bar ──────────────────────────────────────────── -->
+<nav class="sq-tab-bar">
+  <a href="/squad/" id="sqtab-schedule">
+    <span class="tab-icon">📅</span>Schedule
+  </a>
+  <a href="/squad/team" id="sqtab-team" class="active">
+    <span class="tab-icon">👥</span>Team
+  </a>
+  <a href="/squad/inbox/paste" class="tab-add" aria-label="Add event">+</a>
+  <a href="/squad/inbox" id="sqtab-inbox">
+    <span class="tab-icon">📬</span>Inbox
+    {% if pending_count is defined and pending_count > 0 %}<span class="sq-tab-badge">{{ pending_count }}</span>{% endif %}
+  </a>
+  <a href="/squad/team#parents" id="sqtab-parents">
+    <span class="tab-icon">👨‍👩‍👧</span>Parents
+  </a>
+</nav>
+
+<div id="toast"></div>
+
+<script>
+// ── Tab switching ────────────────────────────────────────────────
+
+function switchTab(name, btn) {
+  document.querySelectorAll('.tab-pane').forEach(p => p.classList.remove('active'));
+  document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+  document.getElementById('tab-' + name).classList.add('active');
+  btn.classList.add('active');
+  history.replaceState(null, '', '#' + name);
+  // Sync bottom tab bar
+  const teamTab    = document.getElementById('sqtab-team');
+  const parentsTab = document.getElementById('sqtab-parents');
+  if (teamTab && parentsTab) {
+    teamTab.classList.toggle('active', name !== 'parents');
+    parentsTab.classList.toggle('active', name === 'parents');
+  }
+}
+
+// Restore tab from hash on load + sync bottom tab bar active state
+window.addEventListener('DOMContentLoaded', () => {
+  const hash = location.hash.replace('#', '');
+  if (hash === 'parents') {
+    document.querySelectorAll('.tab-btn')[1].click();
+    // Highlight Parents in bottom tab bar
+    document.getElementById('sqtab-team').classList.remove('active');
+    document.getElementById('sqtab-parents').classList.add('active');
+  }
+});
+
+// ── Inline edit helpers ──────────────────────────────────────────
+
+function editRow(type, id) {
+  const row = document.getElementById(`${type}-${id}`);
+  row.querySelectorAll('.vw').forEach(el => el.style.display = 'none');
+  row.querySelectorAll('.ed').forEach(el => el.style.display = '');
+}
+
+function cancelRow(type, id) {
+  const row = document.getElementById(`${type}-${id}`);
+  row.querySelectorAll('.vw').forEach(el => el.style.display = '');
+  row.querySelectorAll('.ed').forEach(el => el.style.display = 'none');
+}
+
+async function savePlayer(id) {
+  const row = document.getElementById(`player-${id}`);
+  const get = f => row.querySelector(`[data-f="${f}"]`).value.trim();
+  const data = { shirt_number: get('shirt_number'), player_name: get('player_name'), position: get('position') };
+  const res = await fetch(`/squad/team/players/${id}/update`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data),
+  });
+  const json = await res.json();
+  if (json.ok) {
+    row.querySelector('.number').textContent    = data.shirt_number || '—';
+    row.querySelector('.disp-name').textContent = data.player_name;
+    row.querySelector('.disp-pos').textContent  = data.position || '—';
+    cancelRow('player', id);
+    showToast('Player saved');
+  } else { showToast(json.error || 'Save failed', false); }
+}
+
+async function saveParent(id) {
+  const row = document.getElementById(`parent-${id}`);
+  const get = f => row.querySelector(`[data-f="${f}"]`).value.trim();
+  const playerSel = row.querySelector('[data-f="player_id"]');
+  const playerName = playerSel.options[playerSel.selectedIndex]?.text || '—';
+  const data = {
+    parent_name: get('parent_name'), parent_email: get('parent_email'),
+    parent_phone: get('parent_phone'), player_id: get('player_id'),
+  };
+  const res = await fetch(`/squad/team/parents/${id}/update`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data),
+  });
+  const json = await res.json();
+  if (json.ok) {
+    row.querySelector('.disp-pname').textContent   = data.parent_name;
+    row.querySelector('.disp-email').textContent   = data.parent_email  || '—';
+    row.querySelector('.disp-phone').textContent   = data.parent_phone  || '—';
+    row.querySelector('.disp-pplayer').textContent = data.player_id ? playerName : '—';
+    const sendBtn = document.getElementById(`send-${id}`);
+    if (sendBtn) { sendBtn.disabled = !data.parent_email; }
+    cancelRow('parent', id);
+    showToast('Parent saved');
+  } else { showToast(json.error || 'Save failed', false); }
+}
+
+// ── File picker / drag-drop ──────────────────────────────────────
+
+document.getElementById('teamSheetFile').addEventListener('change', function() {
+  const file = this.files[0]; if (!file) return;
+  document.getElementById('fileChosen').textContent = '📎 ' + file.name;
+  document.getElementById('fileChosen').style.display = 'block';
+  document.getElementById('uploadBtn').style.display = 'inline-block';
+});
+
+const zone = document.getElementById('uploadZone');
+zone.addEventListener('dragover', e => { e.preventDefault(); zone.classList.add('drag-over'); });
+zone.addEventListener('dragleave', () => zone.classList.remove('drag-over'));
+zone.addEventListener('drop', e => {
+  e.preventDefault(); zone.classList.remove('drag-over');
+  const file = e.dataTransfer.files[0]; if (!file) return;
+  const input = document.getElementById('teamSheetFile');
+  const dt = new DataTransfer(); dt.items.add(file); input.files = dt.files;
+  input.dispatchEvent(new Event('change'));
+});
+
+document.getElementById('uploadForm').addEventListener('submit', function() {
+  const btn = document.getElementById('uploadBtn'); btn.disabled = true;
+  btn.innerHTML = '⏳ Parsing…';
+});
+
+// ── Copy magic link ──────────────────────────────────────────────
+
+function copyLink(url, el) {
+  navigator.clipboard.writeText(url).then(() => {
+    const orig = el.textContent; el.textContent = 'Copied!';
+    setTimeout(() => { el.textContent = orig; }, 1500);
+  });
+}
+
+// ── Send magic link email ────────────────────────────────────────
+
+async function sendLink(parentId, btn) {
+  btn.disabled = true; btn.textContent = '⏳ Sending…';
+  try {
+    const res = await fetch(`/squad/team/parents/${parentId}/send-link`, { method: 'POST' });
+    const data = await res.json();
+    if (res.ok && data.ok) { btn.textContent = '✅ Sent!'; showToast('Magic link sent!'); }
+    else { btn.textContent = '❌ Failed'; btn.disabled = false; showToast(data.error || 'Send failed', false); }
+  } catch (e) { btn.textContent = '❌ Error'; btn.disabled = false; }
+}
+
+// ── Toast ────────────────────────────────────────────────────────
+
+function showToast(msg, ok = true) {
+  const t = document.getElementById('toast');
+  t.textContent = msg; t.style.background = ok ? '#15803d' : '#dc2626';
+  t.style.display = 'block'; setTimeout(() => { t.style.display = 'none'; }, 2500);
+}
+
+function showAddParent(playerId) {
+  document.getElementById('add-parent-form-' + playerId).style.display = 'block';
+  document.getElementById('add-parent-form-' + playerId).querySelector('input[name="parent_name"]').focus();
+}
+function hideAddParent(playerId) {
+  var f = document.getElementById('add-parent-form-' + playerId);
+  f.style.display = 'none';
+  f.querySelector('form').reset();
+}
+</script>
+</body>
+</html>

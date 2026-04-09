@@ -5,13 +5,26 @@ Handles user signup, login, logout using Supabase Auth
 
 import os
 from functools import wraps
-from flask import session, redirect, url_for, request
+from flask import session, redirect, url_for, request, jsonify
 from supabase import create_client, Client
 
-# Initialize Supabase client
+# Initialize Supabase client (service role — used for all DB queries)
 SUPABASE_URL = os.getenv('SUPABASE_URL')
 SUPABASE_KEY = os.getenv('SUPABASE_KEY')
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+
+
+def _auth_client() -> Client:
+    """Return a fresh Supabase client for auth-only operations.
+
+    sign_in_with_password / sign_up / sign_out mutate the client's internal
+    JWT.  If we use the global service-role client for those calls, its auth
+    headers get overwritten with a short-lived user token that expires in ~1h,
+    causing PGRST303 JWT-expired errors on every subsequent DB query.
+
+    Using a throwaway client keeps the global client's headers clean.
+    """
+    return create_client(SUPABASE_URL, SUPABASE_KEY)
 
 
 def login_required(f):
@@ -19,9 +32,50 @@ def login_required(f):
     @wraps(f)
     def decorated_function(*args, **kwargs):
         if 'user_id' not in session:
-            return redirect(url_for('auth_login', next=request.url))
+            # Return 401 JSON for API/AJAX requests instead of redirect
+            # (fetch() silently follows redirects, making the caller think it succeeded)
+            if request.path.startswith('/api/') or request.headers.get('Content-Type') == 'application/json':
+                return jsonify({'error': 'Authentication required'}), 401
+            return redirect(url_for('login', next=request.url))
         return f(*args, **kwargs)
     return decorated_function
+
+
+def _ensure_role_in_session():
+    """Load role into session if not already cached."""
+    if 'user_role' not in session and 'user_id' in session:
+        try:
+            result = supabase.table('users').select('role, organization_id').eq('id', session['user_id']).single().execute()
+            if result.data:
+                session['user_role'] = result.data.get('role', 'user')
+                session['organization_id'] = result.data.get('organization_id')
+        except:
+            session['user_role'] = 'user'
+
+
+def role_required(*allowed_roles):
+    """Decorator: require one of the specified roles."""
+    def decorator(f):
+        @wraps(f)
+        def decorated_function(*args, **kwargs):
+            if 'user_id' not in session:
+                return redirect(url_for('login', next=request.url))
+            _ensure_role_in_session()
+            if session.get('user_role') not in allowed_roles:
+                return "Access denied", 403
+            return f(*args, **kwargs)
+        return decorated_function
+    return decorator
+
+
+def admin_required(f):
+    """Require global_admin role."""
+    return role_required('global_admin')(f)
+
+
+def company_admin_required(f):
+    """Require company_admin or global_admin role."""
+    return role_required('global_admin', 'company_admin')(f)
 
 
 def get_current_user():
@@ -48,7 +102,7 @@ def signup_user(email, password, full_name=None, timezone='Australia/Brisbane'):
     """
     try:
         # Create auth user
-        auth_response = supabase.auth.sign_up({
+        auth_response = _auth_client().auth.sign_up({
             'email': email,
             'password': password
         })
@@ -83,7 +137,7 @@ def login_user(email, password):
     Returns: (success: bool, user_or_error: dict/str)
     """
     try:
-        auth_response = supabase.auth.sign_in_with_password({
+        auth_response = _auth_client().auth.sign_in_with_password({
             'email': email,
             'password': password
         })
@@ -100,6 +154,8 @@ def login_user(email, password):
             if user.data:
                 session['user_name'] = user.data.get('full_name', email.split('@')[0])
                 session['timezone'] = user.data.get('timezone', 'Australia/Brisbane')
+                session['user_role'] = user.data.get('role', 'user')
+                session['organization_id'] = user.data.get('organization_id')
 
             return True, auth_response.user
         else:
@@ -115,7 +171,7 @@ def login_user(email, password):
 def logout_user():
     """Log out the current user"""
     try:
-        supabase.auth.sign_out()
+        _auth_client().auth.sign_out()
     except:
         pass
 
@@ -126,7 +182,7 @@ def logout_user():
 def reset_password(email):
     """Send password reset email"""
     try:
-        supabase.auth.reset_password_email(email)
+        _auth_client().auth.reset_password_email(email)
         return True, "Password reset email sent"
     except Exception as e:
         return False, str(e)

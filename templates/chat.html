@@ -1,0 +1,976 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Chat - Jottask</title>
+    <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
+    <link rel="apple-touch-icon" href="/static/apple-touch-icon.png">
+    <meta name="theme-color" content="#6366F1">
+    <style>
+        :root {
+            --primary: #6366F1;
+            --primary-dark: #4F46E5;
+            --success: #10B981;
+            --warning: #F59E0B;
+            --danger: #EF4444;
+            --gray-50: #F9FAFB;
+            --gray-100: #F3F4F6;
+            --gray-200: #E5E7EB;
+            --gray-300: #D1D5DB;
+            --gray-400: #9CA3AF;
+            --gray-500: #6B7280;
+            --gray-700: #374151;
+            --gray-900: #111827;
+        }
+
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: var(--gray-50);
+            color: var(--gray-900);
+            line-height: 1.5;
+            height: 100vh;
+            overflow: hidden;
+        }
+
+        /* Layout */
+        .chat-layout {
+            display: flex;
+            height: 100vh;
+        }
+
+        /* Sidebar */
+        .sidebar {
+            width: 260px;
+            background: var(--gray-900);
+            color: white;
+            display: flex;
+            flex-direction: column;
+            flex-shrink: 0;
+            transition: transform 0.3s ease;
+        }
+
+        .sidebar-header {
+            padding: 16px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            border-bottom: 1px solid rgba(255,255,255,0.1);
+        }
+
+        .sidebar-brand {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            text-decoration: none;
+            color: white;
+            font-weight: 700;
+            font-size: 18px;
+        }
+
+        .sidebar-brand svg { width: 28px; height: 28px; }
+
+        .new-chat-btn {
+            background: var(--primary);
+            color: white;
+            border: none;
+            padding: 8px 14px;
+            border-radius: 8px;
+            font-size: 14px;
+            font-weight: 500;
+            cursor: pointer;
+            transition: background 0.2s;
+        }
+
+        .new-chat-btn:hover { background: var(--primary-dark); }
+
+        .sidebar-conversations {
+            flex: 1;
+            overflow-y: auto;
+            padding: 8px;
+        }
+
+        .conv-item {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 10px 12px;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 14px;
+            color: var(--gray-300);
+            transition: background 0.15s;
+            margin-bottom: 2px;
+        }
+
+        .conv-item:hover { background: rgba(255,255,255,0.08); }
+        .conv-item.active { background: rgba(255,255,255,0.12); color: white; }
+
+        .conv-item-title {
+            flex: 1;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .conv-delete-btn {
+            background: none;
+            border: none;
+            color: var(--gray-500);
+            cursor: pointer;
+            padding: 2px 6px;
+            border-radius: 4px;
+            font-size: 16px;
+            opacity: 0;
+            transition: opacity 0.15s;
+        }
+
+        .conv-item:hover .conv-delete-btn { opacity: 1; }
+        .conv-delete-btn:hover { color: var(--danger); background: rgba(255,255,255,0.08); }
+
+        .sidebar-footer {
+            padding: 12px 16px;
+            border-top: 1px solid rgba(255,255,255,0.1);
+        }
+
+        .sidebar-footer a {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            color: var(--gray-400);
+            text-decoration: none;
+            font-size: 14px;
+            padding: 8px;
+            border-radius: 8px;
+            transition: background 0.15s;
+        }
+
+        .sidebar-footer a:hover { background: rgba(255,255,255,0.08); color: white; }
+
+        /* Main chat area */
+        .chat-main {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            min-width: 0;
+        }
+
+        .chat-header {
+            background: white;
+            border-bottom: 1px solid var(--gray-200);
+            padding: 12px 20px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            height: 56px;
+            flex-shrink: 0;
+        }
+
+        .chat-header-left {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        .mobile-menu-btn {
+            display: none;
+            background: none;
+            border: none;
+            font-size: 22px;
+            cursor: pointer;
+            color: var(--gray-700);
+            padding: 4px;
+        }
+
+        .chat-header-title {
+            font-weight: 600;
+            font-size: 16px;
+            color: var(--gray-900);
+        }
+
+        .chat-header-right a {
+            color: var(--gray-500);
+            text-decoration: none;
+            font-size: 14px;
+            padding: 6px 12px;
+            border-radius: 6px;
+            transition: background 0.15s;
+        }
+
+        .chat-header-right a:hover { background: var(--gray-100); color: var(--primary); }
+
+        /* Messages area */
+        .messages-container {
+            flex: 1;
+            overflow-y: auto;
+            padding: 20px;
+            display: flex;
+            flex-direction: column;
+            gap: 16px;
+        }
+
+        .message {
+            max-width: 720px;
+            width: 100%;
+            margin: 0 auto;
+            display: flex;
+            gap: 12px;
+        }
+
+        .message-avatar {
+            width: 32px;
+            height: 32px;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: 600;
+            font-size: 14px;
+            flex-shrink: 0;
+        }
+
+        .message-user .message-avatar {
+            background: var(--primary);
+            color: white;
+        }
+
+        .message-assistant .message-avatar {
+            background: var(--success);
+            color: white;
+        }
+
+        .message-body {
+            flex: 1;
+            min-width: 0;
+        }
+
+        .message-role {
+            font-weight: 600;
+            font-size: 14px;
+            margin-bottom: 4px;
+            color: var(--gray-900);
+        }
+
+        .message-content {
+            font-size: 15px;
+            line-height: 1.6;
+            color: var(--gray-700);
+            white-space: pre-wrap;
+            word-break: break-word;
+        }
+
+        /* Tool result cards */
+        .tool-card {
+            background: white;
+            border: 1px solid var(--gray-200);
+            border-radius: 10px;
+            padding: 12px 16px;
+            margin-top: 8px;
+            font-size: 14px;
+        }
+
+        .tool-card-header {
+            font-size: 12px;
+            font-weight: 600;
+            color: var(--gray-400);
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            margin-bottom: 8px;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        .tool-card-success { border-left: 3px solid var(--success); }
+        .tool-card-error { border-left: 3px solid var(--danger); }
+
+        .task-list-item {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 6px 0;
+            border-bottom: 1px solid var(--gray-100);
+            font-size: 14px;
+        }
+
+        .task-list-item:last-child { border-bottom: none; }
+
+        .task-priority {
+            display: inline-block;
+            padding: 2px 6px;
+            border-radius: 4px;
+            font-size: 11px;
+            font-weight: 600;
+            text-transform: uppercase;
+        }
+
+        .priority-urgent { background: #FEE2E2; color: #991B1B; }
+        .priority-high { background: #FFF7ED; color: #9A3412; }
+        .priority-medium { background: #EFF6FF; color: #1E40AF; }
+        .priority-low { background: #F0FDF4; color: #166534; }
+
+        /* Tool thinking indicator */
+        .tool-thinking {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            color: var(--gray-400);
+            font-size: 13px;
+            padding: 4px 0;
+        }
+
+        .tool-thinking .spinner {
+            width: 14px;
+            height: 14px;
+            border: 2px solid var(--gray-200);
+            border-top-color: var(--primary);
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+        }
+
+        @keyframes spin { to { transform: rotate(360deg); } }
+
+        /* Streaming cursor */
+        .streaming-cursor::after {
+            content: '';
+            display: inline-block;
+            width: 2px;
+            height: 16px;
+            background: var(--primary);
+            margin-left: 2px;
+            vertical-align: text-bottom;
+            animation: blink 1s step-end infinite;
+        }
+
+        @keyframes blink { 50% { opacity: 0; } }
+
+        /* Empty state */
+        .empty-state {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            flex: 1;
+            padding: 40px;
+            text-align: center;
+        }
+
+        .empty-state h2 {
+            font-size: 24px;
+            font-weight: 700;
+            color: var(--gray-900);
+            margin-bottom: 8px;
+        }
+
+        .empty-state p {
+            color: var(--gray-500);
+            font-size: 15px;
+            max-width: 400px;
+            margin-bottom: 24px;
+        }
+
+        .suggestions {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+            justify-content: center;
+        }
+
+        .suggestion-chip {
+            background: white;
+            border: 1px solid var(--gray-200);
+            padding: 8px 16px;
+            border-radius: 20px;
+            font-size: 14px;
+            color: var(--gray-700);
+            cursor: pointer;
+            transition: all 0.15s;
+        }
+
+        .suggestion-chip:hover { border-color: var(--primary); color: var(--primary); background: #EEF2FF; }
+
+        /* Input area */
+        .input-area {
+            padding: 16px 20px;
+            background: white;
+            border-top: 1px solid var(--gray-200);
+            flex-shrink: 0;
+        }
+
+        .input-wrapper {
+            max-width: 720px;
+            margin: 0 auto;
+            display: flex;
+            align-items: flex-end;
+            gap: 10px;
+            background: var(--gray-50);
+            border: 1px solid var(--gray-300);
+            border-radius: 12px;
+            padding: 8px 12px;
+            transition: border-color 0.2s;
+        }
+
+        .input-wrapper:focus-within { border-color: var(--primary); }
+
+        .input-wrapper textarea {
+            flex: 1;
+            border: none;
+            background: none;
+            resize: none;
+            font-family: inherit;
+            font-size: 15px;
+            line-height: 1.5;
+            color: var(--gray-900);
+            max-height: 120px;
+            outline: none;
+        }
+
+        .send-btn {
+            background: var(--primary);
+            color: white;
+            border: none;
+            width: 36px;
+            height: 36px;
+            border-radius: 8px;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            flex-shrink: 0;
+            transition: background 0.15s;
+        }
+
+        .send-btn:hover { background: var(--primary-dark); }
+        .send-btn:disabled { background: var(--gray-300); cursor: not-allowed; }
+
+        .send-btn svg { width: 18px; height: 18px; }
+
+        .input-hint {
+            max-width: 720px;
+            margin: 6px auto 0;
+            font-size: 12px;
+            color: var(--gray-400);
+            text-align: center;
+        }
+
+        /* Mobile overlay */
+        .sidebar-overlay {
+            display: none;
+            position: fixed;
+            inset: 0;
+            background: rgba(0,0,0,0.5);
+            z-index: 199;
+        }
+
+        /* Mobile responsive */
+        @media (max-width: 768px) {
+            .sidebar {
+                position: fixed;
+                left: 0;
+                top: 0;
+                bottom: 0;
+                z-index: 200;
+                transform: translateX(-100%);
+            }
+
+            .sidebar.open { transform: translateX(0); }
+            .sidebar.open + .sidebar-overlay { display: block; }
+
+            .mobile-menu-btn { display: block; }
+
+            .messages-container { padding: 12px; }
+
+            .message { gap: 8px; }
+
+            .suggestions { flex-direction: column; align-items: center; }
+        }
+    </style>
+</head>
+<body>
+<div class="chat-layout">
+    <!-- Sidebar -->
+    <aside class="sidebar" id="sidebar">
+        <div class="sidebar-header">
+            <a href="{{ url_for('dashboard') }}" class="sidebar-brand">
+                <svg viewBox="0 0 512 512">
+                    <defs>
+                        <linearGradient id="grad3" x1="0%" y1="0%" x2="0%" y2="100%">
+                            <stop offset="0%" style="stop-color:#8B5CF6" />
+                            <stop offset="100%" style="stop-color:#6366F1" />
+                        </linearGradient>
+                    </defs>
+                    <rect width="512" height="512" rx="96" fill="white"/>
+                    <rect x="120" y="80" width="220" height="300" rx="24" fill="url(#grad3)"/>
+                    <circle cx="310" cy="350" r="70" fill="#10B981"/>
+                    <path d="M275 350 L300 375 L355 315" fill="none" stroke="white" stroke-width="18" stroke-linecap="round" stroke-linejoin="round"/>
+                </svg>
+                Jottask
+            </a>
+            <button class="new-chat-btn" onclick="createConversation()">+ New</button>
+        </div>
+
+        <div class="sidebar-conversations" id="conversationList">
+            <!-- Populated by JS -->
+        </div>
+
+        <div class="sidebar-footer">
+            <a href="{{ url_for('dashboard') }}">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="9"/><rect x="14" y="3" width="7" height="5"/><rect x="14" y="12" width="7" height="9"/><rect x="3" y="16" width="7" height="5"/></svg>
+                Dashboard
+            </a>
+        </div>
+    </aside>
+
+    <div class="sidebar-overlay" id="sidebarOverlay" onclick="toggleSidebar()"></div>
+
+    <!-- Main chat -->
+    <main class="chat-main">
+        <div class="chat-header">
+            <div class="chat-header-left">
+                <button class="mobile-menu-btn" onclick="toggleSidebar()">&#9776;</button>
+                <div class="chat-header-title" id="chatTitle">Jottask AI</div>
+            </div>
+            <div class="chat-header-right">
+                <a href="{{ url_for('dashboard') }}">Dashboard</a>
+            </div>
+        </div>
+
+        <div class="messages-container" id="messagesContainer">
+            <!-- Empty state (shown when no messages) -->
+            <div class="empty-state" id="emptyState">
+                <h2>Jottask AI</h2>
+                <p>Manage your tasks through conversation. Create, search, complete, and reschedule tasks with natural language.</p>
+                <div class="suggestions">
+                    <div class="suggestion-chip" onclick="useSuggestion(this)">What's overdue?</div>
+                    <div class="suggestion-chip" onclick="useSuggestion(this)">Show today's tasks</div>
+                    <div class="suggestion-chip" onclick="useSuggestion(this)">Create a task to follow up with client</div>
+                </div>
+            </div>
+        </div>
+
+        <div class="input-area">
+            <div class="input-wrapper">
+                <textarea id="messageInput" rows="1" placeholder="Message Jottask AI..."
+                    onkeydown="handleKeyDown(event)" oninput="autoResize(this)"></textarea>
+                <button class="send-btn" id="sendBtn" onclick="sendMessage()">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/>
+                    </svg>
+                </button>
+            </div>
+            <div class="input-hint">Enter to send, Shift+Enter for new line</div>
+        </div>
+    </main>
+</div>
+
+<script>
+(function() {
+    // State
+    let currentConversationId = null;
+    let isStreaming = false;
+    let abortController = null;
+
+    const messagesContainer = document.getElementById('messagesContainer');
+    const messageInput = document.getElementById('messageInput');
+    const sendBtn = document.getElementById('sendBtn');
+    const emptyState = document.getElementById('emptyState');
+    const chatTitle = document.getElementById('chatTitle');
+    const conversationList = document.getElementById('conversationList');
+    const userName = '{{ session.user_name[0].upper() if session.user_name else "U" }}';
+
+    // ========================================
+    // CONVERSATIONS
+    // ========================================
+
+    async function loadConversations() {
+        try {
+            const resp = await fetch('/chat/conversations');
+            const data = await resp.json();
+            renderConversations(data.conversations || []);
+        } catch (e) {
+            console.error('Failed to load conversations:', e);
+        }
+    }
+
+    function renderConversations(conversations) {
+        conversationList.innerHTML = '';
+        conversations.forEach(conv => {
+            const div = document.createElement('div');
+            div.className = 'conv-item' + (conv.id === currentConversationId ? ' active' : '');
+            div.innerHTML = `
+                <div class="conv-item-title">${escapeHtml(conv.title)}</div>
+                <button class="conv-delete-btn" onclick="event.stopPropagation(); deleteConversation('${conv.id}')" title="Delete">&times;</button>
+            `;
+            div.addEventListener('click', () => selectConversation(conv.id, conv.title));
+            conversationList.appendChild(div);
+        });
+    }
+
+    window.createConversation = async function() {
+        try {
+            const resp = await fetch('/chat/conversations', { method: 'POST', headers: {'Content-Type': 'application/json'} });
+            const data = await resp.json();
+            if (data.conversation) {
+                currentConversationId = data.conversation.id;
+                chatTitle.textContent = 'New Chat';
+                clearMessages();
+                showEmptyState(true);
+                loadConversations();
+                messageInput.focus();
+                closeSidebarMobile();
+            }
+        } catch (e) {
+            console.error('Failed to create conversation:', e);
+        }
+    };
+
+    window.deleteConversation = async function(convId) {
+        if (!confirm('Delete this conversation?')) return;
+        try {
+            await fetch(`/chat/conversations/${convId}`, { method: 'DELETE' });
+            if (convId === currentConversationId) {
+                currentConversationId = null;
+                clearMessages();
+                showEmptyState(true);
+                chatTitle.textContent = 'Jottask AI';
+            }
+            loadConversations();
+        } catch (e) {
+            console.error('Failed to delete conversation:', e);
+        }
+    };
+
+    async function selectConversation(convId, title) {
+        currentConversationId = convId;
+        chatTitle.textContent = title || 'Chat';
+        clearMessages();
+        showEmptyState(false);
+        loadConversations();
+        closeSidebarMobile();
+
+        try {
+            const resp = await fetch(`/chat/conversations/${convId}/messages`);
+            const data = await resp.json();
+            renderHistory(data.messages || []);
+        } catch (e) {
+            console.error('Failed to load messages:', e);
+        }
+    }
+
+    function renderHistory(messages) {
+        if (!messages.length) {
+            showEmptyState(true);
+            return;
+        }
+        showEmptyState(false);
+
+        messages.forEach(msg => {
+            if (msg.role === 'user') {
+                appendMessage('user', msg.content);
+            } else if (msg.role === 'assistant') {
+                appendMessage('assistant', msg.content || '');
+                // Render tool calls if any
+                if (msg.tool_calls) {
+                    msg.tool_calls.forEach(tc => {
+                        // Find matching result
+                        // Tool results are in separate messages, but we render inline
+                    });
+                }
+            } else if (msg.role === 'tool_result' && msg.tool_results) {
+                msg.tool_results.forEach(tr => {
+                    appendToolResult(tr.tool_name, tr.result);
+                });
+            }
+        });
+        scrollToBottom();
+    }
+
+    // ========================================
+    // MESSAGES
+    // ========================================
+
+    function clearMessages() {
+        // Remove all messages but keep empty state
+        const msgs = messagesContainer.querySelectorAll('.message, .tool-card');
+        msgs.forEach(m => m.remove());
+    }
+
+    function showEmptyState(show) {
+        emptyState.style.display = show ? 'flex' : 'none';
+    }
+
+    function appendMessage(role, content) {
+        showEmptyState(false);
+        const div = document.createElement('div');
+        div.className = `message message-${role}`;
+
+        const avatarLabel = role === 'user' ? userName : 'J';
+        const roleLabel = role === 'user' ? 'You' : 'Jottask AI';
+
+        div.innerHTML = `
+            <div class="message-avatar">${avatarLabel}</div>
+            <div class="message-body">
+                <div class="message-role">${roleLabel}</div>
+                <div class="message-content">${escapeHtml(content || '')}</div>
+            </div>
+        `;
+        messagesContainer.appendChild(div);
+        return div;
+    }
+
+    function appendToolThinking(toolName) {
+        const div = document.createElement('div');
+        div.className = 'tool-thinking';
+        div.id = 'tool-thinking-active';
+        const label = toolName.replace(/_/g, ' ');
+        div.innerHTML = `<div class="spinner"></div> Running ${escapeHtml(label)}...`;
+        messagesContainer.appendChild(div);
+        scrollToBottom();
+        return div;
+    }
+
+    function appendToolResult(toolName, result) {
+        // Remove thinking indicator
+        const thinking = document.getElementById('tool-thinking-active');
+        if (thinking) thinking.remove();
+
+        const div = document.createElement('div');
+        div.className = 'message message-assistant';
+
+        let cardHtml = '';
+        const isSuccess = result && result.success;
+
+        if (toolName === 'create_task' && isSuccess) {
+            const t = result.task;
+            cardHtml = `
+                <div class="tool-card tool-card-success">
+                    <div class="tool-card-header">&#10003; Task Created</div>
+                    <div><strong>${escapeHtml(t.title)}</strong></div>
+                    <div style="color:var(--gray-500);font-size:13px;">
+                        Due: ${t.due_date} ${t.due_time ? 'at ' + t.due_time : ''}
+                        ${t.priority ? ' &bull; ' + t.priority : ''}
+                        ${t.client_name ? ' &bull; ' + escapeHtml(t.client_name) : ''}
+                    </div>
+                </div>`;
+        } else if ((toolName === 'list_tasks' || toolName === 'get_overdue_tasks' || toolName === 'get_todays_tasks' || toolName === 'search_tasks') && isSuccess) {
+            const tasks = result.tasks || [];
+            if (tasks.length === 0) {
+                cardHtml = `<div class="tool-card tool-card-success"><div class="tool-card-header">&#128203; Tasks</div><div style="color:var(--gray-500);">No tasks found.</div></div>`;
+            } else {
+                let items = tasks.map(t => `
+                    <div class="task-list-item">
+                        <span class="task-priority priority-${t.priority}">${t.priority}</span>
+                        <span style="flex:1;">${escapeHtml(t.title)}${t.client_name ? ' <span style="color:var(--gray-400);">(' + escapeHtml(t.client_name) + ')</span>' : ''}</span>
+                        <span style="color:var(--gray-400);font-size:12px;white-space:nowrap;">${t.due_date}${t.due_time ? ' ' + t.due_time : ''}</span>
+                    </div>
+                `).join('');
+                cardHtml = `<div class="tool-card tool-card-success"><div class="tool-card-header">&#128203; ${result.count} Task${result.count !== 1 ? 's' : ''}</div>${items}</div>`;
+            }
+        } else if (toolName === 'complete_task' && isSuccess) {
+            const t = result.task;
+            cardHtml = `<div class="tool-card tool-card-success"><div class="tool-card-header">&#10003; Task Completed</div><div><s>${escapeHtml(t.title)}</s></div></div>`;
+        } else if (toolName === 'delay_task' && isSuccess) {
+            const t = result.task;
+            cardHtml = `<div class="tool-card tool-card-success"><div class="tool-card-header">&#128197; Task Rescheduled</div><div><strong>${escapeHtml(t.title)}</strong></div><div style="color:var(--gray-500);font-size:13px;">New due: ${t.new_due_date}${t.new_due_time ? ' at ' + t.new_due_time : ''}</div></div>`;
+        } else if (toolName === 'get_task_details' && isSuccess) {
+            const t = result.task;
+            let notesHtml = '';
+            if (result.notes && result.notes.length) {
+                notesHtml = '<div style="margin-top:8px;"><strong style="font-size:12px;">Notes:</strong>' +
+                    result.notes.map(n => `<div style="color:var(--gray-500);font-size:13px;margin-top:4px;">&bull; ${escapeHtml(n.content)}</div>`).join('') +
+                    '</div>';
+            }
+            cardHtml = `<div class="tool-card tool-card-success">
+                <div class="tool-card-header">&#128196; Task Details</div>
+                <div><strong>${escapeHtml(t.title)}</strong> <span class="task-priority priority-${t.priority}">${t.priority}</span></div>
+                <div style="color:var(--gray-500);font-size:13px;">Due: ${t.due_date} ${t.due_time ? 'at ' + t.due_time : ''} &bull; Status: ${t.status}${t.client_name ? ' &bull; Client: ' + escapeHtml(t.client_name) : ''}</div>
+                ${t.description ? '<div style="margin-top:6px;font-size:14px;">' + escapeHtml(t.description) + '</div>' : ''}
+                ${notesHtml}
+            </div>`;
+        } else if (toolName === 'add_note_to_task' && isSuccess) {
+            cardHtml = `<div class="tool-card tool-card-success"><div class="tool-card-header">&#128221; Note Added</div><div>Note added to <strong>${escapeHtml(result.task_title)}</strong></div></div>`;
+        } else if (!isSuccess && result) {
+            cardHtml = `<div class="tool-card tool-card-error"><div class="tool-card-header">&#9888; Error</div><div>${escapeHtml(result.error || 'Unknown error')}</div></div>`;
+        }
+
+        if (cardHtml) {
+            div.innerHTML = `
+                <div class="message-avatar">J</div>
+                <div class="message-body">${cardHtml}</div>
+            `;
+            messagesContainer.appendChild(div);
+        }
+        scrollToBottom();
+    }
+
+    // ========================================
+    // SEND MESSAGE + SSE STREAMING
+    // ========================================
+
+    window.sendMessage = async function() {
+        const text = messageInput.value.trim();
+        if (!text || isStreaming) return;
+
+        // Create conversation if none selected
+        if (!currentConversationId) {
+            try {
+                const resp = await fetch('/chat/conversations', { method: 'POST', headers: {'Content-Type': 'application/json'} });
+                const data = await resp.json();
+                if (data.conversation) {
+                    currentConversationId = data.conversation.id;
+                } else {
+                    return;
+                }
+            } catch (e) {
+                console.error('Failed to create conversation:', e);
+                return;
+            }
+        }
+
+        // Display user message
+        appendMessage('user', text);
+        messageInput.value = '';
+        autoResize(messageInput);
+        scrollToBottom();
+
+        // Start streaming
+        isStreaming = true;
+        sendBtn.disabled = true;
+
+        // Create assistant message placeholder
+        let activeDiv = appendMessage('assistant', '');
+        let activeContent = activeDiv.querySelector('.message-content');
+        activeContent.classList.add('streaming-cursor');
+
+        abortController = new AbortController();
+
+        try {
+            const response = await fetch(`/chat/conversations/${currentConversationId}/messages`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ message: text }),
+                signal: abortController.signal,
+            });
+
+            const reader = response.body.getReader();
+            const decoder = new TextDecoder();
+            let buffer = '';
+            let fullText = '';
+
+            while (true) {
+                const { done, value } = await reader.read();
+                if (done) break;
+
+                buffer += decoder.decode(value, { stream: true });
+                const lines = buffer.split('\n');
+                buffer = lines.pop(); // Keep incomplete line in buffer
+
+                for (const line of lines) {
+                    if (!line.startsWith('data: ')) continue;
+                    const jsonStr = line.slice(6);
+                    if (!jsonStr) continue;
+
+                    try {
+                        const event = JSON.parse(jsonStr);
+
+                        if (event.type === 'text') {
+                            fullText += event.content;
+                            activeContent.textContent = fullText;
+                            scrollToBottom();
+                        } else if (event.type === 'tool_start') {
+                            appendToolThinking(event.tool);
+                        } else if (event.type === 'tool_result') {
+                            appendToolResult(event.tool, event.result);
+                            // Prepare new assistant message for continuation text
+                            activeContent.classList.remove('streaming-cursor');
+                            // Remove empty assistant div if no text was written
+                            if (!fullText.trim()) activeDiv.remove();
+                            fullText = '';
+                            activeDiv = appendMessage('assistant', '');
+                            activeContent = activeDiv.querySelector('.message-content');
+                            activeContent.classList.add('streaming-cursor');
+                        } else if (event.type === 'title_update') {
+                            chatTitle.textContent = event.title;
+                            loadConversations();
+                        } else if (event.type === 'error') {
+                            activeContent.textContent = 'Error: ' + event.error;
+                            activeContent.style.color = 'var(--danger)';
+                        } else if (event.type === 'done') {
+                            // Done
+                        }
+                    } catch (e) {
+                        // Skip invalid JSON
+                    }
+                }
+            }
+        } catch (e) {
+            if (e.name !== 'AbortError') {
+                activeContent.textContent = 'Failed to get response. Please try again.';
+                activeContent.style.color = 'var(--danger)';
+            }
+        } finally {
+            activeContent.classList.remove('streaming-cursor');
+            // Clean up empty assistant messages
+            if (!activeContent.textContent.trim()) {
+                activeDiv.remove();
+            }
+            isStreaming = false;
+            sendBtn.disabled = false;
+            abortController = null;
+            messageInput.focus();
+        }
+    };
+
+    // ========================================
+    // UI HELPERS
+    // ========================================
+
+    window.handleKeyDown = function(e) {
+        if (e.key === 'Enter' && !e.shiftKey) {
+            e.preventDefault();
+            sendMessage();
+        }
+    };
+
+    window.autoResize = function(el) {
+        el.style.height = 'auto';
+        el.style.height = Math.min(el.scrollHeight, 120) + 'px';
+    };
+
+    window.useSuggestion = function(el) {
+        messageInput.value = el.textContent;
+        messageInput.focus();
+        sendMessage();
+    };
+
+    window.toggleSidebar = function() {
+        document.getElementById('sidebar').classList.toggle('open');
+    };
+
+    function closeSidebarMobile() {
+        document.getElementById('sidebar').classList.remove('open');
+    }
+
+    function scrollToBottom() {
+        messagesContainer.scrollTop = messagesContainer.scrollHeight;
+    }
+
+    function escapeHtml(str) {
+        if (!str) return '';
+        const div = document.createElement('div');
+        div.textContent = str;
+        return div.innerHTML;
+    }
+
+    // ========================================
+    // INIT
+    // ========================================
+
+    loadConversations();
+    messageInput.focus();
+})();
+</script>
+</body>
+</html>

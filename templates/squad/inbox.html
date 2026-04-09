@@ -1,0 +1,612 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"><meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<link rel="apple-touch-icon" href="/static/squad-icon.png">
+
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Squad Inbox</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+         background: #f0fdf4; min-height: 100vh; color: #1a2e1a; }
+
+  /* ── Header ──────────────────────────────────────────── */
+  .header {
+    background: linear-gradient(135deg, #15803d 0%, #166534 60%, #14532d 100%);
+    padding: 0 24px; box-shadow: 0 2px 8px rgba(0,0,0,.25);
+  }
+  .header-inner {
+    max-width: 1100px; margin: 0 auto;
+    display: flex; align-items: center; justify-content: space-between; height: 64px;
+  }
+  .header-logo { color: white; text-decoration: none; font-size: 20px; font-weight: 700; }
+  .header-nav a {
+    color: rgba(255,255,255,.8); text-decoration: none; padding: 8px 14px;
+    border-radius: 8px; font-size: 14px; margin-left: 4px;
+  }
+  .header-nav a:hover, .header-nav a.active { background: rgba(255,255,255,.15); color: white; }
+  .back-link {
+    color: rgba(255,255,255,.7); text-decoration: none; font-size: 13px;
+    padding: 6px 12px; border: 1px solid rgba(255,255,255,.3); border-radius: 6px;
+  }
+  .back-link:hover { background: rgba(255,255,255,.1); color: white; }
+
+  /* ── Page ────────────────────────────────────────────── */
+  .page { max-width: 1100px; margin: 0 auto; padding: 28px 24px; }
+  .page-header { margin-bottom: 24px; }
+  .page-header h1 { font-size: 26px; font-weight: 800; color: #15803d; }
+
+  /* ── Tabs ────────────────────────────────────────────── */
+  .tabs { display: flex; gap: 4px; margin-bottom: 24px; border-bottom: 2px solid #dcfce7; }
+  .tab {
+    padding: 10px 20px; border-radius: 8px 8px 0 0; font-size: 14px; font-weight: 600;
+    text-decoration: none; color: #4b5563; border: none; background: transparent; cursor: pointer;
+    position: relative; bottom: -2px; border-bottom: 2px solid transparent;
+  }
+  .tab.active { color: #15803d; border-bottom-color: #15803d; background: white; }
+  .tab:hover:not(.active) { background: #f0fdf4; color: #15803d; }
+
+  /* ── Inbox items ─────────────────────────────────────── */
+  .inbox-item {
+    background: white; border-radius: 14px;
+    box-shadow: 0 1px 4px rgba(0,0,0,.07); margin-bottom: 16px; overflow: hidden;
+  }
+  .inbox-item-header {
+    padding: 16px 20px; border-bottom: 1px solid #f0fdf4;
+    display: flex; align-items: flex-start; gap: 14px; flex-wrap: wrap;
+  }
+  .type-pill {
+    font-size: 11px; font-weight: 700; padding: 3px 8px; border-radius: 5px;
+    text-transform: uppercase; letter-spacing: .3px; white-space: nowrap;
+  }
+  .pill-club_update    { background: #dcfce7; color: #166534; }
+  .pill-parent_message { background: #ede9fe; color: #5b21b6; }
+  .pill-fixture_list   { background: #fef9c3; color: #854d0e; }
+  .pill-other          { background: #f3f4f6; color: #374151; }
+
+  .inbox-subject { font-size: 15px; font-weight: 700; color: #1a2e1a; flex: 1; }
+  .inbox-from    { font-size: 12px; color: #6b7280; margin-top: 2px; }
+  .inbox-date    { font-size: 12px; color: #9ca3af; white-space: nowrap; }
+
+  .inbox-item-body { padding: 16px 20px; }
+
+  /* ── AI Summary ──────────────────────────────────────── */
+  .ai-summary {
+    background: #f0fdf4; border-left: 3px solid #15803d;
+    padding: 12px 16px; border-radius: 0 8px 8px 0; margin-bottom: 14px;
+    font-size: 14px; color: #166534; line-height: 1.5;
+  }
+  .ai-summary strong { display: block; margin-bottom: 4px; font-size: 11px;
+                        text-transform: uppercase; letter-spacing: .5px; color: #15803d; }
+
+  /* ── Proposed actions ────────────────────────────────── */
+  .actions-section { margin-bottom: 14px; }
+  .actions-title { font-size: 12px; font-weight: 700; color: #374151; text-transform: uppercase;
+                    letter-spacing: .4px; margin-bottom: 8px; }
+  .action-row {
+    display: flex; align-items: center; gap: 10px; padding: 8px 12px;
+    background: #f9fafb; border-radius: 8px; margin-bottom: 6px; font-size: 13px;
+  }
+  .action-icon { font-size: 16px; flex-shrink: 0; }
+  .action-desc { flex: 1; color: #374151; }
+
+  /* ── Fixtures list ───────────────────────────────────── */
+  .fixtures-table { width: 100%; border-collapse: collapse; margin-bottom: 8px; font-size: 13px; }
+  .fixtures-table th {
+    text-align: left; padding: 6px 10px; background: #f0fdf4;
+    color: #15803d; font-size: 11px; text-transform: uppercase; letter-spacing: .4px;
+  }
+  .fixtures-table td { padding: 5px 6px; border-bottom: 1px solid #f3f4f6; color: #374151; }
+  .fixtures-table tr:last-child td { border-bottom: none; }
+  .fix-input {
+    width: 100%; padding: 4px 7px; border: 1.5px solid #d1fae5; border-radius: 5px;
+    font-size: 13px; color: #1a2e1a; background: white;
+    font-family: inherit;
+  }
+  .fix-input:focus { outline: none; border-color: #15803d; background: #f0fdf4; }
+  .fix-select {
+    padding: 4px 5px; border: 1.5px solid #d1fae5; border-radius: 5px;
+    font-size: 12px; color: #1a2e1a; background: white; font-family: inherit;
+    width: 100%;
+  }
+  .fix-select:focus { outline: none; border-color: #15803d; }
+  .btn-del-row {
+    background: none; border: none; cursor: pointer; color: #dc2626;
+    font-size: 15px; padding: 2px 4px; line-height: 1;
+  }
+  .btn-del-row:hover { color: #b91c1c; }
+  .btn-add-row {
+    font-size: 12px; color: #15803d; background: #f0fdf4; border: 1px solid #86efac;
+    border-radius: 6px; padding: 4px 12px; cursor: pointer; margin-bottom: 14px;
+  }
+  .btn-add-row:hover { background: #dcfce7; }
+
+  /* ── Suggested reply ─────────────────────────────────── */
+  .suggested-reply {
+    background: #ede9fe; border-left: 3px solid #7c3aed;
+    padding: 12px 16px; border-radius: 0 8px 8px 0; margin-bottom: 14px;
+    font-size: 14px; color: #4c1d95; line-height: 1.5;
+  }
+  .suggested-reply strong { display: block; margin-bottom: 4px; font-size: 11px;
+                              text-transform: uppercase; letter-spacing: .5px; }
+
+  /* ── Action buttons ──────────────────────────────────── */
+  .btn-row {
+    display: flex; gap: 8px; flex-wrap: wrap; padding: 14px 20px;
+    border-top: 1px solid #f0fdf4; background: #fafafa;
+  }
+  .btn {
+    padding: 8px 18px; border-radius: 8px; font-size: 13px; font-weight: 600;
+    border: none; cursor: pointer; text-decoration: none; display: inline-block;
+    transition: opacity .15s;
+  }
+  .btn:hover { opacity: .85; }
+  .btn-approve  { background: #15803d; color: white; }
+  .btn-dismiss  { background: #f3f4f6; color: #374151; }
+  .btn-raw      { background: transparent; color: #6b7280; border: 1px solid #e5e7eb;
+                  font-size: 12px; }
+
+  /* ── Collapsible raw email ───────────────────────────── */
+  details { margin: 0 20px 14px; }
+  details summary {
+    font-size: 12px; color: #6b7280; cursor: pointer; user-select: none;
+    padding: 6px 0;
+  }
+  details summary:hover { color: #374151; }
+  .raw-email {
+    background: #f9fafb; border: 1px solid #e5e7eb; border-radius: 8px;
+    padding: 12px; font-family: monospace; font-size: 12px; color: #374151;
+    white-space: pre-wrap; word-break: break-word; max-height: 300px; overflow-y: auto;
+    margin-top: 6px;
+  }
+
+  /* ── Empty ───────────────────────────────────────────── */
+  .empty { text-align: center; padding: 60px 0; color: #6b7280; }
+  .empty-icon { font-size: 48px; display: block; margin-bottom: 12px; }
+
+  /* ── Toast ───────────────────────────────────────────── */
+  #toast {
+    position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);
+    background: #1a2e1a; color: white; padding: 10px 22px; border-radius: 10px;
+    font-size: 14px; font-weight: 600; display: none; z-index: 9999;
+    box-shadow: 0 4px 16px rgba(0,0,0,.25);
+  }
+</style>
+
+<style id="squad-mobile">
+@media (max-width: 768px) {
+  body { background: #f0fdf4; -webkit-text-size-adjust: 100%; }
+
+  /* Safe area: push header below status bar / Dynamic Island */
+  .header { padding-top: env(safe-area-inset-top); }
+
+  /* Slim 44px nav */
+  .header-inner { height: 44px !important; }
+  .header-nav { display: none !important; }
+  .back-link { display: none !important; }
+  .header-logo { font-size: 16px !important; }
+
+  /* Full-width page, pad bottom for tab bar + home bar */
+  .page { padding: 16px 0 calc(72px + env(safe-area-inset-bottom)) !important; }
+  .page-header { padding: 0 16px; }
+
+  /* Inbox items full-width, no side radius */
+  .inbox-item { border-radius: 0 !important; margin-left: 0 !important;
+                margin-right: 0 !important; margin-bottom: 8px; }
+  .inbox-item-header { padding: 12px 16px !important; }
+  .inbox-item-body { padding: 12px 16px !important; }
+
+  /* Tabs touch-friendly */
+  .tab { min-height: 44px !important; padding: 0 14px !important; }
+
+  /* 44px touch targets */
+  button, .btn, a.btn, input[type=submit] { min-height: 44px !important; }
+
+  /* Scrollable fixture tables */
+  .fix-table-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+  .fix-table { font-size: 12px !important; min-width: 480px; }
+
+  /* Prevent iOS font bump */
+  input, select, textarea { font-size: 16px !important; }
+}
+
+/* ── Bottom tab bar ── */
+.sq-tab-bar { display: none; }
+
+@media (max-width: 768px) {
+  .sq-tab-bar {
+    display: flex;
+    position: fixed;
+    bottom: 0; left: 0; right: 0;
+    background: rgba(255,255,255,.97);
+    -webkit-backdrop-filter: blur(12px);
+    backdrop-filter: blur(12px);
+    border-top: 1px solid rgba(0,0,0,.1);
+    padding-bottom: env(safe-area-inset-bottom);
+    z-index: 9999;
+    box-shadow: 0 -1px 0 rgba(0,0,0,.08);
+  }
+  .sq-tab-bar a {
+    flex: 1; display: flex; flex-direction: column;
+    align-items: center; justify-content: center;
+    padding: 8px 2px 4px; text-decoration: none;
+    color: #9ca3af; font-size: 10px; font-weight: 500;
+    gap: 3px; min-height: 54px; position: relative;
+    -webkit-tap-highlight-color: transparent;
+    transition: color .15s;
+  }
+  .sq-tab-bar a.active { color: #15803d; }
+  .sq-tab-bar a .tab-icon { font-size: 24px; line-height: 1; }
+  .sq-tab-bar a.tab-add {
+    color: white; background: #15803d; border-radius: 14px;
+    margin: 7px 6px; padding: 0; min-height: 44px;
+    font-size: 28px; font-weight: 300; flex: 0 0 50px; line-height: 1;
+  }
+  .sq-tab-badge {
+    position: absolute; top: 6px; right: calc(50% - 20px);
+    background: #ef4444; color: white; border-radius: 999px;
+    font-size: 9px; font-weight: 700; padding: 1px 5px;
+    line-height: 1.4; min-width: 16px; text-align: center;
+  }
+}
+</style>
+</head>
+<body>
+
+<header class="header">
+  <div class="header-inner">
+    <a href="/squad/" class="header-logo">⚽ Squad Inbox</a>
+    <nav class="header-nav">
+      <a href="/squad/">Dashboard</a>
+      <a href="/squad/inbox" class="active">Inbox</a>
+      <a href="/squad/team">Team</a>
+      <a href="/squad/inbox/paste">Paste</a>
+    </nav>
+    <a href="/dashboard" class="back-link">← Jottask</a>
+  </div>
+</header>
+
+<main class="page">
+  <div class="page-header">
+    <h1>AI Inbox</h1>
+  </div>
+
+  <!-- Tabs -->
+  <div class="tabs">
+    <a href="?tab=pending"   class="tab {% if tab == 'pending' %}active{% endif %}">Pending</a>
+    <a href="?tab=approved"  class="tab {% if tab == 'approved' %}active{% endif %}">Approved</a>
+    <a href="?tab=dismissed" class="tab {% if tab == 'dismissed' %}active{% endif %}">Dismissed</a>
+  </div>
+
+  {% if items %}
+    {% for item in items %}
+    {% set parsed = item.parsed_data or {} %}
+    <div class="inbox-item" id="item-{{ item.id }}">
+
+      <!-- Header row -->
+      <div class="inbox-item-header">
+        <span class="type-pill pill-{{ item.email_type or 'other' }}">
+          {{ (item.email_type or 'other').replace('_', ' ') }}
+        </span>
+        <div style="flex:1">
+          <div class="inbox-subject">{{ item.email_subject or '(no subject)' }}</div>
+          <div class="inbox-from">From: {{ item.email_from or 'unknown' }}</div>
+        </div>
+        <div class="inbox-date">{{ item.created_at[:10] if item.created_at else '' }}</div>
+      </div>
+
+      <div class="inbox-item-body">
+
+        <!-- AI Summary -->
+        {% if parsed.summary %}
+        <div class="ai-summary">
+          <strong>AI Summary</strong>
+          {{ parsed.summary }}
+        </div>
+        {% endif %}
+
+        <!-- Fixtures table (club_update / fixture_list) — editable before approve -->
+        {% if parsed.fixtures %}
+        <div class="actions-section">
+          <div class="actions-title">📅 Fixtures ({{ parsed.fixtures | length }}) — <small style="font-weight:400;text-transform:none;color:#6b7280;">edit before approving, or delete rows you don't want</small></div>
+          <table class="fixtures-table" id="fix-tbl-{{ item.id }}">
+            <thead>
+              <tr>
+                <th>Date</th><th>Time</th><th>Opponent</th><th>Venue</th><th>H/A</th><th>Type</th><th style="width:28px"></th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for f in parsed.fixtures %}
+              <tr>
+                <td><input class="fix-input" data-field="date"     value="{{ f.date or '' }}"     placeholder="YYYY-MM-DD"></td>
+                <td><input class="fix-input" data-field="time"     value="{{ f.time or '' }}"     placeholder="HH:MM" style="width:70px"></td>
+                <td><input class="fix-input" data-field="opponent" value="{{ f.opponent or '' }}" placeholder="Opponent"></td>
+                <td><input class="fix-input" data-field="venue"    value="{{ f.venue or '' }}"    placeholder="Venue"></td>
+                <td>
+                  <select class="fix-select" data-field="is_home">
+                    <option value=""  {% if f.is_home is none or f.is_home == '' %}selected{% endif %}>—</option>
+                    <option value="true"  {% if f.is_home == true  %}selected{% endif %}>🏠 H</option>
+                    <option value="false" {% if f.is_home == false %}selected{% endif %}>✈️ A</option>
+                  </select>
+                </td>
+                <td>
+                  <select class="fix-select" data-field="type">
+                    {% for t in ['game','training','cup','friendly','other'] %}
+                    <option value="{{ t }}" {% if (f.type or 'game') == t %}selected{% endif %}>{{ t }}</option>
+                    {% endfor %}
+                  </select>
+                </td>
+                <td><button type="button" class="btn-del-row" onclick="this.closest('tr').remove()" title="Remove row">×</button></td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+          <button type="button" class="btn-add-row" onclick="addFixtureRow('fix-tbl-{{ item.id }}')">+ Add row</button>
+        </div>
+        {% endif %}
+
+        <!-- Cancellations -->
+        {% if parsed.cancellations %}
+        <div class="actions-section">
+          <div class="actions-title">❌ Cancellations</div>
+          {% for c in parsed.cancellations %}
+          <div class="action-row">
+            <span class="action-icon">❌</span>
+            <span class="action-desc">{{ c.date or '' }} — {{ c.description or '' }}</span>
+          </div>
+          {% endfor %}
+        </div>
+        {% endif %}
+
+        <!-- Venue changes -->
+        {% if parsed.venue_changes %}
+        <div class="actions-section">
+          <div class="actions-title">📍 Venue Changes</div>
+          {% for v in parsed.venue_changes %}
+          <div class="action-row">
+            <span class="action-icon">📍</span>
+            <span class="action-desc">
+              {{ v.date or '' }} —
+              {{ v.original_venue or '' }} → {{ v.new_venue or '' }}
+              {% if v.reason %}({{ v.reason }}){% endif %}
+            </span>
+          </div>
+          {% endfor %}
+        </div>
+        {% endif %}
+
+        <!-- RSVP / parent data -->
+        {% if parsed.rsvp and (parsed.rsvp.status or parsed.rsvp.event_date) %}
+        <div class="actions-section">
+          <div class="actions-title">✅ RSVP</div>
+          <div class="action-row">
+            <span class="action-icon">
+              {% if parsed.rsvp.status == 'attending' %}✅
+              {% elif parsed.rsvp.status == 'not_attending' %}❌
+              {% else %}❓{% endif %}
+            </span>
+            <span class="action-desc">
+              {% if parsed.rsvp.status %}{{ parsed.rsvp.status | replace('_', ' ') | title }}{% endif %}
+              {% if parsed.rsvp.event_date %} for {{ parsed.rsvp.event_date }}{% endif %}
+              {% if parsed.rsvp.reason %} — {{ parsed.rsvp.reason }}{% endif %}
+            </span>
+          </div>
+        </div>
+        {% endif %}
+
+        <!-- Medical update -->
+        {% if parsed.medical_update and parsed.medical_update.condition %}
+        <div class="actions-section">
+          <div class="actions-title">🩺 Medical Update</div>
+          <div class="action-row">
+            <span class="action-icon">🩺</span>
+            <span class="action-desc">
+              {{ parsed.medical_update.condition }}
+              {% if parsed.medical_update.cleared_to_play == true %} — Cleared to play ✅
+              {% elif parsed.medical_update.cleared_to_play == false %} — Not cleared ❌{% endif %}
+              {% if parsed.medical_update.notes %}<br><small>{{ parsed.medical_update.notes }}</small>{% endif %}
+            </span>
+          </div>
+        </div>
+        {% endif %}
+
+        <!-- Proposed actions -->
+        {% if parsed.proposed_actions %}
+        <div class="actions-section">
+          <div class="actions-title">🤖 Proposed Actions</div>
+          {% for action in parsed.proposed_actions %}
+          <div class="action-row">
+            <span class="action-icon">
+              {% if action.type == 'create_event' %}📅
+              {% elif action.type == 'record_rsvp' %}✅
+              {% elif action.type == 'notify_parents' %}📢
+              {% elif action.type == 'cancel_event' %}❌
+              {% elif action.type == 'send_reply' %}💬
+              {% else %}⚡{% endif %}
+            </span>
+            <span class="action-desc">{{ action.description }}</span>
+          </div>
+          {% endfor %}
+        </div>
+        {% endif %}
+
+        <!-- Suggested reply (parent messages) -->
+        {% if parsed.suggested_reply %}
+        <div class="suggested-reply">
+          <strong>Suggested Reply</strong>
+          {{ parsed.suggested_reply }}
+        </div>
+        {% endif %}
+
+      </div>
+
+      <!-- Collapsible raw email -->
+      <details>
+        <summary>Show raw email ▾</summary>
+        <div class="raw-email">{{ item.email_body or '(no body)' }}</div>
+      </details>
+
+      <!-- Action buttons -->
+      {% if tab == 'pending' %}
+      <div class="btn-row">
+        <button class="btn btn-approve" onclick="approveItem('{{ item.id }}', this)">
+          ✅ Approve &amp; Execute
+        </button>
+        <button class="btn btn-dismiss" onclick="dismissItem('{{ item.id }}', this)">
+          Dismiss
+        </button>
+      </div>
+      {% else %}
+      <div class="btn-row" style="color:#9ca3af;font-size:13px;">
+        {% if tab == 'approved' %}✅ Approved on {{ item.approved_at[:10] if item.approved_at else '' }}
+        {% else %}Dismissed{% endif %}
+      </div>
+      {% endif %}
+
+    </div>
+    {% endfor %}
+
+  {% else %}
+    <div class="empty">
+      <span class="empty-icon">
+        {% if tab == 'pending' %}📬{% elif tab == 'approved' %}✅{% else %}🗑️{% endif %}
+      </span>
+      <p>No {{ tab }} items.</p>
+      {% if tab == 'pending' %}
+      <p style="margin-top:8px;font-size:13px;">
+        Forward club emails to <strong>squadflowquote@gmail.com</strong>,
+        or <a href="/squad/inbox/paste" style="color:#15803d;">paste a message</a>.
+      </p>
+      {% endif %}
+    </div>
+  {% endif %}
+
+</main>
+
+<div id="toast"></div>
+
+<script>
+function showToast(msg, ok) {
+  const el = document.getElementById('toast');
+  el.textContent = msg;
+  el.style.background = ok ? '#15803d' : '#dc2626';
+  el.style.display = 'block';
+  setTimeout(() => { el.style.display = 'none'; }, 3000);
+}
+
+function collectFixtures(itemId) {
+  const tbl = document.getElementById(`fix-tbl-${itemId}`);
+  if (!tbl) return null;
+  const rows = tbl.querySelectorAll('tbody tr');
+  const fixtures = [];
+  rows.forEach(row => {
+    const get = field => {
+      const el = row.querySelector(`[data-field="${field}"]`);
+      return el ? el.value.trim() : '';
+    };
+    const isHomeVal = get('is_home');
+    fixtures.push({
+      date:      get('date')     || null,
+      time:      get('time')     || null,
+      opponent:  get('opponent') || null,
+      venue:     get('venue')    || null,
+      is_home:   isHomeVal === 'true' ? true : isHomeVal === 'false' ? false : null,
+      type:      get('type')     || 'game',
+    });
+  });
+  return fixtures;
+}
+
+function addFixtureRow(tblId) {
+  const tbl = document.getElementById(tblId);
+  const tbody = tbl.querySelector('tbody');
+  const tr = document.createElement('tr');
+  tr.innerHTML = `
+    <td><input class="fix-input" data-field="date"     placeholder="YYYY-MM-DD"></td>
+    <td><input class="fix-input" data-field="time"     placeholder="HH:MM" style="width:70px"></td>
+    <td><input class="fix-input" data-field="opponent" placeholder="Opponent"></td>
+    <td><input class="fix-input" data-field="venue"    placeholder="Venue"></td>
+    <td>
+      <select class="fix-select" data-field="is_home">
+        <option value="">—</option>
+        <option value="true">🏠 H</option>
+        <option value="false">✈️ A</option>
+      </select>
+    </td>
+    <td>
+      <select class="fix-select" data-field="type">
+        <option value="game">game</option>
+        <option value="training">training</option>
+        <option value="cup">cup</option>
+        <option value="friendly">friendly</option>
+        <option value="other">other</option>
+      </select>
+    </td>
+    <td><button type="button" class="btn-del-row" onclick="this.closest('tr').remove()" title="Remove row">×</button></td>
+  `;
+  tbody.appendChild(tr);
+}
+
+async function approveItem(id, btn) {
+  btn.disabled = true;
+  btn.textContent = 'Approving…';
+  const fixtures = collectFixtures(id);   // null if no fixture table on this item
+  const body = fixtures !== null ? JSON.stringify({ fixtures }) : '{}';
+  try {
+    const res = await fetch(`/squad/inbox/${id}/approve`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body,
+    });
+    const data = await res.json();
+    if (res.ok && data.ok) {
+      showToast(`✅ Approved — ${data.actions.length} action(s) executed`, true);
+      document.getElementById(`item-${id}`).style.opacity = '0.4';
+      setTimeout(() => document.getElementById(`item-${id}`).remove(), 1500);
+    } else {
+      showToast(data.error || 'Approval failed', false);
+      btn.disabled = false; btn.textContent = '✅ Approve & Execute';
+    }
+  } catch (e) {
+    showToast('Network error', false);
+    btn.disabled = false; btn.textContent = '✅ Approve & Execute';
+  }
+}
+
+async function dismissItem(id, btn) {
+  btn.disabled = true;
+  try {
+    const res = await fetch(`/squad/inbox/${id}/dismiss`, { method: 'POST' });
+    if (res.ok) {
+      document.getElementById(`item-${id}`).style.opacity = '0.4';
+      setTimeout(() => document.getElementById(`item-${id}`).remove(), 800);
+    }
+  } catch (e) {
+    showToast('Network error', false);
+    btn.disabled = false;
+  }
+}
+</script>
+
+<!-- ── iOS bottom tab bar ──────────────────────────────────────────── -->
+<nav class="sq-tab-bar">
+  <a href="/squad/">
+    <span class="tab-icon">📅</span>Schedule
+  </a>
+  <a href="/squad/team">
+    <span class="tab-icon">👥</span>Team
+  </a>
+  <a href="/squad/inbox/paste" class="tab-add" aria-label="Add event">+</a>
+  <a href="/squad/inbox" class="active">
+    <span class="tab-icon">📬</span>Inbox
+    {% if pending_count is defined and pending_count > 0 %}<span class="sq-tab-badge">{{ pending_count }}</span>{% endif %}
+  </a>
+  <a href="/squad/team#parents">
+    <span class="tab-icon">👨‍👩‍👧</span>Parents
+  </a>
+</nav>
+
+</body>
+</html>

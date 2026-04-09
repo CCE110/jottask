@@ -200,58 +200,68 @@ class TaskManager:
     # CLIENT MATCHING METHODS
     # ========================================
     
-    def find_existing_task_by_client(self, client_email=None, client_name=None, 
-                                      project_name=None):
+    def find_existing_task_by_client(self, client_email=None, client_name=None,
+                                      project_name=None, user_id=None):
         """
         Find existing task by client identifiers.
         Priority: email > project_name > client_name
         Returns most recent non-closed task for this client.
+        user_id is required for multi-tenant safety.
         """
         try:
             # Try email match first (most reliable)
             if client_email:
-                result = self.supabase.table('tasks')\
-                    .select('*, project_statuses!inner(name)')\
+                query = self.supabase.table('tasks')\
+                    .select('*')\
                     .eq('client_email', client_email.lower())\
                     .neq('status', 'completed')\
+                    .neq('status', 'cancelled')\
                     .order('created_at', desc=True)\
-                    .limit(1)\
-                    .execute()
-                
+                    .limit(1)
+                if user_id:
+                    query = query.eq('user_id', user_id)
+                result = query.execute()
+
                 if result.data:
                     print(f"🔗 Found existing task by email: {client_email}")
                     return result.data[0]
-            
+
             # Try project name match
             if project_name:
-                result = self.supabase.table('tasks')\
+                query = self.supabase.table('tasks')\
                     .select('*')\
                     .ilike('project_name', f'%{project_name}%')\
                     .neq('status', 'completed')\
+                    .neq('status', 'cancelled')\
                     .order('created_at', desc=True)\
-                    .limit(1)\
-                    .execute()
-                
+                    .limit(1)
+                if user_id:
+                    query = query.eq('user_id', user_id)
+                result = query.execute()
+
                 if result.data:
                     print(f"🔗 Found existing task by project: {project_name}")
                     return result.data[0]
-            
+
             # Try client name match (fuzzy)
             if client_name and len(client_name) > 2:
-                result = self.supabase.table('tasks')\
+                query = self.supabase.table('tasks')\
                     .select('*')\
                     .ilike('client_name', f'%{client_name}%')\
                     .neq('status', 'completed')\
+                    .neq('status', 'cancelled')\
                     .order('created_at', desc=True)\
-                    .limit(1)\
-                    .execute()
-                
+                    .limit(1)
+                if user_id:
+                    query = query.eq('user_id', user_id)
+                result = query.execute()
+
                 if result.data:
                     print(f"🔗 Found existing task by name: {client_name}")
                     return result.data[0]
-            
+
             return None
-            
+
         except Exception as e:
             print(f"⚠️ Error finding existing task: {e}")
             return None
@@ -429,11 +439,12 @@ class TaskManager:
             # Add delay
             new_datetime = current_datetime + timedelta(hours=hours, days=days)
             
-            # Update task
+            # Update task (reset reminder_sent_at so delayed tasks get new reminders)
             result = self.supabase.table('tasks')\
                 .update({
                     'due_date': new_datetime.date().isoformat(),
-                    'due_time': new_datetime.strftime('%H:%M:%S')
+                    'due_time': new_datetime.strftime('%H:%M:%S'),
+                    'reminder_sent_at': None
                 })\
                 .eq('id', task_id)\
                 .execute()
@@ -531,10 +542,9 @@ class TaskManager:
     def complete_checklist_item(self, item_id):
         """Mark a checklist item as completed"""
         try:
-            from datetime import datetime
             result = self.supabase.table('task_checklist_items').update({
                 'is_completed': True,
-                'completed_at': datetime.now().isoformat()
+                'completed_at': datetime.now(pytz.UTC).isoformat()
             }).eq('id', item_id).execute()
             return bool(result.data)
         except Exception as e:
@@ -557,7 +567,7 @@ class TaskManager:
                     # Mark as completed
                     self.supabase.table('task_checklist_items').update({
                         'is_completed': True,
-                        'completed_at': datetime.now().isoformat()
+                        'completed_at': datetime.now(pytz.UTC).isoformat()
                     }).eq('id', item['id']).execute()
                 else:
                     # Mark as incomplete (in case it was unchecked)

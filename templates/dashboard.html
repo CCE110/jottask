@@ -22,6 +22,7 @@
         <a href="{{ shopping_list_url }}" class="nav-link">Shopping List</a>
         <a href="{{ url_for('daily_report') }}" class="nav-link">Daily Report</a>
         <a href="{{ url_for('projects') }}" class="nav-link">Projects</a>
+        <a href="{{ url_for('chat.chat_page') }}" class="nav-link">Chat</a>
         <a href="{{ url_for('settings') }}" class="nav-link">Settings</a>
     </div>
 
@@ -33,6 +34,27 @@
 </nav>
 
 <main class="main" style="max-width: 1400px;">
+    {% if system_health and system_health.worker_status != 'healthy' %}
+    <!-- System Health Banner -->
+    <div style="background: {% if system_health.worker_status == 'down' %}#FEE2E2{% else %}#FEF3C7{% endif %}; border: 1px solid {% if system_health.worker_status == 'down' %}#FECACA{% else %}#FDE68A{% endif %}; border-radius: 12px; padding: 16px 20px; margin-bottom: 16px; display: flex; align-items: center; gap: 12px;">
+        <div style="font-size: 20px;">{% if system_health.worker_status == 'down' %}&#x26A0;{% else %}&#x23F3;{% endif %}</div>
+        <div style="flex: 1;">
+            <div style="font-weight: 600; color: {% if system_health.worker_status == 'down' %}#991B1B{% else %}#92400E{% endif %};">
+                Worker {{ system_health.worker_status | upper }}
+                {% if system_health.heartbeat_age_minutes %}
+                    — last heartbeat {{ system_health.heartbeat_age_minutes | round(0) | int }}m ago
+                {% else %}
+                    — no heartbeat recorded
+                {% endif %}
+            </div>
+            <div style="font-size: 13px; color: #6B7280; margin-top: 4px;">
+                24h: {{ system_health.emails_sent_24h }} sent, {{ system_health.emails_failed_24h }} failed, {{ system_health.errors_24h }} errors
+            </div>
+        </div>
+        <a href="/api/system/health" style="color: #6366F1; font-size: 13px; white-space: nowrap;">View Details</a>
+    </div>
+    {% endif %}
+
     <!-- Stats -->
     <div class="stats-grid">
         <div class="stat-card">
@@ -93,9 +115,16 @@
                         {% if task.status == 'ongoing' %}<span class="badge" style="background: #E0E7FF; color: #3730A3;">Ongoing</span>{% endif %}
                         {% if task.client_name %}<span>{{ task.client_name }}</span>{% endif %}
                     </div>
-                    <div class="kanban-card-actions">
-                        <button class="btn-complete" onclick="event.stopPropagation(); completeTask('{{ task.id }}', this)">Complete</button>
-                        <button onclick="event.stopPropagation(); openDelayModal('{{ task.id }}')">Delay</button>
+                    <div class="kanban-card-actions" style="display:flex;flex-direction:column;gap:6px;">
+                        <div style="display:flex;gap:6px;">
+                            <button class="btn-complete" onclick="event.stopPropagation(); completeTask('{{ task.id }}', this)">Complete</button>
+                            <button onclick="event.stopPropagation(); openDelayModal('{{ task.id }}')">Delay</button>
+                        </div>
+                        <div style="display:flex;gap:6px;">
+                            <button style="background:#0EA5E9;color:white;border:none;border-radius:6px;padding:4px 8px;font-size:12px;cursor:pointer;flex:1;" onclick="event.stopPropagation(); delayTaskPreset('{{ task.id }}', 'next_day_8am')">🌅 Tmrw 8am</button>
+                            <button style="background:#0EA5E9;color:white;border:none;border-radius:6px;padding:4px 8px;font-size:12px;cursor:pointer;flex:1;" onclick="event.stopPropagation(); delayTaskPreset('{{ task.id }}', 'next_day_9am')">☀️ Tmrw 9am</button>
+                            <button style="background:#F59E0B;color:white;border:none;border-radius:6px;padding:4px 8px;font-size:12px;cursor:pointer;flex:1;" onclick="event.stopPropagation(); delayTaskPreset('{{ task.id }}', 'next_monday_9am')">📆 Mon 9am</button>
+                        </div>
                     </div>
                 </div>
                 {% endif %}
@@ -119,9 +148,16 @@
                         {% if task.status == 'ongoing' %}<span class="badge" style="background: #E0E7FF; color: #3730A3;">Ongoing</span>{% endif %}
                         {% if task.client_name %}<span>{{ task.client_name }}</span>{% endif %}
                     </div>
-                    <div class="kanban-card-actions">
-                        <button class="btn-complete" onclick="event.stopPropagation(); completeTask('{{ task.id }}', this)">Complete</button>
-                        <button onclick="event.stopPropagation(); openDelayModal('{{ task.id }}')">Delay</button>
+                    <div class="kanban-card-actions" style="display:flex;flex-direction:column;gap:6px;">
+                        <div style="display:flex;gap:6px;">
+                            <button class="btn-complete" onclick="event.stopPropagation(); completeTask('{{ task.id }}', this)">Complete</button>
+                            <button onclick="event.stopPropagation(); openDelayModal('{{ task.id }}')">Delay</button>
+                        </div>
+                        <div style="display:flex;gap:6px;">
+                            <button style="background:#0EA5E9;color:white;border:none;border-radius:6px;padding:4px 8px;font-size:12px;cursor:pointer;flex:1;" onclick="event.stopPropagation(); delayTaskPreset('{{ task.id }}', 'next_day_8am')">🌅 Tmrw 8am</button>
+                            <button style="background:#0EA5E9;color:white;border:none;border-radius:6px;padding:4px 8px;font-size:12px;cursor:pointer;flex:1;" onclick="event.stopPropagation(); delayTaskPreset('{{ task.id }}', 'next_day_9am')">☀️ Tmrw 9am</button>
+                            <button style="background:#F59E0B;color:white;border:none;border-radius:6px;padding:4px 8px;font-size:12px;cursor:pointer;flex:1;" onclick="event.stopPropagation(); delayTaskPreset('{{ task.id }}', 'next_monday_9am')">📆 Mon 9am</button>
+                        </div>
                     </div>
                 </div>
                 {% endif %}
@@ -145,9 +181,16 @@
                         {% if task.status == 'ongoing' %}<span class="badge" style="background: #E0E7FF; color: #3730A3;">Ongoing</span>{% endif %}
                         {% if task.client_name %}<span>{{ task.client_name }}</span>{% endif %}
                     </div>
-                    <div class="kanban-card-actions">
-                        <button class="btn-complete" onclick="event.stopPropagation(); completeTask('{{ task.id }}', this)">Complete</button>
-                        <button onclick="event.stopPropagation(); openDelayModal('{{ task.id }}')">Delay</button>
+                    <div class="kanban-card-actions" style="display:flex;flex-direction:column;gap:6px;">
+                        <div style="display:flex;gap:6px;">
+                            <button class="btn-complete" onclick="event.stopPropagation(); completeTask('{{ task.id }}', this)">Complete</button>
+                            <button onclick="event.stopPropagation(); openDelayModal('{{ task.id }}')">Delay</button>
+                        </div>
+                        <div style="display:flex;gap:6px;">
+                            <button style="background:#0EA5E9;color:white;border:none;border-radius:6px;padding:4px 8px;font-size:12px;cursor:pointer;flex:1;" onclick="event.stopPropagation(); delayTaskPreset('{{ task.id }}', 'next_day_8am')">🌅 Tmrw 8am</button>
+                            <button style="background:#0EA5E9;color:white;border:none;border-radius:6px;padding:4px 8px;font-size:12px;cursor:pointer;flex:1;" onclick="event.stopPropagation(); delayTaskPreset('{{ task.id }}', 'next_day_9am')">☀️ Tmrw 9am</button>
+                            <button style="background:#F59E0B;color:white;border:none;border-radius:6px;padding:4px 8px;font-size:12px;cursor:pointer;flex:1;" onclick="event.stopPropagation(); delayTaskPreset('{{ task.id }}', 'next_monday_9am')">📆 Mon 9am</button>
+                        </div>
                     </div>
                 </div>
                 {% endif %}
@@ -390,15 +433,23 @@
 
     searchInput.addEventListener('input', function() {
         clearTimeout(searchTimeout);
+        const query = this.value.toLowerCase();
+        // Instant client-side filter for visible cards
+        document.querySelectorAll('.kanban-card').forEach(card => {
+            const title = card.querySelector('.kanban-card-title').textContent.toLowerCase();
+            const meta = card.querySelector('.kanban-card-meta').textContent.toLowerCase();
+            card.style.display = (!query || title.includes(query) || meta.includes(query)) ? '' : 'none';
+        });
+        updateCounts();
+        // Auto server-side search after 600ms (finds completed tasks not on page)
         searchTimeout = setTimeout(() => {
-            const query = this.value.toLowerCase();
-            document.querySelectorAll('.kanban-card').forEach(card => {
-                const title = card.querySelector('.kanban-card-title').textContent.toLowerCase();
-                const meta = card.querySelector('.kanban-card-meta').textContent.toLowerCase();
-                card.style.display = (!query || title.includes(query) || meta.includes(query)) ? '' : 'none';
-            });
-            updateCounts();
-        }, 150);
+            const q = this.value.trim();
+            if (q.length >= 2) {
+                window.location.href = `{{ url_for('dashboard') }}?q=${encodeURIComponent(q)}`;
+            } else if (q.length === 0) {
+                window.location.href = '{{ url_for('dashboard') }}';
+            }
+        }, 600);
     });
 
     searchInput.addEventListener('keydown', function(e) {
@@ -423,6 +474,28 @@
     });
 
     // Complete task from kanban card button
+    async function delayTask(taskId, hours, days) {
+        try {
+            const response = await fetch(`/api/tasks/${taskId}/delay`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ hours, days })
+            });
+            if (response.ok) location.reload();
+        } catch (err) { console.error('Failed to delay task:', err); }
+    }
+
+    async function delayTaskPreset(taskId, preset) {
+        try {
+            const response = await fetch(`/api/tasks/${taskId}/delay`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ preset })
+            });
+            if (response.ok) location.reload();
+        } catch (err) { console.error('Failed to delay task:', err); }
+    }
+
     async function completeTask(taskId, btn) {
         try {
             const response = await fetch(`/api/tasks/${taskId}/status`, {
@@ -430,6 +503,11 @@
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ status: 'completed' })
             });
+            if (response.status === 401) {
+                alert('Session expired. Please log in again.');
+                window.location.href = '/login';
+                return;
+            }
             if (response.ok) {
                 const card = btn.closest('.kanban-card');
                 const completedCol = document.getElementById('col-completed');
@@ -440,9 +518,12 @@
                 if (actions) actions.remove();
                 completedCol.appendChild(card);
                 updateCounts();
+            } else {
+                alert('Failed to complete task. Please try again.');
             }
         } catch (err) {
             console.error('Failed to complete task:', err);
+            alert('Network error. Please check your connection.');
         }
     }
 </script>

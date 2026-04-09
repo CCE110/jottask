@@ -1,0 +1,80 @@
+{% extends "base.html" %}
+{% block content %}
+<nav class="nav">
+    <a href="/" class="nav-brand">
+        <svg viewBox="0 0 512 512" width="32" height="32">
+            <defs>
+                <linearGradient id="grad3" x1="0%" y1="0%" x2="0%" y2="100%">
+                    <stop offset="0%" style="stop-color:#8B5CF6" />
+                    <stop offset="100%" style="stop-color:#6366F1" />
+                </linearGradient>
+            </defs>
+            <rect width="512" height="512" rx="96" fill="white"/>
+            <rect x="120" y="80" width="220" height="300" rx="24" fill="url(#grad3)"/>
+            <circle cx="310" cy="350" r="70" fill="#10B981"/>
+            <path d="M275 350 L300 375 L355 315" fill="none" stroke="white" stroke-width="18" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+        Jottask
+    </a>
+    <div class="nav-links">
+        <a href="{{ url_for('dashboard') }}" class="nav-link">Dashboard</a>
+        <a href="{{ url_for('projects') }}" class="nav-link">Projects</a>
+        <a href="{{ url_for('settings') }}" class="nav-link">Settings</a>
+    </div>
+</nav>
+
+<main class="main" style="max-width: 1000px; padding-top: 40px;">
+    <div style="text-align: center; margin-bottom: 48px;">
+        <h1 style="font-size: 36px; margin-bottom: 12px;">Choose Your Plan</h1>
+        <p style="color: var(--gray-500);">
+            Currently on: <strong>{{ current_plan|capitalize }}</strong>
+            {% if subscription_status == 'trial' %} (Trial){% endif %}
+        </p>
+    </div>
+
+    <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 24px;">
+        {% for plan in plans %}
+        <div class="card" style="{% if plan.popular %}border: 2px solid var(--primary);{% endif %} position: relative;">
+            {% if plan.popular %}
+            <div style="position: absolute; top: -12px; left: 50%; transform: translateX(-50%); background: var(--primary); color: white; padding: 4px 16px; border-radius: 12px; font-size: 12px; font-weight: 600;">
+                Most Popular
+            </div>
+            {% endif %}
+            <div class="card-body" style="text-align: center; padding: 32px;">
+                <h3 style="font-size: 24px; margin-bottom: 8px;">{{ plan.name }}</h3>
+                <div style="font-size: 48px; font-weight: 700;">
+                    ${{ plan.price_monthly }}
+                    <span style="font-size: 16px; color: var(--gray-500); font-weight: 400;">/month</span>
+                </div>
+
+                <ul style="list-style: none; text-align: left; margin: 24px 0;">
+                    {% for feature in plan.features %}
+                    <li style="padding: 8px 0; color: var(--gray-700);">
+                        <span style="color: var(--success); margin-right: 8px;">✓</span>
+                        {{ feature }}
+                    </li>
+                    {% endfor %}
+                </ul>
+
+                {% if plan.id == current_plan %}
+                <button class="btn btn-secondary" style="width: 100%;" disabled>Current Plan</button>
+                {% elif plan.id == 'starter' %}
+                <a href="{{ url_for('billing.customer_portal') }}" class="btn btn-secondary" style="width: 100%; display: block;">Downgrade</a>
+                {% else %}
+                <a href="{{ url_for('billing.create_checkout_session', plan=plan.id + '_monthly') }}" class="btn btn-primary" style="width: 100%; display: block;">
+                    Upgrade to {{ plan.name }}
+                </a>
+                {% endif %}
+            </div>
+        </div>
+        {% endfor %}
+    </div>
+
+    <div style="text-align: center; margin-top: 40px; color: var(--gray-500);">
+        <p>All plans include a 14-day free trial. No credit card required to start.</p>
+        <p style="margin-top: 8px;">
+            <a href="{{ url_for('billing.customer_portal') }}" style="color: var(--primary);">Manage existing subscription →</a>
+        </p>
+    </div>
+</main>
+{% endblock %}

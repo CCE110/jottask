@@ -22,6 +22,7 @@
         <a href="{{ shopping_list_url }}" class="nav-link">Shopping List</a>
         <a href="{{ url_for('daily_report') }}" class="nav-link">Daily Report</a>
         <a href="{{ url_for('projects') }}" class="nav-link">Projects</a>
+        <a href="{{ url_for('chat.chat_page') }}" class="nav-link">Chat</a>
         <a href="{{ url_for('settings') }}" class="nav-link active">Settings</a>
     </div>
 
@@ -45,6 +46,7 @@
                     <a href="#profile" class="nav-link active" style="display: block;">Profile</a>
                     <a href="#notifications" class="nav-link" style="display: block;">Notifications</a>
                     <a href="#email" class="nav-link" style="display: block;">Email Connection</a>
+                    <a href="#crm" class="nav-link" style="display: block;">CRM Connection</a>
                     <a href="#subscription" class="nav-link" style="display: block;">Subscription</a>
                 </div>
             </div>
@@ -72,10 +74,19 @@
 
                         <div class="form-group">
                             <label class="form-label">Alternate Emails</label>
-                            <input type="text" name="alternate_emails" class="form-input"
-                                   value="{{ user.alternate_emails|join(', ') if user.alternate_emails else '' }}"
-                                   placeholder="other@email.com, work@email.com">
-                            <small style="color: var(--gray-500);">Comma-separated. Emails you send FROM that should create tasks in your account.</small>
+                            <div id="alt-emails-container" style="display: flex; flex-direction: column; gap: 8px;">
+                                {% for email in (user.alternate_emails or []) %}
+                                <div class="alt-email-row" style="display: flex; gap: 8px; align-items: center;">
+                                    <input type="email" name="alternate_emails_list" class="form-input alt-email-input" value="{{ email }}" placeholder="email@company.com">
+                                    <button type="button" onclick="removeAltEmail(this)" style="background: none; border: none; color: var(--gray-400); cursor: pointer; font-size: 20px; padding: 4px 8px; border-radius: 4px;" title="Remove">&times;</button>
+                                </div>
+                                {% endfor %}
+                                <div class="alt-email-row" style="display: flex; gap: 8px; align-items: center;">
+                                    <input type="email" name="alternate_emails_list" class="form-input alt-email-input" value="" placeholder="Add another email...">
+                                    <button type="button" onclick="removeAltEmail(this)" style="background: none; border: none; color: var(--gray-400); cursor: pointer; font-size: 20px; padding: 4px 8px; border-radius: 4px; visibility: hidden;" title="Remove">&times;</button>
+                                </div>
+                            </div>
+                            <small style="color: var(--gray-500); margin-top: 4px; display: block;">Emails you send FROM that should create tasks in your account.</small>
                         </div>
 
                         <div class="form-group">
@@ -132,6 +143,46 @@
                 </div>
             </div>
 
+            <!-- CRM Connection Section -->
+            <div id="crm" class="card" style="margin-bottom: 24px;">
+                <div class="card-header">
+                    <h2 class="card-title">CRM Connection</h2>
+                </div>
+                <div class="card-body">
+                    {% if crm_connection %}
+                    <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px;">
+                        <div style="display: flex; align-items: center; gap: 12px;">
+                            <div style="width: 40px; height: 40px; border-radius: 8px; background: var(--gray-100); display: flex; align-items: center; justify-content: center; font-size: 20px;">&#x1F4CA;</div>
+                            <div>
+                                <strong>{{ crm_connection.display_name or crm_connection.provider|capitalize }}</strong>
+                                <div style="font-size: 13px; color: var(--gray-500);">
+                                    {{ crm_connection.provider|capitalize }}
+                                    {% if crm_connection.last_sync_at %}
+                                    &bull; Last sync: {{ crm_connection.last_sync_at[:16].replace('T', ' ') }}
+                                    {% endif %}
+                                </div>
+                            </div>
+                        </div>
+                        <span style="padding: 4px 8px; border-radius: 4px; font-size: 12px; font-weight: 500;
+                            {% if crm_connection.connection_status == 'connected' %}background: #D1FAE5; color: #065F46;
+                            {% elif crm_connection.connection_status == 'error' %}background: #FEE2E2; color: #991B1B;
+                            {% else %}background: #FEF3C7; color: #92400E;{% endif %}">
+                            {{ crm_connection.connection_status|capitalize }}
+                        </span>
+                    </div>
+                    {% if crm_connection.last_error and crm_connection.connection_status == 'error' %}
+                    <p style="color: var(--danger); font-size: 13px; margin-bottom: 16px;">{{ crm_connection.last_error }}</p>
+                    {% endif %}
+                    <a href="{{ url_for('crm_setup.crm_setup') }}" class="btn btn-secondary">Manage CRM</a>
+                    {% else %}
+                    <p style="color: var(--gray-500); margin-bottom: 16px;">
+                        Connect your CRM to automatically sync contact notes from email updates.
+                    </p>
+                    <a href="{{ url_for('crm_setup.crm_setup') }}" class="btn btn-primary">Connect CRM</a>
+                    {% endif %}
+                </div>
+            </div>
+
             <!-- Subscription Section -->
             <div class="card" style="margin-bottom: 24px;">
                 <div class="card-header">
@@ -148,9 +199,9 @@
                     <div style="background: var(--gray-50); padding: 16px; border-radius: 8px; margin-bottom: 20px;">
                         <div style="display: flex; justify-content: space-between; margin-bottom: 8px;">
                             <span>Tasks this month</span>
-                            <strong>{{ subscription.tasks_used }} / {{ subscription.tasks_limit if subscription.tasks_limit != float('inf') else '∞' }}</strong>
+                            <strong>{{ subscription.tasks_used }} / {% if subscription.tasks_limit is number and subscription.tasks_limit > 99999 %}Unlimited{% else %}{{ subscription.tasks_limit }}{% endif %}</strong>
                         </div>
-                        {% if subscription.tasks_limit != float('inf') %}
+                        {% if subscription.tasks_limit is number and subscription.tasks_limit <= 99999 %}
                         <div style="background: var(--gray-200); height: 8px; border-radius: 4px; overflow: hidden;">
                             <div style="background: var(--primary); height: 100%; width: {{ (subscription.tasks_used / subscription.tasks_limit * 100)|int }}%; transition: width 0.3s;"></div>
                         </div>
@@ -206,18 +257,37 @@
                         </div>
                     </div>
 
-                    <!-- Share Buttons -->
-                    <div style="margin-top: 20px; display: flex; gap: 8px; flex-wrap: wrap;">
-                        <a href="mailto:?subject=Try%20Jottask%20-%20AI%20Task%20Management&body=I've%20been%20using%20Jottask%20to%20manage%20my%20tasks%20via%20email.%20Check%20it%20out%3A%20{{ referral_link|urlencode }}" class="btn btn-secondary" style="flex: 1;">
-                            ✉️ Email
-                        </a>
-                        <a href="https://wa.me/?text=Check%20out%20Jottask%20for%20easy%20task%20management%3A%20{{ referral_link|urlencode }}" target="_blank" class="btn btn-secondary" style="flex: 1;">
-                            💬 WhatsApp
-                        </a>
-                        <a href="https://twitter.com/intent/tweet?text=Managing%20tasks%20via%20email%20with%20%40Jottask%20-%20super%20easy!&url={{ referral_link|urlencode }}" target="_blank" class="btn btn-secondary" style="flex: 1;">
-                            🐦 Twitter
-                        </a>
+                    <!-- Invite by Email -->
+                    <div style="margin-top: 20px; padding-top: 20px; border-top: 1px solid var(--gray-200);">
+                        <label class="form-label">Invite by Email</label>
+                        <form method="POST" action="{{ url_for('send_referral_invite') }}" style="display: flex; gap: 8px;">
+                            <input type="email" name="invited_email" class="form-input" placeholder="friend@company.com.au" required style="flex: 1;">
+                            <button type="submit" class="btn btn-primary" style="white-space: nowrap;">Send Invite</button>
+                        </form>
+                        <small style="color: var(--gray-500); display: block; margin-top: 6px;">We'll send them a branded invite email with your referral link.</small>
                     </div>
+
+                    <!-- Sent Invites -->
+                    {% if sent_invites %}
+                    <div style="margin-top: 20px; padding-top: 20px; border-top: 1px solid var(--gray-200);">
+                        <label class="form-label">Sent Invites</label>
+                        <div style="display: flex; flex-direction: column; gap: 8px;">
+                            {% for invite in sent_invites %}
+                            <div style="display: flex; align-items: center; justify-content: space-between; background: var(--gray-50); padding: 10px 14px; border-radius: 8px; font-size: 14px;">
+                                <span>{{ invite.invited_email }}</span>
+                                <span style="padding: 2px 8px; border-radius: 4px; font-size: 12px; font-weight: 500;
+                                    {% if invite.status == 'converted' %}background: #D1FAE5; color: #065F46;
+                                    {% elif invite.status == 'signed_up' %}background: #DBEAFE; color: #1E40AF;
+                                    {% else %}background: var(--gray-100); color: var(--gray-500);{% endif %}">
+                                    {% if invite.status == 'converted' %}Subscribed
+                                    {% elif invite.status == 'signed_up' %}Signed Up
+                                    {% else %}Pending{% endif %}
+                                </span>
+                            </div>
+                            {% endfor %}
+                        </div>
+                    </div>
+                    {% endif %}
                 </div>
             </div>
         </div>
@@ -230,6 +300,29 @@ function copyReferralLink() {
     input.select();
     document.execCommand('copy');
     alert('Referral link copied!');
+}
+
+// Alternate emails: auto-add new row when typing in the last empty one
+document.getElementById('alt-emails-container').addEventListener('input', function(e) {
+    if (!e.target.classList.contains('alt-email-input')) return;
+    const rows = this.querySelectorAll('.alt-email-row');
+    const lastRow = rows[rows.length - 1];
+    const lastInput = lastRow.querySelector('.alt-email-input');
+    // If user typed in the last (empty) row, add a new empty row and show its remove button
+    if (e.target === lastInput && lastInput.value.trim()) {
+        lastRow.querySelector('button').style.visibility = 'visible';
+        const newRow = document.createElement('div');
+        newRow.className = 'alt-email-row';
+        newRow.style = 'display: flex; gap: 8px; align-items: center;';
+        newRow.innerHTML = '<input type="email" name="alternate_emails_list" class="form-input alt-email-input" value="" placeholder="Add another email...">' +
+            '<button type="button" onclick="removeAltEmail(this)" style="background: none; border: none; color: var(--gray-400); cursor: pointer; font-size: 20px; padding: 4px 8px; border-radius: 4px; visibility: hidden;" title="Remove">&times;</button>';
+        this.appendChild(newRow);
+    }
+});
+
+function removeAltEmail(btn) {
+    const row = btn.parentElement;
+    row.remove();
 }
 </script>
 {% endblock %}

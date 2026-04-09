@@ -1,0 +1,223 @@
+{% extends "base.html" %}
+{% block content %}
+<nav class="nav">
+    <a href="{{ url_for('dashboard') }}" class="nav-brand">
+        <svg viewBox="0 0 512 512" width="32" height="32">
+            <defs>
+                <linearGradient id="grad3" x1="0%" y1="0%" x2="0%" y2="100%">
+                    <stop offset="0%" style="stop-color:#8B5CF6" />
+                    <stop offset="100%" style="stop-color:#6366F1" />
+                </linearGradient>
+            </defs>
+            <rect width="512" height="512" rx="96" fill="white"/>
+            <rect x="120" y="80" width="220" height="300" rx="24" fill="url(#grad3)"/>
+            <circle cx="310" cy="350" r="70" fill="#10B981"/>
+            <path d="M275 350 L300 375 L355 315" fill="none" stroke="white" stroke-width="18" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+        Jottask
+    </a>
+    <div class="nav-user">
+        <a href="{{ url_for('dashboard') }}" class="btn btn-secondary btn-sm">← Back to Tasks</a>
+    </div>
+</nav>
+
+<main class="main">
+    <div style="display: grid; grid-template-columns: 2fr 1fr; gap: 24px;">
+        <!-- Main Content -->
+        <div>
+            <!-- Task Header -->
+            <div class="card" style="margin-bottom: 24px;">
+                <div class="card-body">
+                    <div style="display: flex; align-items: start; justify-content: space-between; margin-bottom: 16px;">
+                        <div>
+                            <h1 style="font-size: 24px; margin-bottom: 8px;">{{ task.title }}</h1>
+                            <div style="display: flex; gap: 12px; flex-wrap: wrap;">
+                                <span class="status-badge priority-{{ task.priority }}" style="background: var(--gray-100);">
+                                    {{ task.priority|capitalize }} Priority
+                                </span>
+                                <span style="color: var(--gray-500);">
+                                    Due: {{ task.due_date }} at {{ task.due_time[:5] if task.due_time else 'N/A' }}
+                                </span>
+                            </div>
+                        </div>
+                        <a href="{{ url_for('edit_task', task_id=task.id) }}" class="btn btn-secondary btn-sm">Edit</a>
+                    </div>
+
+                    {% if task.description %}
+                    <p style="color: var(--gray-700); margin-top: 16px;">{{ task.description }}</p>
+                    {% endif %}
+
+                    {% if task.client_name %}
+                    <div style="margin-top: 20px; padding: 16px; background: var(--gray-50); border-radius: 8px;">
+                        <h4 style="font-size: 12px; color: var(--gray-500); margin-bottom: 8px;">CLIENT</h4>
+                        <p style="font-weight: 500;">{{ task.client_name }}</p>
+                        {% if task.client_email %}<p style="color: var(--gray-500); font-size: 14px;">{{ task.client_email }}</p>{% endif %}
+                        {% if task.client_phone %}<p style="color: var(--gray-500); font-size: 14px;">{{ task.client_phone }}</p>{% endif %}
+                    </div>
+                    {% endif %}
+                </div>
+            </div>
+
+            <!-- Checklist -->
+            <div class="card" style="margin-bottom: 24px;">
+                <div class="card-header">
+                    <h3 class="card-title">Checklist</h3>
+                    <span style="color: var(--gray-500); font-size: 14px;">
+                        {{ checklist|selectattr('is_completed')|list|length }}/{{ checklist|length }} completed
+                    </span>
+                </div>
+                <div class="card-body">
+                    {% if checklist %}
+                    <form method="POST" action="{{ url_for('update_checklist', task_id=task.id) }}">
+                        {% for item in checklist %}
+                        <div class="checklist-item {% if item.is_completed %}completed{% endif %}">
+                            <input type="checkbox" name="completed" value="{{ item.id }}"
+                                   id="item_{{ item.id }}" {% if item.is_completed %}checked{% endif %}
+                                   onchange="this.form.submit()">
+                            <label for="item_{{ item.id }}">{{ item.item_text }}</label>
+                        </div>
+                        {% endfor %}
+                    </form>
+                    {% else %}
+                    <p style="color: var(--gray-500); text-align: center; padding: 20px;">No checklist items yet</p>
+                    {% endif %}
+
+                    <form method="POST" action="{{ url_for('add_checklist_item', task_id=task.id) }}" style="margin-top: 16px; display: flex; gap: 8px;">
+                        <input type="text" name="item_text" class="form-input" placeholder="Add checklist item..." style="flex: 1;">
+                        <button type="submit" class="btn btn-primary btn-sm">Add</button>
+                    </form>
+                </div>
+            </div>
+
+            <!-- Notes -->
+            <div class="card">
+                <div class="card-header">
+                    <h3 class="card-title">Notes</h3>
+                </div>
+                <div class="card-body">
+                    <form method="POST" action="{{ url_for('add_note', task_id=task.id) }}" style="margin-bottom: 20px;">
+                        <textarea name="content" class="form-input" rows="3" placeholder="Add a note..."></textarea>
+                        <button type="submit" class="btn btn-primary btn-sm" style="margin-top: 8px;">Add Note</button>
+                    </form>
+
+                    {% if notes %}
+                    <div class="notes-list">
+                        {% for note in notes %}
+                        <div class="note-item" style="padding: 16px 0; border-bottom: 1px solid var(--gray-100);">
+                            <div style="display: flex; justify-content: space-between; margin-bottom: 8px;">
+                                <span style="font-size: 12px; color: var(--gray-500);">
+                                    {% if note.source == 'email' %}📧{% elif note.source == 'system' %}🤖{% else %}📝{% endif %}
+                                    {{ note.source|capitalize }}
+                                </span>
+                                <span style="font-size: 12px; color: var(--gray-500);">
+                                    {{ note.created_at[:16].replace('T', ' ') }}
+                                </span>
+                            </div>
+                            <p style="color: var(--gray-700);">{{ note.content }}</p>
+                            {% if note.source_email_subject %}
+                            <p style="font-size: 12px; color: var(--gray-500); margin-top: 8px;">
+                                Re: {{ note.source_email_subject }}
+                            </p>
+                            {% endif %}
+                        </div>
+                        {% endfor %}
+                    </div>
+                    {% else %}
+                    <p style="color: var(--gray-500); text-align: center; padding: 20px;">No notes yet</p>
+                    {% endif %}
+                </div>
+            </div>
+        </div>
+
+        <!-- Sidebar -->
+        <div>
+            <!-- Quick Actions -->
+            <div class="card" style="margin-bottom: 24px;">
+                <div class="card-header">
+                    <h3 class="card-title">Quick Actions</h3>
+                </div>
+                <div class="card-body">
+                    {% if task.status == 'pending' %}
+                    <form method="POST" action="{{ url_for('complete_task_action', task_id=task.id) }}">
+                        <button type="submit" class="btn btn-success" style="width: 100%; margin-bottom: 12px;">
+                            ✓ Mark Complete
+                        </button>
+                    </form>
+                    {% else %}
+                    <form method="POST" action="{{ url_for('reopen_task', task_id=task.id) }}">
+                        <button type="submit" class="btn btn-secondary" style="width: 100%; margin-bottom: 12px;">
+                            ↩ Reopen Task
+                        </button>
+                    </form>
+                    {% endif %}
+
+                    <p style="font-size: 12px; color: var(--gray-500); margin-bottom: 8px;">Reschedule:</p>
+                    <div class="delay-buttons">
+                        <button class="delay-btn" onclick="delayTask('{{ task.id }}', 1, 0)">+1hr</button>
+                        <button class="delay-btn" onclick="delayTask('{{ task.id }}', 0, 1)">+1d</button>
+                        <button class="delay-btn" onclick="delayTask('{{ task.id }}', 0, 7)">+1w</button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Task Info -->
+            <div class="card">
+                <div class="card-header">
+                    <h3 class="card-title">Details</h3>
+                </div>
+                <div class="card-body" style="font-size: 14px;">
+                    <div style="display: flex; justify-content: space-between; padding: 8px 0; border-bottom: 1px solid var(--gray-100);">
+                        <span style="color: var(--gray-500);">Status</span>
+                        <span style="font-weight: 500;">{{ task.status|capitalize }}</span>
+                    </div>
+                    <div style="display: flex; justify-content: space-between; padding: 8px 0; border-bottom: 1px solid var(--gray-100);">
+                        <span style="color: var(--gray-500);">Priority</span>
+                        <span class="priority-{{ task.priority }}">{{ task.priority|capitalize }}</span>
+                    </div>
+                    <div style="display: flex; justify-content: space-between; padding: 8px 0; border-bottom: 1px solid var(--gray-100);">
+                        <span style="color: var(--gray-500);">Created</span>
+                        <span>{{ task.created_at[:10] if task.created_at else 'N/A' }}</span>
+                    </div>
+                    {% if task.completed_at %}
+                    <div style="display: flex; justify-content: space-between; padding: 8px 0;">
+                        <span style="color: var(--gray-500);">Completed</span>
+                        <span>{{ task.completed_at[:10] }}</span>
+                    </div>
+                    {% endif %}
+                </div>
+            </div>
+        </div>
+    </div>
+</main>
+
+<style>
+.checklist-item {
+    display: flex;
+    align-items: center;
+    padding: 12px 0;
+    border-bottom: 1px solid var(--gray-100);
+    gap: 12px;
+}
+.checklist-item:last-of-type { border-bottom: none; }
+.checklist-item input[type="checkbox"] {
+    width: 20px;
+    height: 20px;
+    accent-color: var(--primary);
+}
+.checklist-item.completed label {
+    text-decoration: line-through;
+    color: var(--gray-500);
+}
+</style>
+
+<script>
+async function delayTask(taskId, hours, days) {
+    const response = await fetch(`/api/tasks/${taskId}/delay`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ hours, days })
+    });
+    if (response.ok) location.reload();
+}
+</script>
+{% endblock %}
