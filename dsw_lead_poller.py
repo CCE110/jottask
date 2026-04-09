@@ -28,6 +28,7 @@ STATUS_LABELS = {
     'nurture':            '💧 NURTURE',
     'won':                '🎉 WON',
     'lost':               '❌ LOST',
+    'no_reply':           '📵 NO REPLY',
 }
 claude = Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
 resend.api_key = os.getenv("RESEND_API_KEY")
@@ -306,6 +307,23 @@ def send_email(name, phone, addr, src, summary, crm_url, os_url, task_id=None, l
         bl = [("Complete",f"{AU}?action=complete&task_id={task_id}","#10B981"),("+1 Hour",f"{AU}?action=delay_1hour&task_id={task_id}","#6B7280"),("+1 Day",f"{AU}?action=delay_1day&task_id={task_id}","#6B7280"),("Tmrw 8am",f"{AU}?action=delay_next_day_8am&task_id={task_id}","#0EA5E9"),("Tmrw 9am",f"{AU}?action=delay_next_day_9am&task_id={task_id}","#0EA5E9"),("Mon 9am",f"{AU}?action=delay_next_monday_9am&task_id={task_id}","#F59E0B")]
         bh = "".join(f'<a href="{u}" style="display:inline-block;padding:10px 15px;background:{col};color:white;text-decoration:none;border-radius:8px;font-weight:600;font-size:13px">{l}</a>' for l,u,col in bl)
         abtns = f'<div style="margin:16px 0;display:flex;flex-wrap:wrap;gap:8px">{bh}</div>'
+        _now = datetime.now()
+        _days_to_fri = (4 - _now.weekday()) % 7 or 7
+        _days_to_mon = (7 - _now.weekday()) % 7 or 7
+        _days_to_wed = (2 - _now.weekday()) % 7 or 7
+        _this_fri  = (_now + timedelta(days=_days_to_fri)).strftime("%Y-%m-%d")
+        _next_mon  = (_now + timedelta(days=_days_to_mon)).strftime("%Y-%m-%d")
+        _next_wed  = (_now + timedelta(days=_days_to_wed)).strftime("%Y-%m-%d")
+        _plus_week = (_now + timedelta(days=7)).strftime("%Y-%m-%d")
+        bl2 = [
+            ("This Fri 9am", f"{AU}?action=set_custom&date={_this_fri}&time=09:00&task_id={task_id}", "#0EA5E9"),
+            ("Next Mon 9am", f"{AU}?action=set_custom&date={_next_mon}&time=09:00&task_id={task_id}", "#F59E0B"),
+            ("Next Wed 9am", f"{AU}?action=set_custom&date={_next_wed}&time=09:00&task_id={task_id}", "#F59E0B"),
+            ("+1 Week",      f"{AU}?action=set_custom&date={_plus_week}&time=09:00&task_id={task_id}", "#6B7280"),
+        ]
+        bh2 = "".join(f'<a href="{u}" style="display:inline-block;padding:10px 15px;background:{col};color:white;text-decoration:none;border-radius:8px;font-weight:600;font-size:13px">{l}</a>' for l,u,col in bl2)
+        abtns2 = f'<div style="margin:4px 0 8px;display:flex;flex-wrap:wrap;gap:8px">{bh2}</div>'
+        no_reply_btn = f'<div style="margin:8px 0"><a href="{AU}?action=no_reply&task_id={task_id}" style="display:inline-block;padding:10px 15px;background:#D97706;color:white;text-decoration:none;border-radius:8px;font-weight:600;font-size:13px">No Reply ↩ Try Again Tmrw</a></div>'
         # Status buttons
         statuses = [
             ("Intro Call","intro_call","#1e40af"),
@@ -345,8 +363,10 @@ def send_email(name, phone, addr, src, summary, crm_url, os_url, task_id=None, l
         '<hr style="border:1px solid #e2e8f0">'
         '<p style="font-weight:600;color:#6B7280;font-size:13px">Task Delay</p>'
         f'{abtns}'
+        f'{abtns2}'
         '<p style="font-weight:600;color:#6B7280;font-size:13px;margin-top:12px">Lead Status</p>'
         f'{sbtns}'
+        f'{no_reply_btn}'
         '</div>'
         '<div style="background:#1e40af;padding:12px;border-radius:0 0 8px 8px;text-align:center">'
         f'<a href="https://www.jottask.app/task/{task_id}" style="color:white;font-weight:bold;text-decoration:none">Open Jottask</a>'

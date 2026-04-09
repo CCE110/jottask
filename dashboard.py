@@ -3198,6 +3198,33 @@ def handle_action():
             </body></html>
             """, error=str(e))
 
+    elif action == 'set_custom' and task_id:
+        r_date = request.args.get('date', '')
+        r_time = request.args.get('time', '09:00')
+        if r_date:
+            supabase.table('tasks').update({
+                'due_date': r_date,
+                'due_time': r_time + ':00',
+                'reminder_sent_at': None,
+            }).eq('id', task_id).execute()
+        return redirect(url_for('lead_detail', task_id=task_id))
+
+    elif action == 'no_reply' and task_id:
+        try:
+            task_row = supabase.table('tasks').select('due_time').eq('id', task_id).single().execute()
+            current_time = (task_row.data or {}).get('due_time', '09:00:00') or '09:00:00'
+        except Exception:
+            current_time = '09:00:00'
+        aest = pytz.timezone('Australia/Brisbane')
+        tomorrow = (datetime.now(aest) + timedelta(days=1)).date().isoformat()
+        supabase.table('tasks').update({
+            'due_date': tomorrow,
+            'due_time': current_time,
+            'lead_status': 'no_reply',
+            'reminder_sent_at': None,
+        }).eq('id', task_id).execute()
+        return redirect(url_for('lead_detail', task_id=task_id))
+
     elif action == 'set_status' and task_id:
             status_val = request.args.get('status', '')
             lost_reason = request.args.get('lost_reason', '')
@@ -4264,6 +4291,7 @@ def lead_detail(task_id):
         'nurture':           '💧 NURTURE',
         'won':               '🎉 WON',
         'lost':              '❌ LOST',
+        'no_reply':          '📵 NO REPLY',
     }
     STATUS_COLORS = {
         'new_lead': '#1e40af', 'intro_call': '#1e40af',
@@ -4271,7 +4299,7 @@ def lead_detail(task_id):
         'build_quote': '#0369a1', 'quote_submitted': '#0891b2',
         'quote_followup': '#0e7490', 'revise_quote': '#7c3aed',
         'customer_deciding': '#b45309', 'nurture': '#6b7280',
-        'won': '#10b981', 'lost': '#ef4444',
+        'won': '#10b981', 'lost': '#ef4444', 'no_reply': '#6b7280',
     }
 
     # ── Fetch task ────────────────────────────────────────────────────────
@@ -4352,10 +4380,12 @@ def lead_detail(task_id):
     else:
         cust_raw, notes_raw = desc, ''
 
-    # Strip Phone/Email/CRM/OpenSolar header lines from customer requirements
+    # Strip Phone/Email/CRM/OpenSolar/Sub-note header lines from customer requirements
     cust_lines = [ln for ln in cust_raw.splitlines()
-                  if not ln.startswith(('Phone:', 'Email:', 'CRM:', 'OpenSolar:'))]
+                  if not ln.startswith(('Phone:', 'Email:', 'CRM:', 'OpenSolar:', 'Sub-note:'))]
     cust_text = '\n'.join(cust_lines).strip()
+
+    sub_note = _field('Sub-note:', desc)
 
     # Extract Pipereply contact ID from CRM URL
     crm_cid = ''
@@ -4388,6 +4418,7 @@ def lead_detail(task_id):
         ('Revise Quote',      'revise_quote',      '#7c3aed'),
         ('Deciding',          'customer_deciding', '#b45309'),
         ('Nurture',           'nurture',           '#6b7280'),
+        ('No Reply 📵',       'no_reply',          '#6b7280'),
         ('WON 🎉',            'won',               '#10b981'),
         ('LOST ❌',           'lost',              '#ef4444'),
     ]
@@ -4434,6 +4465,12 @@ textarea:focus{border-color:#1e40af;box-shadow:0 0 0 3px rgba(30,64,175,.1)}
 <div class="hdr">
   <div>
     <h1>New DSW Lead</h1>
+    <form action="/task/{{ task_id }}/sub_note" method="POST" style="margin:6px 0 4px">
+      <input type="text" name="sub_note" value="{{ sub_note | e }}"
+             placeholder="Sub-status note (e.g. Tried once — try again tomorrow)..."
+             style="width:100%;background:rgba(255,255,255,0.15);border:1px solid rgba(255,255,255,0.3);border-radius:6px;padding:7px 10px;color:#fff;font-size:13px;outline:none;font-family:inherit"
+             onblur="this.form.submit()">
+    </form>
     <div class="hdr-row">
       <span class="badge" style="background:{{ badge_color }}">{{ badge_text }}</span>
     </div>
@@ -4540,7 +4577,7 @@ if(sp.get('reminder_set')==='1'){
         crm_url=crm_url, os_url=os_url,
         cust_text=cust_text, notes_raw=notes_raw,
         lead_status=lead_status, statuses=STATUSES,
-        task_id=task_id, tomorrow=tomorrow,
+        task_id=task_id, tomorrow=tomorrow, sub_note=sub_note,
     )
 
 
@@ -4620,6 +4657,39 @@ def lead_save_notes(task_id):
         except Exception as e:
             print(f'[LEAD NOTES] Pipereply note error: {e}')
 
+    return redirect(url_for('lead_detail', task_id=task_id, saved='1'))
+
+
+@app.route('/task/<task_id>/sub_note', methods=['POST'])
+def lead_save_sub_note(task_id):
+    """Save the Sub-status note line in the task description."""
+    import re as _re
+    sub_note = request.form.get('sub_note', '').strip()
+
+    try:
+        res = supabase.table('tasks').select('description').eq('id', task_id).single().execute()
+        t = res.data
+    except Exception:
+        return redirect(url_for('lead_detail', task_id=task_id))
+
+    desc = t.get('description') or ''
+
+    if _re.search(r'^Sub-note:.*$', desc, _re.MULTILINE):
+        if sub_note:
+            new_desc = _re.sub(r'^Sub-note:.*$', f'Sub-note: {sub_note}', desc, flags=_re.MULTILINE)
+        else:
+            new_desc = _re.sub(r'^Sub-note:.*\n?', '', desc, flags=_re.MULTILINE)
+    else:
+        if sub_note:
+            # Insert after the OpenSolar line if present, otherwise prepend
+            if _re.search(r'^OpenSolar:', desc, _re.MULTILINE):
+                new_desc = _re.sub(r'^(OpenSolar:[^\n]*)', rf'\1\nSub-note: {sub_note}', desc, flags=_re.MULTILINE, count=1)
+            else:
+                new_desc = f'Sub-note: {sub_note}\n' + desc
+        else:
+            new_desc = desc
+
+    supabase.table('tasks').update({'description': new_desc}).eq('id', task_id).execute()
     return redirect(url_for('lead_detail', task_id=task_id, saved='1'))
 
 
