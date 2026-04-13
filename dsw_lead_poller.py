@@ -209,7 +209,18 @@ def make_opensolar(name, phone, email, address, city, state, postcode):
         last = " ".join(parts[1:]) if len(parts) > 1 else ""
 
         # Build full address string — OpenSolar geocodes from this
-        full_addr = ", ".join(filter(None, [address, city, state, postcode, "Australia"]))
+        abbrevs = [
+            ("St ", "Street "), ("Pl ", "Place "), ("Ave ", "Avenue "),
+            ("Rd ", "Road "), ("Dr ", "Drive "), ("Ct ", "Court "),
+            ("Cres ", "Crescent "), ("Tce ", "Terrace "), ("Cl ", "Close "),
+            ("Pde ", "Parade "), ("Blvd ", "Boulevard "), ("Hwy ", "Highway "),
+            ("Ln ", "Lane "), ("Gr ", "Grove "), ("Sq ", "Square "),
+        ]
+        clean_addr = address or ""
+        for abbr, full in abbrevs:
+            if abbr in clean_addr:
+                clean_addr = clean_addr.replace(abbr, full)
+        full_addr = ", ".join(filter(None, [clean_addr, city, state, postcode]))
 
         print(f"[OpenSolar] Address components: street='{address}' city='{city}' state='{state}' postcode='{postcode}'")
         print(f"[OpenSolar] Full address string: '{full_addr}'")
