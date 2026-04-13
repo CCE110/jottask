@@ -238,6 +238,18 @@ def make_opensolar(name, phone, email, address, city, state, postcode):
             url = f"https://app.opensolar.com/#/projects/{pid}/info"
             print("OpenSolar:", url)
             return pid, url
+        # Handle duplicate email — search for existing project by name
+        if r.status_code == 400 and "already in use" in r.text:
+            print(f"[OpenSolar] Email in use, searching for existing project: {name}")
+            sr = req.get(f"https://api.opensolar.com/api/orgs/{conn.org_id}/projects/",
+                         headers=th, params={"search": name, "limit": 5}, timeout=15)
+            if sr.ok:
+                results = sr.json() if isinstance(sr.json(), list) else sr.json().get("data", [])
+                if results:
+                    pid = results[0].get("id", "")
+                    url = f"https://app.opensolar.com/#/projects/{pid}/info"
+                    print(f"[OpenSolar] Found existing project: {url}")
+                    return pid, url
         print(f"OpenSolar error: {r.status_code} {r.text[:200]}")
         return None, None
     except Exception as e:
