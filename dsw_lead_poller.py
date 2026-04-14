@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-import os, json, requests as req, subprocess, time
+import os, re, json, requests as req, subprocess, time
 from datetime import datetime, timedelta, timezone
 from dotenv import load_dotenv
 from anthropic import Anthropic
@@ -229,6 +229,14 @@ def make_opensolar(name, phone, email, address, city, state, postcode):
     try:
         conn = opensolar()
         if not conn.token: return None, None
+
+        # Sanitise phone: strip non-digit/non-plus chars; drop if <8 digits.
+        # Prevents "N/A", dashes, or other junk from triggering OpenSolar 400s.
+        _clean_phone = re.sub(r'[^\d+]', '', phone or '')
+        if sum(ch.isdigit() for ch in _clean_phone) < 8:
+            _clean_phone = ''
+        phone = _clean_phone
+
         parts = name.strip().split()
         first = parts[0] if parts else "Unknown"
         last = " ".join(parts[1:]) if len(parts) > 1 else ""
