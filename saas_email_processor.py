@@ -2506,7 +2506,7 @@ def handle_dsw_reply(subject, body_text, sender_email):
 
 if __name__ == "__main__":
     import time
-    from saas_scheduler import check_and_send_reminders, check_and_send_dsw_reminders, get_users_needing_summary, send_daily_summary
+    from saas_scheduler import check_and_send_reminders, get_users_needing_summary, send_daily_summary
     from monitoring import log_heartbeat, log_error, send_self_alert, cleanup_old_events, check_reminder_health, check_and_send_canary, check_email_processing_health, send_daily_health_digest
 
     processor = AIEmailProcessor()
@@ -2543,13 +2543,6 @@ if __name__ == "__main__":
             print(f"Error in reminders: {e}")
             log_error('reminders', e, category='reminder')
             tick_errors += 1
-
-        try:
-            # 2a. Check and send DSW Solar lead reminders
-            check_and_send_dsw_reminders()
-        except Exception as e:
-            print(f"Error in DSW reminders: {e}")
-            log_error('dsw_reminders', e, category='reminder')
 
         try:
             # 2b. Functional reminder health check
