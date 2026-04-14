@@ -23,13 +23,14 @@ def get_new_sms():
     try:
         con = sqlite3.connect(CHAT_DB)
         cur = con.cursor()
-        cur.execute("""
-            SELECT m.ROWID, m.text, m.date
-            FROM message m
-            JOIN handle h ON m.handle_id = h.ROWID
-            WHERE h.id = ? AND m.is_from_me = 0 AND m.text IS NOT NULL
-            ORDER BY m.date DESC LIMIT 20
-        """, (SMS_SOURCE,))
+        cur.execute(
+            "SELECT m.ROWID, m.text, m.date "
+            "FROM message m "
+            "JOIN handle h ON m.handle_id = h.ROWID "
+            "WHERE h.id = ? AND m.is_from_me = 0 AND m.text IS NOT NULL "
+            "ORDER BY m.date DESC LIMIT 20",
+            (SMS_SOURCE,)
+        )
         rows = cur.fetchall()
         con.close()
         return rows
@@ -59,13 +60,16 @@ def extract_name(sms_text):
     NAME_PART = r"[A-Z][a-z']+(?:[A-Z][a-z']+)?"
     NAME_FULL = rf'{NAME_PART}(?:\s+{NAME_PART})+'
     # DSW Energy format: "Hi Rob, Peter Smith has just been assigned to you."
-    m = re.search(rf'Hi Rob,\s+({NAME_FULL})\s+has just been assigned', sms_text)
+    # Optional job reference (e.g. "Q2021980") may appear between name and "has just been".
+    m = re.search(rf'Hi Rob,\s+({NAME_FULL})(?:\s+[A-Z]\d{{5,}})?\s+has just been assigned', sms_text)
     if m:
         return m.group(1)
-    # Fallback: any two+ capitalised words (with optional apostrophe)
-    m = re.search(rf'({NAME_FULL})', sms_text)
-    if m:
-        return m.group(1)
+    # Fallback: any two+ capitalised words (with optional apostrophe),
+    # skipping matches that start with "Hi" (e.g. "Hi Rob").
+    for m in re.finditer(rf'({NAME_FULL})', sms_text):
+        candidate = m.group(1)
+        if not candidate.startswith('Hi '):
+            return candidate
     return None
 
 def main():
