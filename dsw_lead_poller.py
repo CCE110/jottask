@@ -92,13 +92,18 @@ def _fuzzy_name_match(a, b, threshold=0.80):
 
 
 def find_or_create_pipereply_contact(name, phone, email='', address='', src='referral'):
-    """Find an existing Pipereply contact by phone (primary) or fuzzy name (secondary).
+    """Find an existing Pipereply contact by phone, email, or fuzzy name.
+
+    Search order: phone → email → fuzzy name. Any match reuses the contact
+    and patches in missing fields. Only creates a new contact if all three
+    searches miss.
 
     Returns (cid, is_new):
       - cid: Pipereply contact ID (or None on failure)
       - is_new: True if a new contact was created, False if an existing one was reused
     """
     norm_phone = _normalize_phone(phone)
+    norm_email = (email or '').strip().lower()
 
     # ── 1. Phone-first dedup ──────────────────────────────────────────────
     if norm_phone:
@@ -121,7 +126,27 @@ def find_or_create_pipereply_contact(name, phone, email='', address='', src='ref
                         req.put(f'{BASE}/contacts/{cid}', headers=H, json=patch, timeout=10)
                     return cid, False
 
-    # ── 2. Fuzzy name dedup ───────────────────────────────────────────────
+    # ── 2. Email dedup ────────────────────────────────────────────────────
+    if norm_email:
+        r = req.get(f'{BASE}/contacts/', headers=H,
+                    params={'locationId': LOCATION_ID, 'query': norm_email, 'limit': 10},
+                    timeout=10)
+        if r.ok:
+            for c in r.json().get('contacts', []):
+                if (c.get('email') or '').strip().lower() == norm_email:
+                    cid = c['id']
+                    existing_name = c.get('contactName', name)
+                    print(f'[Pipereply] Reused existing contact (email match): {existing_name} ({cid[:8]})')
+                    patch = {}
+                    if phone and not _normalize_phone(c.get('phone', '')):
+                        patch['phone'] = phone
+                    if address and not c.get('address1'):
+                        patch['address1'] = address
+                    if patch:
+                        req.put(f'{BASE}/contacts/{cid}', headers=H, json=patch, timeout=10)
+                    return cid, False
+
+    # ── 3. Fuzzy name dedup ───────────────────────────────────────────────
     if name:
         r = req.get(f'{BASE}/contacts/', headers=H,
                     params={'locationId': LOCATION_ID, 'query': name, 'limit': 5},
@@ -143,7 +168,7 @@ def find_or_create_pipereply_contact(name, phone, email='', address='', src='ref
                         req.put(f'{BASE}/contacts/{cid}', headers=H, json=patch, timeout=10)
                     return cid, False
 
-    # ── 3. Create new contact ─────────────────────────────────────────────
+    # ── 4. Create new contact ─────────────────────────────────────────────
     parts = (name or '').strip().split()
     first = parts[0] if parts else name or 'Unknown'
     last  = ' '.join(parts[1:]) if len(parts) > 1 else ''

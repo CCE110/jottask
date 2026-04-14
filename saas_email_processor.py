@@ -2184,75 +2184,41 @@ def handle_dsw_new_lead(subject, body_text, sender_email):
         return False
 
     TOKEN       = os.getenv('PIPEREPLY_TOKEN')
-    LOCATION_ID = os.getenv('PIPEREPLY_LOCATION_ID')
     BASE = 'https://services.leadconnectorhq.com'
     H = {'Authorization': f'Bearer {TOKEN}', 'Content-Type': 'application/json', 'Version': '2021-07-28'}
 
-    # a) Create/update Pipereply contact
-    parts = name.strip().split()
-    first_name = parts[0] if parts else name
-    last_name  = ' '.join(parts[1:]) if len(parts) > 1 else ''
-
-    # Search for existing contact
-    r_search = requests.get(f'{BASE}/contacts/', headers=H,
-                            params={'locationId': LOCATION_ID, 'query': name, 'limit': 3},
-                            timeout=10)
-    contacts_found = r_search.json().get('contacts', []) if r_search.ok else []
-    match = next((c for c in contacts_found
-                  if name.lower() in (c.get('contactName') or '').lower()), None)
-
-    if match:
-        cid = match['id']
-        update_payload = {}
-        if phone:      update_payload['phone']    = phone
-        if email_addr: update_payload['email']    = email_addr
-        if address:    update_payload['address1'] = address
-        if update_payload:
-            requests.put(f'{BASE}/contacts/{cid}', headers=H, json=update_payload, timeout=10)
-        print(f"[DSW NEW LEAD] Updated existing contact: {name} ({cid[:8]})")
-    else:
-        contact_payload = {
-            'locationId': LOCATION_ID,
-            'firstName': first_name,
-            'lastName':  last_name,
-            'phone':     phone or '',
-            'email':     email_addr or '',
-            'address1':  address or '',
-            'tags':      ['referral'],
-            'source':    'Referral',
-        }
-        # 'notes' not accepted by POST contacts endpoint (422) — added via /notes below
-        r_create = requests.post(f'{BASE}/contacts/', headers=H,
-                                 json=contact_payload, timeout=10)
-        if r_create.ok:
-            created = r_create.json()
-            cid = (created.get('contact') or created).get('id', '')
-            print(f"[DSW NEW LEAD] Created contact: {name} ({(cid or '?')[:8]})")
-        else:
-            print(f"[DSW NEW LEAD] Contact creation failed: {r_create.status_code} {r_create.text[:120]}")
-            cid = None
-
-    # b) Save CRM note with referral source + notes
-    if cid:
-        note_lines = [f'Source: Referral — {datetime.now().strftime("%d %b %Y")}']
-        if referred_by: note_lines.append(f'Referred by: {referred_by}')
-        if notes:       note_lines.append(f'Notes: {notes}')
-        requests.post(f'{BASE}/contacts/{cid}/notes', headers=H,
-                      json={'body': '\n'.join(note_lines)}, timeout=10)
-
-    if not cid:
-        print("[DSW NEW LEAD] No contact ID — cannot proceed")
-        return False
-
-    # c+d) Run dsw_lead_poller.process() — creates OpenSolar, Mac contact, task, email
+    # a) Find or create Pipereply contact via shared helper
+    #    (dedups by phone → email → fuzzy name before creating)
     try:
         _spec = ilu.spec_from_file_location('dsw_lead_poller',
             os.path.join(os.path.dirname(os.path.abspath(__file__)), 'dsw_lead_poller.py'))
         dsw = ilu.module_from_spec(_spec)
         _spec.loader.exec_module(dsw)
+    except Exception as e:
+        print(f"[DSW NEW LEAD] Could not load dsw_lead_poller: {e}")
+        return False
+
+    cid, is_new_contact = dsw.find_or_create_pipereply_contact(
+        name=name, phone=phone, email=email_addr,
+        address=address, src='referral',
+    )
+
+    if not cid:
+        print("[DSW NEW LEAD] No contact ID — cannot proceed")
+        return False
+
+    # b) Save CRM note with referral source + notes
+    note_lines = [f'Source: Referral — {datetime.now().strftime("%d %b %Y")}']
+    if referred_by: note_lines.append(f'Referred by: {referred_by}')
+    if notes:       note_lines.append(f'Notes: {notes}')
+    requests.post(f'{BASE}/contacts/{cid}/notes', headers=H,
+                  json={'body': '\n'.join(note_lines)}, timeout=10)
+
+    # c+d) Run dsw_lead_poller.process() — creates OpenSolar, Mac contact, task, email
+    try:
         minimal_contact = {'id': cid, 'contactName': name, 'phone': phone,
                            'email': email_addr, 'address1': address, 'tags': ['referral']}
-        dsw.process(minimal_contact, task_id=None, lead_status=None)
+        dsw.process(minimal_contact, task_id=None, lead_status=None, is_new_contact=is_new_contact)
     except Exception as e:
         print(f"[DSW NEW LEAD] dsw.process error: {e}")
 
