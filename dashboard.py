@@ -2945,6 +2945,22 @@ def handle_action():
                 </body></html>
                 """, title=task_title)
 
+            elif action == 'cancel':
+                supabase.table('tasks').update({
+                    'status': 'cancelled',
+                    'completed_at': datetime.now(pytz.UTC).isoformat()
+                }).eq('id', task_id).execute()
+
+                return render_template_string("""
+                <html><head><title>Lead Dismissed</title></head>
+                <body style="font-family: sans-serif; text-align: center; padding: 50px; background: #f9fafb;">
+                    <h2 style="color: #374151;">Lead Dismissed</h2>
+                    <p><strong>{{ title }}</strong></p>
+                    <p style="color: #6b7280;">Marked as not yours — no further reminders.</p>
+                    <a href="https://www.jottask.app/dashboard" style="color: #6366F1;">Open Dashboard</a>
+                </body></html>
+                """, title=task_title)
+
             elif action == 'delay_1hour':
                 aest = pytz.timezone('Australia/Brisbane')
                 new_dt = datetime.now(aest) + timedelta(hours=1)
