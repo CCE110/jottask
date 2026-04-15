@@ -4511,6 +4511,12 @@ textarea:focus{border-color:#1e40af;box-shadow:0 0 0 3px rgba(30,64,175,.1)}
   <div class="btn-row">
     {% if crm_url %}<a href="{{ crm_url }}" class="btn btn-blue" target="_blank">Pipereply</a>{% endif %}
     {% if os_url %}<a href="{{ os_url }}" class="btn btn-amber" target="_blank">☀️ OpenSolar</a>{% endif %}
+    {% if crm_cid %}
+    <form action="/task/{{ task_id }}/migrate" method="POST" style="display:inline"
+          onsubmit="return confirm('Migrate this task to the new format? The current task will be cancelled and replaced with a fresh one carrying all notes forward.');">
+      <button type="submit" class="btn" style="background:#374151;color:#fff">🔄 Migrate to new format</button>
+    </form>
+    {% endif %}
   </div>
 </div>
 {% endif %}
@@ -4709,6 +4715,72 @@ def lead_save_notes(task_id):
             print(f'[LEAD NOTES] Pipereply note error: {e}')
 
     return redirect(url_for('lead_detail', task_id=task_id, saved='1'))
+
+
+@app.route('/task/<task_id>/migrate', methods=['POST'])
+def migrate_dsw_task(task_id):
+    """Run the DSW lead flow for an existing task, superseding it with a new one.
+
+    process() in dsw_lead_poller auto-detects any pending DSW Solar task with the
+    same client_name (this one), scrapes its MY NOTES + task_notes into a
+    PREVIOUS NOTES block on the new task, reuses its OpenSolar URL, and cancels
+    the old task with a supersede note.
+    """
+    import re, importlib.util as ilu
+
+    try:
+        res = supabase.table('tasks').select('*').eq('id', task_id).single().execute()
+        t = res.data
+    except Exception:
+        t = None
+
+    if not t:
+        return '<html><body style="font-family:sans-serif;text-align:center;padding:50px"><h2>Task not found</h2></body></html>', 404
+
+    if t.get('category') != 'DSW Solar':
+        return '<html><body style="font-family:sans-serif;text-align:center;padding:50px"><h2>Migration only supported for DSW Solar tasks</h2></body></html>', 400
+
+    if t.get('status') != 'pending':
+        return '<html><body style="font-family:sans-serif;text-align:center;padding:50px"><h2>Task is not pending — nothing to migrate</h2></body></html>', 400
+
+    desc = t.get('description') or ''
+    crm_m = re.search(r'^CRM:\s*(\S+)', desc, re.MULTILINE)
+    if not crm_m:
+        return '<html><body style="font-family:sans-serif;text-align:center;padding:50px"><h2>No Pipereply CRM URL found in task description</h2></body></html>', 400
+    cid_m = re.search(r'/detail/([A-Za-z0-9]+)', crm_m.group(1))
+    if not cid_m:
+        return '<html><body style="font-family:sans-serif;text-align:center;padding:50px"><h2>Could not parse Pipereply contact ID from CRM URL</h2></body></html>', 400
+    cid = cid_m.group(1)
+
+    name = t.get('client_name') or t.get('title') or 'Unknown'
+
+    try:
+        spec = ilu.spec_from_file_location(
+            'dsw_lead_poller',
+            os.path.join(os.path.dirname(os.path.abspath(__file__)), 'dsw_lead_poller.py'),
+        )
+        dsw = ilu.module_from_spec(spec)
+        spec.loader.exec_module(dsw)
+    except Exception as e:
+        print(f'[MIGRATE] Could not load dsw_lead_poller: {e}')
+        return f'<html><body style="font-family:sans-serif;text-align:center;padding:50px"><h2>Internal error</h2><p>{e}</p></body></html>', 500
+
+    try:
+        dsw.process({'id': cid, 'contactName': name}, task_id=None, lead_status=None, is_new_contact=False)
+    except Exception as e:
+        print(f'[MIGRATE] dsw.process failed for {task_id}: {e}')
+        return f'<html><body style="font-family:sans-serif;text-align:center;padding:50px"><h2>Migration failed</h2><p>{e}</p></body></html>', 500
+
+    # Find the new (pending) task for the same client_name, created after the old one
+    try:
+        nq = supabase.table('tasks').select('id').eq('category', 'DSW Solar')\
+            .eq('status', 'pending').ilike('client_name', f'%{name}%')\
+            .order('created_at', desc=True).limit(1).execute()
+        new_id = nq.data[0]['id'] if nq.data else task_id
+    except Exception:
+        new_id = task_id
+
+    return redirect(url_for('lead_detail', task_id=new_id, migrated='1'))
 
 
 @app.route('/task/<task_id>/sub_note', methods=['POST'])
