@@ -5227,6 +5227,89 @@ def admin_dashboard():
     return admin_html
 
 
+@app.route('/admin/email-log')
+@admin_required
+def admin_email_log():
+    """Last 100 email send attempts from system_events (email_sent + email_failed)."""
+    try:
+        res = supabase.table('system_events')\
+            .select('created_at,event_type,category,status,error_detail,metadata,user_id')\
+            .in_('event_type', ['email_sent', 'email_failed'])\
+            .order('created_at', desc=True)\
+            .limit(100)\
+            .execute()
+        rows = res.data or []
+    except Exception as e:
+        rows = []
+        print(f"[admin_email_log] query failed: {e}")
+
+    sent_count = sum(1 for r in rows if r.get('event_type') == 'email_sent')
+    failed_count = sum(1 for r in rows if r.get('event_type') == 'email_failed')
+
+    def _row_html(r):
+        md = r.get('metadata') or {}
+        ts = (r.get('created_at') or '')[:19].replace('T', ' ')
+        to_email = (md.get('to_email') or '—')
+        subject = (md.get('subject') or '—')[:80]
+        cat = r.get('category') or '—'
+        is_fail = r.get('event_type') == 'email_failed'
+        status_badge = ('<span class="bd bd-fail">FAILED</span>' if is_fail
+                        else '<span class="bd bd-ok">sent</span>')
+        err = r.get('error_detail') or ''
+        err_cell = f'<td class="err">{_escape_html(err[:200])}</td>' if is_fail else '<td></td>'
+        return (
+            f'<tr class="{ "row-fail" if is_fail else "" }">'
+            f'<td class="mono">{ts}</td>'
+            f'<td>{status_badge}</td>'
+            f'<td>{_escape_html(cat)}</td>'
+            f'<td>{_escape_html(to_email)}</td>'
+            f'<td>{_escape_html(subject)}</td>'
+            f'{err_cell}'
+            f'</tr>'
+        )
+
+    rows_html = ''.join(_row_html(r) for r in rows) or '<tr><td colspan="6" style="text-align:center;padding:30px;color:#6b7280">No email events logged yet.</td></tr>'
+
+    return f"""<!DOCTYPE html><html><head>
+<meta charset="utf-8"><title>Jottask — Email Log</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #f3f4f6; margin: 0; padding: 24px; color: #111827; }}
+  h1 {{ margin: 0 0 6px; font-size: 22px; }}
+  .sub {{ color: #6b7280; font-size: 13px; margin-bottom: 20px; }}
+  .wrap {{ max-width: 1200px; margin: 0 auto; background: white; border-radius: 10px; box-shadow: 0 1px 3px rgba(0,0,0,.06); overflow: hidden; }}
+  table {{ width: 100%; border-collapse: collapse; font-size: 13px; }}
+  th {{ text-align: left; padding: 12px 14px; background: #f9fafb; border-bottom: 1px solid #e5e7eb; font-weight: 600; color: #374151; text-transform: uppercase; font-size: 11px; letter-spacing: .3px; }}
+  td {{ padding: 10px 14px; border-bottom: 1px solid #f3f4f6; vertical-align: top; }}
+  tr.row-fail td {{ background: #fef2f2; }}
+  .mono {{ font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; white-space: nowrap; color: #6b7280; }}
+  .bd {{ display: inline-block; padding: 2px 9px; border-radius: 11px; font-size: 11px; font-weight: 700; }}
+  .bd-ok {{ background: #dcfce7; color: #166534; }}
+  .bd-fail {{ background: #fee2e2; color: #991b1b; }}
+  .err {{ color: #991b1b; font-family: ui-monospace, monospace; font-size: 12px; max-width: 340px; word-break: break-word; }}
+  .counts {{ display: flex; gap: 12px; margin-bottom: 14px; }}
+  .pill {{ background: white; border: 1px solid #e5e7eb; padding: 8px 14px; border-radius: 8px; font-size: 13px; }}
+  .pill strong {{ color: #111827; }}
+  a.back {{ color: #6366F1; text-decoration: none; font-size: 13px; }}
+</style></head><body>
+<div style="max-width:1200px;margin:0 auto">
+  <p><a href="/admin" class="back">← Back to admin</a></p>
+  <h1>Email Log</h1>
+  <div class="sub">Last 100 email events from <code>system_events</code>.</div>
+  <div class="counts">
+    <div class="pill">Sent: <strong>{sent_count}</strong></div>
+    <div class="pill">Failed: <strong style="color:#991b1b">{failed_count}</strong></div>
+  </div>
+  <div class="wrap">
+    <table>
+      <thead><tr><th>When (UTC)</th><th>Status</th><th>Category</th><th>To</th><th>Subject</th><th>Error</th></tr></thead>
+      <tbody>{rows_html}</tbody>
+    </table>
+  </div>
+</div>
+</body></html>"""
+
+
 @app.route('/admin/chats/<conversation_id>')
 @admin_required
 def admin_chat_view(conversation_id):

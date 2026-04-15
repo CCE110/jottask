@@ -636,8 +636,12 @@ def send_email(name, phone, addr, src, summary, crm_url, os_url, task_id=None, l
                     break
             email_subject = (f"New Lead: {name} - {badge_text} | {brief_note}"
                              if brief_note else f"New Lead: {name} - {badge_text}")
-        resend.Emails.send({"from":"Jottask <"+FROM_EMAIL+">","to":[NOTIFY],"subject":email_subject,"html":html})
-        print("Email sent:", name)
+        from email_utils import send_email as _send_email
+        ok, err = _send_email(NOTIFY, email_subject, html, category='dsw_lead', task_id=task_id)
+        if ok:
+            print("Email sent:", name)
+        else:
+            print(f"Email error ({name}): {err}")
     except Exception as e: print("Email error:", e)
 
 def process(contact, task_id=None, lead_status=None, is_new_contact=True):
