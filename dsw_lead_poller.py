@@ -212,18 +212,61 @@ def _mac_contact_exists(name):
 
 def source(c):
     tags = " ".join([t.lower() for t in (c.get("tags") or [])])
-    for s, k in [("SolarQuotes","solar_quotes"),("SEM","sem"),("Facebook","facebook"),("Website","website"),("Referral","referral")]:
+    for s, k in [("SolarQuotes","solar_quotes"),("Bid My Solar","bid_my_solar"),("Bid My Solar","bidmysolar"),("SEM","sem"),("Facebook","facebook"),("Website","website"),("Referral","referral")]:
         if k in tags: return s
     return c.get("source", "Unknown")
 
+
+def source_badge(src_name, referred_by=''):
+    """Pretty-printed lead source badge for emails and task descriptions."""
+    sn = (src_name or '').strip().lower()
+    if 'solarquotes' in sn.replace(' ', '') or sn == 'solar quotes':
+        return '📋 SolarQuotes'
+    if 'bidmysolar' in sn.replace(' ', ''):
+        return '📋 Bid My Solar'
+    if 'referral' in sn:
+        if referred_by:
+            return f'👤 Referral from: {referred_by}'
+        return '👤 Referral'
+    if not src_name or sn == 'unknown':
+        return '📋 Unknown'
+    return f'📋 {src_name}'
+
+
+def get_referred_by_from_crm(cid):
+    """Fetch the PipeReply contact's notes and extract 'Referred by: ...' if present."""
+    try:
+        r = req.get(f"{BASE}/contacts/{cid}/notes", headers=H, timeout=10)
+        if not r.ok:
+            return ''
+        for n in r.json().get('notes', []) or []:
+            body = n.get('body') or ''
+            m = re.search(r'^Referred by:\s*(.+)$', body, re.MULTILINE)
+            if m:
+                return m.group(1).strip()
+    except Exception as e:
+        print(f'[Referral] CRM notes lookup failed for {cid}: {e}')
+    return ''
+
+
 def summarise(name, phone, addr, src, notes, custom):
-    # Extract full SolarQuotes notes - sort by length, longest has the full lead data
+    """Return (summary_text, referred_by). referred_by is scraped from notes/custom
+    fields via 'Referred by: ...' pattern before the AI call."""
     extra_parts = [str(f.get("value","")) for f in (custom or []) if f.get("value")]
     extra_parts.sort(key=len, reverse=True)
     extra = chr(10).join(extra_parts)
+
+    # Scan both raw notes and custom field values for an explicit referred_by line
+    referred_by = ''
+    for blob in (notes or '', extra):
+        m = re.search(r'^Referred by:\s*(.+)$', blob, re.MULTILINE)
+        if m:
+            referred_by = m.group(1).strip()
+            break
+
     prompt = "Summarise this into actionable customer requirements. Ignore duplicates. Ignore: verified phone number, consented to discuss energy plans, lead submitted, requested quotes number, roof ownership confirmed, north facing, supplier info, lead IDs.\n\nFormat exactly (plain text, no ## markdown):\nCUSTOMER REQUIREMENTS\n* [requirement]\n\nPROPERTY\n* [property detail]\n\nKeep: system size kW, solar/battery/both, EV charger, bill amount, payment method, urgency/timeframe, property type/storeys/roof type, motivation, blackout/backup needs, home visit.\nConcise bullets only.\n\nName: "+name+"\nSource: "+src+"\nAddress: "+addr+"\nNotes: "+(extra if len(extra) > len(notes) else notes)[:3000]
     r = claude.messages.create(model="claude-haiku-4-5-20251001", max_tokens=600, messages=[{"role":"user","content":prompt}])
-    return r.content[0].text
+    return r.content[0].text, referred_by
 
 def make_opensolar(name, phone, email, address, city, state, postcode):
     try:
@@ -462,7 +505,7 @@ def mac_contact(name, phone, src=''):
     except Exception as e:
         print(f'[osascript] Error: {e}')
 
-def make_task(name, phone, summary, crm_url, os_url, email='', prev_notes_block='', supersede_task_id=None):
+def make_task(name, phone, summary, crm_url, os_url, email='', prev_notes_block='', supersede_task_id=None, source_badge_text=''):
     """Create a DSW Solar task in Jottask.
 
     If prev_notes_block is provided, it is appended to the description under
@@ -477,7 +520,8 @@ def make_task(name, phone, summary, crm_url, os_url, email='', prev_notes_block=
         if not users.data: return
         due = (datetime.now()+timedelta(days=1)).strftime("%Y-%m-%d")
         email_line = ("Email: "+email+"\n") if email else ""
-        desc = "Phone: "+phone+"\n"+email_line+"CRM: "+crm_url+"\nOpenSolar: "+(os_url or "pending")+"\n\n"+summary
+        source_line = ("Source: "+source_badge_text+"\n") if source_badge_text else ""
+        desc = "Phone: "+phone+"\n"+email_line+source_line+"CRM: "+crm_url+"\nOpenSolar: "+(os_url or "pending")+"\n\n"+summary
         if prev_notes_block:
             desc += "\n\n--- PREVIOUS NOTES ---\n" + prev_notes_block
         result = tm.supabase.table("tasks").insert({"user_id":users.data[0]["id"],"title":"Call "+name+" - New DSW Lead","description":desc,"due_date":due,"due_time":"09:00","priority":"high","status":"pending","category":"DSW Solar","client_name":name}).execute()
@@ -503,7 +547,7 @@ def make_task(name, phone, summary, crm_url, os_url, email='', prev_notes_block=
         return tid
     except Exception as e: print("Task error:", e); return None
 
-def send_email(name, phone, addr, src, summary, crm_url, os_url, task_id=None, lead_status=None, subject=None, email=''):
+def send_email(name, phone, addr, src, summary, crm_url, os_url, task_id=None, lead_status=None, subject=None, email='', source_badge_text=''):
     now = datetime.now().strftime("%d %b %Y %I:%M %p")
     import urllib.parse
     maps_url = "https://maps.google.com/?q=" + urllib.parse.quote(addr)
@@ -555,7 +599,9 @@ def send_email(name, phone, addr, src, summary, crm_url, os_url, task_id=None, l
         '<h2 style="margin:0">New DSW Lead</h2>'
         '<span style="background:rgba(255,255,255,0.25);padding:4px 14px;border-radius:20px;font-size:12px;font-weight:700;letter-spacing:0.5px">'+badge_text+'</span>'
         '</div>'
-        '<p style="opacity:.8;margin:4px 0 0">'+now+' &middot; '+src+'</p></div>'
+        '<p style="opacity:.8;margin:4px 0 0">'+now+' &middot; '+src+'</p>'
+        +('<p style="margin:6px 0 0"><span style="display:inline-block;background:rgba(255,255,255,0.18);padding:4px 12px;border-radius:16px;font-size:12px;font-weight:600">Lead Source: '+source_badge_text+'</span></p>' if source_badge_text else '')
+        +'</div>'
         '<div style="padding:20px;border:1px solid #e2e8f0">'
         '<h3 style="color:#1e40af;margin-top:0">'+name+'</h3>'
         +('<p><a href="mailto:'+email+'" style="color:#1e40af;text-decoration:none">✉️ '+email+'</a></p>' if email else '')
@@ -625,7 +671,12 @@ def process(contact, task_id=None, lead_status=None, is_new_contact=True):
     else:
         print(f"[Pipereply] Reused existing contact: {name} ({cid[:8]})")
 
-    summary = summarise(name, phone, addr, src, notes, custom)
+    summary, referred_by = summarise(name, phone, addr, src, notes, custom)
+    # Fallback: if referred_by not in contact notes/custom fields, try CRM notes API
+    if not referred_by and src.lower().startswith('referral'):
+        referred_by = get_referred_by_from_crm(cid)
+    source_badge_text = source_badge(src, referred_by)
+    print(f"[Source] {name}: {source_badge_text}")
 
     if not is_reminder:
         # New lead: check for an existing pending DSW Solar task for this client.
@@ -697,12 +748,13 @@ def process(contact, task_id=None, lead_status=None, is_new_contact=True):
             name, phone, summary, crm_url, os_url, email=email,
             prev_notes_block=prev_notes_block,
             supersede_task_id=(existing_task['id'] if existing_task else None),
+            source_badge_text=source_badge_text,
         )
     else:
         # Reminder resend: look up OpenSolar URL from existing CRM note
         os_url = get_os_url_from_crm(cid)
 
-    send_email(name, phone, addr, src, summary, crm_url, os_url, task_id, lead_status, email=email)
+    send_email(name, phone, addr, src, summary, crm_url, os_url, task_id, lead_status, email=email, source_badge_text=source_badge_text)
     print("Done in", round(time.time()-t0,1), "s:", name)
 
 def resend_email_only(contact_name):

@@ -4386,6 +4386,7 @@ def lead_detail(task_id):
     email   = _field('Email:', desc)
     crm_url = _field('CRM:', desc)
     os_url  = _field('OpenSolar:', desc)
+    source_badge_text = _field('Source:', desc)
     if os_url.lower() in ('pending', ''): os_url = ''
 
     # Split description into CUSTOMER REQUIREMENTS / MY NOTES sections
@@ -4396,9 +4397,9 @@ def lead_detail(task_id):
     else:
         cust_raw, notes_raw = desc, ''
 
-    # Strip Phone/Email/CRM/OpenSolar/Sub-note header lines from customer requirements
+    # Strip Phone/Email/CRM/OpenSolar/Source/Sub-note header lines from customer requirements
     cust_lines = [ln for ln in cust_raw.splitlines()
-                  if not ln.startswith(('Phone:', 'Email:', 'CRM:', 'OpenSolar:', 'Sub-note:'))]
+                  if not ln.startswith(('Phone:', 'Email:', 'CRM:', 'OpenSolar:', 'Source:', 'Sub-note:'))]
     cust_text = '\n'.join(cust_lines).strip()
 
     sub_note = _field('Sub-note:', desc)
@@ -4503,6 +4504,7 @@ textarea:focus{border-color:#1e40af;box-shadow:0 0 0 3px rgba(30,64,175,.1)}
   </div>
   {% if email %}<a href="mailto:{{ email }}" class="addr-link">✉️ {{ email }}</a>{% endif %}
   {% if addr_raw %}<a href="{{ maps_url }}" class="addr-link" target="_blank">📍 {{ addr_raw }}</a>{% endif %}
+  {% if source_badge_text %}<div style="margin-top:10px"><span style="display:inline-block;background:#eef2ff;color:#3730a3;padding:4px 12px;border-radius:16px;font-size:12px;font-weight:600">Lead Source: {{ source_badge_text }}</span></div>{% endif %}
 </div>
 
 <!-- Pipereply + OpenSolar -->
@@ -4620,7 +4622,8 @@ if(sp.get('reminder_set')==='1'){
         name=name, badge_text=badge_text, badge_color=badge_color,
         src=src, created_str=created_str,
         phone=phone, email=email, addr_raw=addr_raw, maps_url=maps_url,
-        crm_url=crm_url, os_url=os_url,
+        crm_url=crm_url, os_url=os_url, crm_cid=crm_cid,
+        source_badge_text=source_badge_text,
         cust_text=cust_text, notes_raw=notes_raw,
         lead_status=lead_status, statuses=STATUSES,
         task_id=task_id, tomorrow=tomorrow, sub_note=sub_note,
