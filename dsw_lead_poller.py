@@ -462,7 +462,14 @@ def mac_contact(name, phone, src=''):
     except Exception as e:
         print(f'[osascript] Error: {e}')
 
-def make_task(name, phone, summary, crm_url, os_url, email=''):
+def make_task(name, phone, summary, crm_url, os_url, email='', prev_notes_block='', supersede_task_id=None):
+    """Create a DSW Solar task in Jottask.
+
+    If prev_notes_block is provided, it is appended to the description under
+    a "PREVIOUS NOTES" header (used when migrating from an older task).
+    If supersede_task_id is provided, that task is cancelled after the new
+    task is created and a supersede note is added to it.
+    """
     try:
         from task_manager import TaskManager
         tm = TaskManager()
@@ -471,9 +478,28 @@ def make_task(name, phone, summary, crm_url, os_url, email=''):
         due = (datetime.now()+timedelta(days=1)).strftime("%Y-%m-%d")
         email_line = ("Email: "+email+"\n") if email else ""
         desc = "Phone: "+phone+"\n"+email_line+"CRM: "+crm_url+"\nOpenSolar: "+(os_url or "pending")+"\n\n"+summary
+        if prev_notes_block:
+            desc += "\n\n--- PREVIOUS NOTES ---\n" + prev_notes_block
         result = tm.supabase.table("tasks").insert({"user_id":users.data[0]["id"],"title":"Call "+name+" - New DSW Lead","description":desc,"due_date":due,"due_time":"09:00","priority":"high","status":"pending","category":"DSW Solar","client_name":name}).execute()
         tid = result.data[0]["id"] if result.data else None
         print("Task created:", name, "id:", tid)
+
+        # Cancel the superseded task and drop a supersede note on it
+        if tid and supersede_task_id:
+            try:
+                tm.supabase.table("tasks").update({
+                    "status": "cancelled",
+                    "completed_at": datetime.utcnow().isoformat() + "Z",
+                }).eq("id", supersede_task_id).execute()
+                tm.add_note(
+                    task_id=supersede_task_id,
+                    content=f"Superseded by task {tid}",
+                    source="system",
+                )
+                print(f"[Migrate] Cancelled old task {supersede_task_id[:8]} → superseded by {tid[:8]}")
+            except Exception as e:
+                print(f"[Migrate] Failed to cancel old task {supersede_task_id}: {e}")
+
         return tid
     except Exception as e: print("Task error:", e); return None
 
@@ -602,14 +628,76 @@ def process(contact, task_id=None, lead_status=None, is_new_contact=True):
     summary = summarise(name, phone, addr, src, notes, custom)
 
     if not is_reminder:
-        # New lead: create OpenSolar project, Mac contact, and Jottask task
-        _, os_url = make_opensolar(name, phone, email, address, city, state, postcode)
+        # New lead: check for an existing pending DSW Solar task for this client.
+        # If one exists, scrape its MY NOTES + task_notes so they carry forward,
+        # reuse its OpenSolar URL (if any), and mark the old task superseded.
+        existing_task = None
+        prev_notes_block = ''
+        reused_os_url = None
+        try:
+            from task_manager import TaskManager
+            _tm = TaskManager()
+            _users = _tm.supabase.table("users").select("id").eq("email","rob@cloudcleanenergy.com.au").execute()
+            _uid = _users.data[0]["id"] if _users.data else None
+            if _uid:
+                existing_task = _tm.find_existing_task_by_client(client_name=name, user_id=_uid)
+                # Only migrate from pending DSW Solar tasks — ignore other categories
+                if existing_task and (existing_task.get('category') != 'DSW Solar' or existing_task.get('status') != 'pending'):
+                    existing_task = None
+        except Exception as e:
+            print(f"[Migrate] lookup failed: {e}")
+
+        if existing_task:
+            old_tid = existing_task['id']
+            old_desc = existing_task.get('description') or ''
+            print(f"[Migrate] Found existing task {old_tid[:8]} for {name} — migrating notes")
+
+            # Reuse existing OpenSolar URL if present in old description
+            _os_m = re.search(r'^OpenSolar:\s*(https?://\S+)', old_desc, re.MULTILINE)
+            if _os_m:
+                reused_os_url = _os_m.group(1)
+                print(f"[Migrate] Reusing OpenSolar URL from old task: {reused_os_url}")
+
+            # Scrape MY NOTES section from old description
+            prev_parts = []
+            if 'MY NOTES:' in old_desc:
+                my_notes = old_desc.split('MY NOTES:', 1)[1].strip()
+                if my_notes:
+                    prev_parts.append(f"MY NOTES (from old task):\n{my_notes}")
+
+            # Scrape task_notes entries (chronological)
+            try:
+                old_notes = _tm.get_all_task_notes(old_tid) or []
+                if old_notes:
+                    lines = []
+                    for n in old_notes:
+                        ts = (n.get('created_at') or '')[:16].replace('T', ' ')
+                        content = (n.get('content') or '').strip()
+                        if content:
+                            lines.append(f"[{ts}] {content}")
+                    if lines:
+                        prev_parts.append("TASK NOTES (from old task):\n" + '\n'.join(lines))
+            except Exception as e:
+                print(f"[Migrate] Failed to fetch old task_notes: {e}")
+
+            prev_notes_block = '\n\n'.join(prev_parts)
+
+        # Reuse existing OpenSolar project if we have one; otherwise create fresh
+        if reused_os_url:
+            os_url = reused_os_url
+        else:
+            _, os_url = make_opensolar(name, phone, email, address, city, state, postcode)
+
         if os_url:
             # Overwrite CRM note for brand-new contacts; add new note for reused ones
             save_to_crm(cid, os_url, summary, overwrite=is_new_contact)
         if not icloud_contact(name, phone, email=email, address=address, city=city, state=state, postcode=postcode, src=src):
             mac_contact(name, phone, src=src)
-        task_id = make_task(name, phone, summary, crm_url, os_url, email=email)
+        task_id = make_task(
+            name, phone, summary, crm_url, os_url, email=email,
+            prev_notes_block=prev_notes_block,
+            supersede_task_id=(existing_task['id'] if existing_task else None),
+        )
     else:
         # Reminder resend: look up OpenSolar URL from existing CRM note
         os_url = get_os_url_from_crm(cid)
