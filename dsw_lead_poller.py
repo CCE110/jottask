@@ -547,8 +547,10 @@ def make_task(name, phone, summary, crm_url, os_url, email='', prev_notes_block=
         return tid
     except Exception as e: print("Task error:", e); return None
 
-def send_email(name, phone, addr, src, summary, crm_url, os_url, task_id=None, lead_status=None, subject=None, email='', source_badge_text=''):
+def send_email(name, phone, addr, src, summary, crm_url, os_url, task_id=None, lead_status=None, subject=None, email='', source_badge_text='', reminder_tag=None):
     now = datetime.now().strftime("%d %b %Y %I:%M %p")
+    header_title = f'DSW Lead REMINDER ({reminder_tag})' if reminder_tag else 'New DSW Lead'
+    header_bg = '#b45309' if reminder_tag else '#1e40af'
     import urllib.parse
     maps_url = "https://maps.google.com/?q=" + urllib.parse.quote(addr)
     AU = "https://www.jottask.app/action"
@@ -594,9 +596,9 @@ def send_email(name, phone, addr, src, summary, crm_url, os_url, task_id=None, l
     badge_text = STATUS_LABELS.get(lead_status, '🔵 NEW LEAD') if lead_status else '🔵 NEW LEAD'
     html = (
         '<div style="font-family:sans-serif;max-width:620px;margin:0 auto">'
-        '<div style="background:#1e40af;color:white;padding:20px;border-radius:8px 8px 0 0">'
+        '<div style="background:'+header_bg+';color:white;padding:20px;border-radius:8px 8px 0 0">'
         '<div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap">'
-        '<h2 style="margin:0">New DSW Lead</h2>'
+        '<h2 style="margin:0">'+header_title+'</h2>'
         '<span style="background:rgba(255,255,255,0.25);padding:4px 14px;border-radius:20px;font-size:12px;font-weight:700;letter-spacing:0.5px">'+badge_text+'</span>'
         '</div>'
         '<p style="opacity:.8;margin:4px 0 0">'+now+' &middot; '+src+'</p>'
@@ -620,7 +622,7 @@ def send_email(name, phone, addr, src, summary, crm_url, os_url, task_id=None, l
         f'{sbtns}'
         f'{no_reply_btn}'
         '</div>'
-        '<div style="background:#1e40af;padding:12px;border-radius:0 0 8px 8px;text-align:center">'
+        '<div style="background:'+header_bg+';padding:12px;border-radius:0 0 8px 8px;text-align:center">'
         f'<a href="https://www.jottask.app/task/{task_id}" style="color:white;font-weight:bold;text-decoration:none">Open Jottask</a>'
         '</div></div>'
     )
@@ -634,8 +636,9 @@ def send_email(name, phone, addr, src, summary, crm_url, os_url, task_id=None, l
                 if _l.startswith('*'):
                     brief_note = _l.lstrip('*').strip()[:40]
                     break
-            email_subject = (f"New Lead: {name} - {badge_text} | {brief_note}"
-                             if brief_note else f"New Lead: {name} - {badge_text}")
+            lead_prefix = f"REMINDER ({reminder_tag})" if reminder_tag else "New Lead"
+            email_subject = (f"{lead_prefix}: {name} - {badge_text} | {brief_note}"
+                             if brief_note else f"{lead_prefix}: {name} - {badge_text}")
         from email_utils import send_email as _send_email
         ok, err = _send_email(NOTIFY, email_subject, html, category='dsw_lead', task_id=task_id)
         if ok:
@@ -760,6 +763,48 @@ def process(contact, task_id=None, lead_status=None, is_new_contact=True):
 
     send_email(name, phone, addr, src, summary, crm_url, os_url, task_id, lead_status, email=email, source_badge_text=source_badge_text)
     print("Done in", round(time.time()-t0,1), "s:", name)
+
+def send_dsw_reminder_for_task(task, reminder_tag):
+    """Send a DSW lead reminder email by reconstructing params from the task row.
+
+    Parses phone / email / CRM url / OpenSolar url / source / summary from the
+    task description (format written by make_task). Does NOT hit Pipereply —
+    cheap and safe to call from the scheduler loop.
+    """
+    desc = task.get('description') or ''
+    name = task.get('client_name') or (task.get('title') or '').replace('Call ', '').replace(' - New DSW Lead', '').strip() or 'Unknown'
+    task_id = task.get('id')
+    lead_status = task.get('lead_status') or 'new_lead'
+
+    def _grab(label):
+        m = re.search(rf'^{label}:\s*(.+)$', desc, re.MULTILINE)
+        return m.group(1).strip() if m else ''
+
+    phone = _grab('Phone') or 'N/A'
+    email = _grab('Email')
+    source_badge_text = _grab('Source')
+    crm_url = _grab('CRM')
+    os_raw = _grab('OpenSolar')
+    os_url = os_raw if os_raw.startswith('http') else ''
+
+    # Summary = everything after the blank line following the header block,
+    # stopped at the PREVIOUS NOTES marker if present.
+    body = desc
+    if '\n\n' in body:
+        body = body.split('\n\n', 1)[1]
+    if '--- PREVIOUS NOTES ---' in body:
+        body = body.split('--- PREVIOUS NOTES ---', 1)[0]
+    summary = body.strip() or '(summary unavailable)'
+
+    src = source_badge_text.split('·')[0].strip() if source_badge_text else ''
+
+    send_email(
+        name, phone, '', src, summary, crm_url, os_url,
+        task_id=task_id, lead_status=lead_status,
+        email=email, source_badge_text=source_badge_text,
+        reminder_tag=reminder_tag,
+    )
+
 
 def resend_email_only(contact_name):
     """Resend the lead email for an existing DSW Solar task by client_name.

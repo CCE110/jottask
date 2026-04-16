@@ -636,6 +636,93 @@ def check_and_send_reminders():
         return 0
 
 
+def check_and_send_dsw_reminders():
+    """Reminders for DSW Solar leads.
+
+    Two reminder stages per lead, both gated on lead_status still being 'new_lead':
+      - 24h: sent once task is 24h+ old and no prior reminder
+      - 3d:  sent once task is 72h+ old (skips 24h stage if discovered late)
+
+    Progression is tracked with tasks.reminder_sent_at:
+      NULL                               -> no reminders yet
+      (reminder_sent_at - created_at) < 72h -> 24h reminder sent, 3d pending
+      (reminder_sent_at - created_at) >= 72h -> 3d reminder sent, done
+    """
+    print("\n🔔 Checking DSW lead reminders...")
+    sent_24h = sent_3d = skipped_status = skipped_age = already_done = 0
+
+    try:
+        now_utc = datetime.now(pytz.UTC)
+        result = _get_supabase().table('tasks')\
+            .select('id, title, description, client_name, lead_status, created_at, reminder_sent_at, status')\
+            .eq('status', 'pending')\
+            .eq('category', 'DSW Solar')\
+            .order('created_at')\
+            .execute()
+        tasks = result.data or []
+
+        from dsw_lead_poller import send_dsw_reminder_for_task
+
+        for task in tasks:
+            try:
+                if (task.get('lead_status') or 'new_lead') != 'new_lead':
+                    skipped_status += 1
+                    continue
+
+                created_raw = task.get('created_at')
+                if not created_raw:
+                    continue
+                created_at = datetime.fromisoformat(created_raw.replace('Z', '+00:00'))
+                age = now_utc - created_at
+
+                rem_raw = task.get('reminder_sent_at')
+                rem_at = datetime.fromisoformat(rem_raw.replace('Z', '+00:00')) if rem_raw else None
+
+                if rem_at and (rem_at - created_at) >= timedelta(hours=72):
+                    already_done += 1
+                    continue
+
+                tag = None
+                if rem_at is None:
+                    if age >= timedelta(hours=72):
+                        tag = '3d'
+                    elif age >= timedelta(hours=24):
+                        tag = '24h'
+                else:
+                    if age >= timedelta(hours=72):
+                        tag = '3d'
+
+                if tag is None:
+                    skipped_age += 1
+                    continue
+
+                print(f"   📨 DSW {tag} reminder: {task.get('client_name') or task.get('title','')[:40]}")
+                send_dsw_reminder_for_task(task, tag)
+                _get_supabase().table('tasks').update({
+                    'reminder_sent_at': datetime.now(pytz.UTC).isoformat()
+                }).eq('id', task['id']).execute()
+
+                if tag == '24h':
+                    sent_24h += 1
+                else:
+                    sent_3d += 1
+                time.sleep(0.3)
+
+            except Exception as task_err:
+                print(f"   ❌ DSW reminder error for {task.get('id','?')[:8]}: {task_err}")
+                continue
+
+        print(f"   DSW reminders: {sent_24h} 24h + {sent_3d} 3d sent, "
+              f"{skipped_status} status-changed, {skipped_age} too-new, {already_done} done")
+        return sent_24h + sent_3d
+
+    except Exception as e:
+        print(f"   ❌ DSW REMINDER ERROR: {e}")
+        import traceback
+        traceback.print_exc()
+        return 0
+
+
 def run_scheduler():
     """Main scheduler loop"""
     print("🚀 Starting Jottask Scheduler (Summaries + Reminders)")
@@ -652,6 +739,7 @@ def run_scheduler():
 
             # Check task reminders every tick (every 1 minute)
             check_and_send_reminders()
+            check_and_send_dsw_reminders()
 
 
             # Poll Squad inbox every tick (Gmail IMAP, ~15s per run)
