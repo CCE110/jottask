@@ -588,6 +588,26 @@ def send_daily_health_digest():
 
         since_24h = (now_utc - timedelta(hours=24)).isoformat()
 
+        # Reminder emails sent in last 24h (from system_events)
+        reminders_result = sb.table('system_events')\
+            .select('id', count='exact')\
+            .eq('event_type', 'email_sent')\
+            .eq('category', 'reminder')\
+            .gte('created_at', since_24h)\
+            .execute()
+        reminders_sent_24h = reminders_result.count or 0
+
+        # Overdue pending tasks (due_date < today, any category)
+        today_aest = now_aest.strftime('%Y-%m-%d')
+        overdue_result = sb.table('tasks')\
+            .select('id', count='exact')\
+            .eq('status', 'pending')\
+            .lt('due_date', today_aest)\
+            .execute()
+        overdue_count = overdue_result.count or 0
+
+        reminders_critical = reminders_sent_24h == 0 and overdue_count > 0
+
         # Recent errors (last 24h)
         errors_result = sb.table('system_events')\
             .select('message, created_at, category')\
@@ -619,7 +639,9 @@ def send_daily_health_digest():
         canary_ok = canary['status'] == 'ok'
         email_fail_rate = health['emails_failed_24h'] / max(health['emails_sent_24h'] + health['emails_failed_24h'], 1)
 
-        all_green = worker_ok and imap_ok and canary_ok and reminder_ok and email_fail_rate < 0.1 and not recent_errors
+        all_green = (worker_ok and imap_ok and canary_ok and reminder_ok
+                     and not reminders_critical
+                     and email_fail_rate < 0.1 and not recent_errors)
         overall_color = '#10B981' if all_green else '#EF4444'
         overall_text = 'All Systems Healthy' if all_green else 'Issues Detected'
 
@@ -680,6 +702,14 @@ def send_daily_health_digest():
                     <tr style="border-bottom:1px solid #E5E7EB;">
                         <td style="padding:10px 0;font-weight:500;">Reminder System</td>
                         <td style="padding:10px 0;text-align:right;">{status_badge(reminder_ok)}</td>
+                    </tr>
+                    <tr style="border-bottom:1px solid #E5E7EB;">
+                        <td style="padding:10px 0;font-weight:500;">Reminders (24h)</td>
+                        <td style="padding:10px 0;text-align:right;">{
+                            f'<span style="background:#DC2626;color:white;padding:3px 10px;border-radius:4px;font-size:13px;font-weight:700;">CRITICAL — 0 sent / {overdue_count} overdue</span>'
+                            if reminders_critical
+                            else f'<span style="background:#10B981;color:white;padding:3px 10px;border-radius:4px;font-size:13px;font-weight:600;">{reminders_sent_24h} sent / {overdue_count} overdue</span>'
+                        }</td>
                     </tr>
                 </table>
 
