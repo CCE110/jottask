@@ -249,6 +249,51 @@ def get_referred_by_from_crm(cid):
     return ''
 
 
+def get_crm_notes_bodies(cid):
+    """Return all CRM note bodies for a PipeReply contact, newest first, joined by blank lines."""
+    try:
+        r = req.get(f"{BASE}/contacts/{cid}/notes", headers=H, timeout=10)
+        if not r.ok:
+            return ''
+        notes = r.json().get('notes') or []
+        notes.sort(key=lambda n: n.get('createdAt') or n.get('dateAdded') or '', reverse=True)
+        bodies = [(n.get('body') or '').strip() for n in notes]
+        return '\n\n'.join(b for b in bodies if b)
+    except Exception as e:
+        print(f'[CRM notes] fetch failed for {cid}: {e}')
+        return ''
+
+
+_AU_STATES = r'(?:QLD|NSW|VIC|SA|WA|NT|ACT|TAS)'
+_ADDR_RE = re.compile(
+    r'(\d+[A-Za-z]?(?:[-/]\d+[A-Za-z]?)?\s+[^,\n]+?)'  # 75 Lisk Street
+    r'[,\s]+'
+    r"([A-Za-z][A-Za-z \-']+?)"                        # Pullenvale
+    rf'[,\s]+({_AU_STATES})'                            # QLD
+    r'\s+(\d{4})',                                      # 4069
+    re.IGNORECASE,
+)
+
+
+def extract_address_from_notes(text):
+    """Find an Australian-format address inside free-form text.
+
+    Matches patterns like '75 Lisk Street, Pullenvale, QLD 4069' (or without
+    commas). Returns (street, suburb, state, postcode) or None.
+    """
+    if not text:
+        return None
+    m = _ADDR_RE.search(text)
+    if not m:
+        return None
+    return (
+        m.group(1).strip().rstrip(','),
+        m.group(2).strip().rstrip(','),
+        m.group(3).upper(),
+        m.group(4).strip(),
+    )
+
+
 def summarise(name, phone, addr, src, notes, custom):
     """Return (summary_text, referred_by). referred_by is scraped from notes/custom
     fields via 'Referred by: ...' pattern before the AI call."""
@@ -268,7 +313,35 @@ def summarise(name, phone, addr, src, notes, custom):
     r = claude.messages.create(model="claude-haiku-4-5-20251001", max_tokens=600, messages=[{"role":"user","content":prompt}])
     return r.content[0].text, referred_by
 
-def make_opensolar(name, phone, email, address, city, state, postcode):
+_STREET_ABBREVS = [
+    ('St', 'Street'), ('Pl', 'Place'), ('Ave', 'Avenue'),
+    ('Rd', 'Road'), ('Dr', 'Drive'), ('Ct', 'Court'),
+    ('Cres', 'Crescent'), ('Crst', 'Crescent'),
+    ('Tce', 'Terrace'), ('Cl', 'Close'),
+    ('Pde', 'Parade'), ('Blvd', 'Boulevard'), ('Bvd', 'Boulevard'),
+    ('Hwy', 'Highway'), ('Ln', 'Lane'), ('Gr', 'Grove'),
+    ('Sq', 'Square'), ('Cct', 'Circuit'), ('Way', 'Way'),
+    ('Esp', 'Esplanade'), ('Qy', 'Quay'), ('Wk', 'Walk'),
+    ('Pk', 'Park'), ('Gdns', 'Gardens'), ('Mws', 'Mews'),
+]
+
+
+def _expand_street_abbrevs(addr):
+    """Expand AU street-type abbreviations ("Cct" → "Circuit") with word boundaries.
+
+    Matches whether the abbreviation is followed by a space, a comma, or the end
+    of the string, and tolerates an optional trailing dot ("Cct.").
+    """
+    if not addr:
+        return addr
+    out = addr
+    for abbr, full in _STREET_ABBREVS:
+        out = re.sub(rf'\b{re.escape(abbr)}\b\.?', full, out)
+    return out
+
+
+def make_opensolar(name, phone, email, address, city, state, postcode,
+                   first_name=None, last_name=None):
     try:
         conn = opensolar()
         if not conn.token: return None, None
@@ -280,22 +353,15 @@ def make_opensolar(name, phone, email, address, city, state, postcode):
             _clean_phone = ''
         phone = _clean_phone
 
-        parts = name.strip().split()
-        first = parts[0] if parts else "Unknown"
-        last = " ".join(parts[1:]) if len(parts) > 1 else ""
+        # Prefer explicit first/last (from PipeReply firstName/lastName) and fall
+        # back to splitting the display name. We always send both first_name and
+        # last_name to OpenSolar so the stored contact isn't missing the surname.
+        parts = (name or '').strip().split()
+        first = (first_name or (parts[0] if parts else 'Unknown')).strip()
+        last  = (last_name  or (' '.join(parts[1:]) if len(parts) > 1 else '')).strip()
 
         # Build full address string — OpenSolar geocodes from this
-        abbrevs = [
-            ("St ", "Street "), ("Pl ", "Place "), ("Ave ", "Avenue "),
-            ("Rd ", "Road "), ("Dr ", "Drive "), ("Ct ", "Court "),
-            ("Cres ", "Crescent "), ("Tce ", "Terrace "), ("Cl ", "Close "),
-            ("Pde ", "Parade "), ("Blvd ", "Boulevard "), ("Hwy ", "Highway "),
-            ("Ln ", "Lane "), ("Gr ", "Grove "), ("Sq ", "Square "),
-        ]
-        clean_addr = address or ""
-        for abbr, full in abbrevs:
-            if abbr in clean_addr:
-                clean_addr = clean_addr.replace(abbr, full)
+        clean_addr = _expand_street_abbrevs(address or '')
         full_addr = ", ".join(filter(None, [clean_addr, city, state, postcode]))
 
         print(f"[OpenSolar] Address components: street='{address}' city='{city}' state='{state}' postcode='{postcode}'")
@@ -699,9 +765,26 @@ def process(contact, task_id=None, lead_status=None, is_new_contact=True):
     notes = full.get("notes","") or ""
     custom = full.get("customFields",[]) or []
     src = source(full)
-    addr = ", ".join(filter(None,[address,city,state,postcode]))
     crm_url = CRM_BASE+"/detail/"+cid
     is_reminder = task_id is not None
+
+    # Prefer PipeReply's structured firstName/lastName; fall back to splitting display name.
+    name_parts = name.split()
+    first_name = (full.get('firstName') or full.get('firstNameLowerCase') or (name_parts[0] if name_parts else 'Unknown')).strip()
+    last_name  = (full.get('lastName')  or full.get('lastNameLowerCase')  or (' '.join(name_parts[1:]) if len(name_parts) > 1 else '')).strip()
+
+    # Fetch PipeReply CRM notes once — used for address fallback, referral scrape, and summary enrichment.
+    crm_notes_text = get_crm_notes_bodies(cid)
+
+    # Address fallback: if the contact has no structured address, scrape one out of
+    # CRM notes (or the contact's free-text notes field) before we build OpenSolar.
+    if not any([address, city, state, postcode]):
+        parsed = extract_address_from_notes(crm_notes_text) or extract_address_from_notes(notes)
+        if parsed:
+            address, city, state, postcode = parsed
+            print(f"[Address] Recovered from CRM notes: {address}, {city}, {state} {postcode}")
+
+    addr = ", ".join(filter(None,[address,city,state,postcode]))
 
     if is_reminder:
         print(f"[Pipereply] Resending reminder: {name} ({cid[:8]})")
@@ -716,6 +799,10 @@ def process(contact, task_id=None, lead_status=None, is_new_contact=True):
         referred_by = get_referred_by_from_crm(cid)
     source_badge_text = source_badge(src, referred_by)
     print(f"[Source] {name}: {source_badge_text}")
+
+    # Append raw CRM notes so they show up in the email + task description.
+    if crm_notes_text:
+        summary = f"{summary}\n\nCRM NOTES:\n{crm_notes_text}"
 
     if not is_reminder:
         # New lead: check for an existing pending DSW Solar task for this client.
@@ -776,7 +863,8 @@ def process(contact, task_id=None, lead_status=None, is_new_contact=True):
         if reused_os_url:
             os_url = reused_os_url
         else:
-            _, os_url = make_opensolar(name, phone, email, address, city, state, postcode)
+            _, os_url = make_opensolar(name, phone, email, address, city, state, postcode,
+                                       first_name=first_name, last_name=last_name)
 
         if os_url:
             # Overwrite CRM note for brand-new contacts; add new note for reused ones
