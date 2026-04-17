@@ -547,10 +547,17 @@ def make_task(name, phone, summary, crm_url, os_url, email='', prev_notes_block=
         return tid
     except Exception as e: print("Task error:", e); return None
 
-def send_email(name, phone, addr, src, summary, crm_url, os_url, task_id=None, lead_status=None, subject=None, email='', source_badge_text='', reminder_tag=None):
+def send_email(name, phone, addr, src, summary, crm_url, os_url, task_id=None, lead_status=None, subject=None, email='', source_badge_text='', reminder_tag=None, appointment=None):
     now = datetime.now().strftime("%d %b %Y %I:%M %p")
-    header_title = f'DSW Lead REMINDER ({reminder_tag})' if reminder_tag else 'New DSW Lead'
-    header_bg = '#b45309' if reminder_tag else '#1e40af'
+    if appointment:
+        header_title = 'DSW Appointment Booked'
+        header_bg = '#059669'
+    elif reminder_tag:
+        header_title = f'DSW Lead REMINDER ({reminder_tag})'
+        header_bg = '#b45309'
+    else:
+        header_title = 'New DSW Lead'
+        header_bg = '#1e40af'
     import urllib.parse
     maps_url = "https://maps.google.com/?q=" + urllib.parse.quote(addr)
     AU = "https://www.jottask.app/action"
@@ -594,6 +601,25 @@ def send_email(name, phone, addr, src, summary, crm_url, os_url, task_id=None, l
         sbtns = f'<div style="margin:8px 0;display:flex;flex-wrap:wrap;gap:6px">{sh}</div>'
     os_btn = '<a href="'+os_url+'" style="display:inline-block;background:#f59e0b;color:white;padding:10px 16px;border-radius:8px;text-decoration:none;font-weight:600;font-size:13px">&#9728;&#65039; OpenSolar</a>' if os_url else ""
     badge_text = STATUS_LABELS.get(lead_status, '🔵 NEW LEAD') if lead_status else '🔵 NEW LEAD'
+
+    appt_banner = ''
+    if appointment:
+        _when = appointment.get('when') or 'TBC'
+        _type = appointment.get('type') or 'Appointment'
+        _aphone = appointment.get('phone') or phone or ''
+        _call_btn = (
+            f'<a href="tel:{_aphone}" style="display:inline-block;background:rgba(255,255,255,0.25);'
+            f'color:white;padding:10px 18px;border-radius:8px;text-decoration:none;font-weight:700;'
+            f'font-size:14px;margin-top:10px">📞 Call {_aphone}</a>'
+        ) if _aphone else ''
+        appt_banner = (
+            '<div style="background:#047857;color:white;padding:16px 20px;border-bottom:2px solid #065f46">'
+            '<div style="font-size:11px;font-weight:700;letter-spacing:1px;opacity:0.9">📅 APPOINTMENT BOOKED</div>'
+            f'<div style="font-size:18px;font-weight:700;margin-top:4px">{_when}</div>'
+            f'<div style="font-size:14px;opacity:0.95;margin-top:2px">{_type}</div>'
+            f'{_call_btn}'
+            '</div>'
+        )
     html = (
         '<div style="font-family:sans-serif;max-width:620px;margin:0 auto">'
         '<div style="background:'+header_bg+';color:white;padding:20px;border-radius:8px 8px 0 0">'
@@ -604,7 +630,8 @@ def send_email(name, phone, addr, src, summary, crm_url, os_url, task_id=None, l
         '<p style="opacity:.8;margin:4px 0 0">'+now+' &middot; '+src+'</p>'
         +('<p style="margin:6px 0 0"><span style="display:inline-block;background:rgba(255,255,255,0.18);padding:4px 12px;border-radius:16px;font-size:12px;font-weight:600">Lead Source: '+source_badge_text+'</span></p>' if source_badge_text else '')
         +'</div>'
-        '<div style="padding:20px;border:1px solid #e2e8f0">'
+        +appt_banner
+        +'<div style="padding:20px;border:1px solid #e2e8f0">'
         '<h3 style="color:#1e40af;margin-top:0">'+name+'</h3>'
         +('<p><a href="mailto:'+email+'" style="color:#1e40af;text-decoration:none">✉️ '+email+'</a></p>' if email else '')
         +'<p><a href="'+maps_url+'" style="color:#1e40af;text-decoration:none">'+addr+'</a></p>'
@@ -636,7 +663,12 @@ def send_email(name, phone, addr, src, summary, crm_url, os_url, task_id=None, l
                 if _l.startswith('*'):
                     brief_note = _l.lstrip('*').strip()[:40]
                     break
-            lead_prefix = f"REMINDER ({reminder_tag})" if reminder_tag else "New Lead"
+            if appointment:
+                lead_prefix = 'APPOINTMENT'
+            elif reminder_tag:
+                lead_prefix = f"REMINDER ({reminder_tag})"
+            else:
+                lead_prefix = 'New Lead'
             email_subject = (f"{lead_prefix}: {name} - {badge_text} | {brief_note}"
                              if brief_note else f"{lead_prefix}: {name} - {badge_text}")
         from email_utils import send_email as _send_email

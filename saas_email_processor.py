@@ -675,6 +675,9 @@ class AIEmailProcessor:
             if is_dsw_reply:
                 if handle_dsw_reply(subject, content, sender_email_addr):
                     return ("dsw_reply", "DSW lead notes updated")
+            # DSW Energy appointment confirmation (sender @dswenergy.com.au or subject match)
+            if handle_dsw_appointment(subject, content, sender_email_addr):
+                return ("task_created", f"DSW appointment: {subject[:80]}")
             # Forwarded/unstructured lead from rob.l — FW:/Fwd: or body has AU phone
             if handle_dsw_forward(subject, content, sender_email_addr):
                 return ("task_created", f"DSW forward lead: {subject[:80]}")
@@ -2221,6 +2224,154 @@ def handle_dsw_new_lead(subject, body_text, sender_email):
         dsw.process(minimal_contact, task_id=None, lead_status=None, is_new_contact=is_new_contact)
     except Exception as e:
         print(f"[DSW NEW LEAD] dsw.process error: {e}")
+
+    return True
+
+
+def handle_dsw_appointment(subject, body_text, sender_email):
+    """Handle DSW Energy appointment confirmation emails.
+
+    Triggered by sender @replies.dswenergy.com.au or subject starting with
+    "Appointment Confirmation". Parses contact name, phone, appointment
+    date/time, and appointment type out of the body. Finds the existing
+    pending DSW Solar task for this contact (or creates one), moves its
+    lead_status to 'intro_call', sets due_date/due_time to the appointment
+    time, and sends a DSW lead email with an APPOINTMENT BOOKED banner.
+    """
+    import re, os, importlib.util as ilu
+    from datetime import datetime
+    import pytz
+
+    sender_lower = (sender_email or '').lower()
+    subject_lower = (subject or '').lower()
+    is_dsw_sender = 'dswenergy.com.au' in sender_lower
+    has_appt_subject = 'appointment confirmation' in subject_lower
+    if not (is_dsw_sender or has_appt_subject):
+        return False
+
+    print(f"[DSW APPT] Processing appointment confirmation: {subject}")
+    body = body_text or ''
+
+    def _grab(pattern, text=body, flags=re.IGNORECASE | re.MULTILINE):
+        m = re.search(pattern, text, flags)
+        return m.group(1).strip() if m else ''
+
+    # Contact Name — explicit field, or from subject "Appointment Confirmation of NAME on DATE"
+    name = _grab(r'Contact\s*Name\s*:?\s*(.+)')
+    if not name:
+        name = _grab(r'Appointment\s+Confirmation\s+of\s+(.+?)(?:\s+on\s|\s*$)', subject or '')
+    name = re.sub(r'\s+', ' ', name).strip()
+    if name:
+        # Normalise capitalisation (PipeReply matching is case-insensitive but
+        # we want "Jane Doe" not "JANE DOE" in the task/email).
+        name = ' '.join(w.capitalize() for w in name.split())
+
+    appt_type = _grab(r'Appointment\s*Title\s*:?\s*(.+)')
+    dt_str = _grab(r'Date\s*and\s*Time\s*:?\s*(.+)')
+
+    # Phone — "We will call you on/at +61..." or "call you on 04..."
+    phone_raw = _grab(r'call\s+you\s+(?:on|at)\s*\+?([\d][\d\s\-().]{7,})')
+    phone = re.sub(r'[\s\-().]', '', phone_raw) if phone_raw else ''
+
+    if not name:
+        print("[DSW APPT] Could not extract contact name — skipping")
+        return False
+
+    # Parse appointment datetime (fuzzy, assume AEST when tz-naive)
+    aest = pytz.timezone('Australia/Brisbane')
+    appt_dt = None
+    if dt_str:
+        try:
+            from dateutil import parser as dp
+            appt_dt = dp.parse(dt_str, fuzzy=True)
+            if appt_dt.tzinfo is None:
+                appt_dt = aest.localize(appt_dt)
+        except Exception as e:
+            print(f"[DSW APPT] Could not parse datetime '{dt_str}': {e}")
+
+    # Find Rob's user and look up an existing pending DSW Solar task
+    from task_manager import TaskManager
+    tm = TaskManager()
+    users = tm.supabase.table('users').select('id').eq('email', 'rob@cloudcleanenergy.com.au').execute()
+    if not users.data:
+        print("[DSW APPT] Rob user not found in users table")
+        return False
+    user_id = users.data[0]['id']
+
+    existing = tm.find_existing_task_by_client(client_name=name, user_id=user_id)
+    if existing and (existing.get('category') != 'DSW Solar' or existing.get('status') != 'pending'):
+        existing = None
+
+    update_fields = {'lead_status': 'intro_call', 'reminder_sent_at': None}
+    if appt_dt:
+        aest_dt = appt_dt.astimezone(aest)
+        update_fields['due_date'] = aest_dt.strftime('%Y-%m-%d')
+        update_fields['due_time'] = aest_dt.strftime('%H:%M:00')
+
+    crm_url = ''
+    os_url = ''
+
+    if existing:
+        task_id = existing['id']
+        tm.supabase.table('tasks').update(update_fields).eq('id', task_id).execute()
+        print(f"[DSW APPT] Updated task {task_id[:8]} → intro_call "
+              f"due={update_fields.get('due_date')} {update_fields.get('due_time')}")
+        desc = existing.get('description') or ''
+        _crm_m = re.search(r'^CRM:\s*(https?://\S+)', desc, re.MULTILINE)
+        if _crm_m: crm_url = _crm_m.group(1)
+        _os_m = re.search(r'^OpenSolar:\s*(https?://\S+)', desc, re.MULTILINE)
+        if _os_m: os_url = _os_m.group(1)
+        summary = desc.split('\n\n', 1)[1] if '\n\n' in desc else desc
+        if '--- PREVIOUS NOTES ---' in summary:
+            summary = summary.split('--- PREVIOUS NOTES ---', 1)[0].strip()
+        if not phone:
+            _p_m = re.search(r'^Phone:\s*(.+)$', desc, re.MULTILINE)
+            if _p_m: phone = _p_m.group(1).strip()
+    else:
+        due_date = update_fields.get('due_date') or datetime.now(aest).strftime('%Y-%m-%d')
+        due_time = update_fields.get('due_time') or '09:00:00'
+        task_data = {
+            'user_id': user_id,
+            'title': f'Call {name} - DSW Appointment',
+            'description': (f"Phone: {phone or 'N/A'}\nCRM: \nOpenSolar: pending\n\n"
+                            f"Appointment booked: {appt_type or 'Intro Call'} on {dt_str or 'TBC'}"),
+            'due_date': due_date,
+            'due_time': due_time,
+            'priority': 'high',
+            'status': 'pending',
+            'category': 'DSW Solar',
+            'client_name': name,
+            'lead_status': 'intro_call',
+        }
+        result = tm.supabase.table('tasks').insert(task_data).execute()
+        task_id = result.data[0]['id'] if result.data else None
+        summary = task_data['description'].split('\n\n', 1)[1]
+        print(f"[DSW APPT] Created task {str(task_id)[:8]} for new contact '{name}'")
+
+    # Build appointment banner metadata
+    if appt_dt:
+        when_label = appt_dt.astimezone(aest).strftime('%a %d %b, %I:%M %p AEST')
+    else:
+        when_label = dt_str or 'TBC'
+    appointment = {
+        'when': when_label,
+        'type': appt_type or 'Intro Call',
+        'phone': phone or '',
+    }
+
+    try:
+        _spec = ilu.spec_from_file_location('dsw_lead_poller',
+            os.path.join(os.path.dirname(os.path.abspath(__file__)), 'dsw_lead_poller.py'))
+        dsw = ilu.module_from_spec(_spec)
+        _spec.loader.exec_module(dsw)
+        dsw.send_email(
+            name, phone or 'N/A', '', '',
+            summary, crm_url, os_url,
+            task_id=task_id, lead_status='intro_call',
+            appointment=appointment,
+        )
+    except Exception as e:
+        print(f"[DSW APPT] Email send error: {e}")
 
     return True
 
