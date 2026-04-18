@@ -68,38 +68,37 @@ def get_users_needing_summary():
 
 
 def get_user_tasks_summary(user_id, user_timezone):
-    """Get task summary for a user"""
+    """Get task summary for a user covering the actionable window.
+
+    Includes every pending task due today or earlier (overdue), today, or in
+    the next 7 days — across all categories, DSW Solar leads included.
+    """
     tz = pytz.timezone(user_timezone)
     now = datetime.now(tz)
-    today = now.date().isoformat()
+    today_iso = now.date().isoformat()
+    week_ahead_iso = (now.date() + timedelta(days=7)).isoformat()
 
-    # Get all pending tasks
     tasks = _get_supabase().table('tasks')\
-        .select('id, title, due_date, due_time, priority, status, client_name')\
+        .select('id, title, due_date, due_time, priority, status, client_name, category')\
         .eq('user_id', user_id)\
         .eq('status', 'pending')\
-        .neq('category', 'DSW Solar')\
+        .not_.is_('due_date', 'null')\
+        .lte('due_date', week_ahead_iso)\
         .order('due_date')\
         .order('due_time')\
-        .limit(50)\
+        .limit(500)\
         .execute()
 
     all_tasks = tasks.data or []
 
-    # Categorize tasks
-    overdue = []
-    due_today = []
-    upcoming = []
-
+    overdue, due_today, upcoming = [], [], []
     for task in all_tasks:
-        due_date = task.get('due_date')
-        if not due_date:
-            upcoming.append(task)
+        d = str(task.get('due_date') or '')[:10]
+        if not d:
             continue
-
-        if due_date < today:
+        if d < today_iso:
             overdue.append(task)
-        elif due_date == today:
+        elif d == today_iso:
             due_today.append(task)
         else:
             upcoming.append(task)
@@ -107,9 +106,24 @@ def get_user_tasks_summary(user_id, user_timezone):
     return {
         'overdue': overdue,
         'due_today': due_today,
-        'upcoming': upcoming[:10],  # Limit upcoming to 10
-        'total_pending': len(all_tasks)
+        'upcoming': upcoming,
+        'total_pending': len(all_tasks),
     }
+
+
+def _group_tasks_by_category(tasks):
+    """Bucket a list of tasks by category, preserving input order within each bucket."""
+    groups = {}
+    for t in tasks:
+        cat = t.get('category') or 'Uncategorized'
+        groups.setdefault(cat, []).append(t)
+    # DSW Solar first (it's Rob's hottest pipeline), then alphabetical
+    ordered = {}
+    if 'DSW Solar' in groups:
+        ordered['DSW Solar'] = groups.pop('DSW Solar')
+    for k in sorted(groups):
+        ordered[k] = groups[k]
+    return ordered
 
 
 def get_user_projects_summary(user_id):
@@ -165,58 +179,48 @@ def generate_summary_email_html(user_name, user_timezone, tasks_summary, project
 
     greeting = f"Good morning, {user_name}!" if user_name else "Good morning!"
 
-    # Build tasks section
-    tasks_html = ""
+    def _render_section(heading, heading_color, bg_color, title_color, meta_color, tasks):
+        if not tasks:
+            return ''
+        html = (
+            '<div style="margin-bottom:24px;">'
+            f'<h3 style="color:{heading_color};font-size:14px;margin-bottom:12px;">'
+            f'{heading} ({len(tasks)})</h3>'
+        )
+        for cat, items in _group_tasks_by_category(tasks).items():
+            html += (
+                f'<div style="font-size:11px;font-weight:700;letter-spacing:0.5px;'
+                f'color:#6B7280;margin:10px 0 6px;">{cat.upper()} — {len(items)}</div>'
+            )
+            for task in items:
+                due_time = (task.get('due_time') or '')[:5]
+                meta_bits = [f"Due: {task.get('due_date') or 'N/A'}"]
+                if due_time: meta_bits.append(due_time)
+                if task.get('client_name'): meta_bits.append(task['client_name'])
+                html += (
+                    f'<div style="padding:10px 12px;background:{bg_color};'
+                    f'border-radius:8px;margin-bottom:6px;">'
+                    f'<strong style="color:{title_color};">{task["title"]}</strong>'
+                    f'<div style="font-size:12px;color:{meta_color};">'
+                    f'{" · ".join(meta_bits)}</div></div>'
+                )
+        html += '</div>'
+        return html
 
-    if tasks_summary['overdue']:
-        tasks_html += """
-        <div style="margin-bottom: 24px;">
-            <h3 style="color: #EF4444; font-size: 14px; margin-bottom: 12px;">OVERDUE</h3>
-        """
-        for task in tasks_summary['overdue'][:5]:
-            tasks_html += f"""
-            <div style="padding: 12px; background: #FEE2E2; border-radius: 8px; margin-bottom: 8px;">
-                <strong style="color: #991B1B;">{task['title']}</strong>
-                <div style="font-size: 12px; color: #B91C1C;">Due: {task['due_date']}</div>
-            </div>
-            """
-        tasks_html += "</div>"
+    tasks_html = ''
+    tasks_html += _render_section('OVERDUE',   '#EF4444', '#FEE2E2', '#991B1B', '#B91C1C',
+                                   tasks_summary['overdue'])
+    tasks_html += _render_section('DUE TODAY', '#6366F1', '#EEF2FF', '#4338CA', '#6366F1',
+                                   tasks_summary['due_today'])
+    tasks_html += _render_section('NEXT 7 DAYS', '#6B7280', '#F3F4F6', '#374151', '#6B7280',
+                                   tasks_summary['upcoming'])
 
-    if tasks_summary['due_today']:
-        tasks_html += """
-        <div style="margin-bottom: 24px;">
-            <h3 style="color: #6366F1; font-size: 14px; margin-bottom: 12px;">DUE TODAY</h3>
-        """
-        for task in tasks_summary['due_today'][:10]:
-            time_str = task['due_time'][:5] if task.get('due_time') else ''
-            tasks_html += f"""
-            <div style="padding: 12px; background: #EEF2FF; border-radius: 8px; margin-bottom: 8px;">
-                <strong style="color: #4338CA;">{task['title']}</strong>
-                <div style="font-size: 12px; color: #6366F1;">{time_str}</div>
-            </div>
-            """
-        tasks_html += "</div>"
-
-    if tasks_summary['upcoming']:
-        tasks_html += """
-        <div style="margin-bottom: 24px;">
-            <h3 style="color: #6B7280; font-size: 14px; margin-bottom: 12px;">COMING UP</h3>
-        """
-        for task in tasks_summary['upcoming'][:5]:
-            tasks_html += f"""
-            <div style="padding: 12px; background: #F3F4F6; border-radius: 8px; margin-bottom: 8px;">
-                <strong style="color: #374151;">{task['title']}</strong>
-                <div style="font-size: 12px; color: #6B7280;">Due: {task['due_date']}</div>
-            </div>
-            """
-        tasks_html += "</div>"
-
-    if not tasks_summary['overdue'] and not tasks_summary['due_today'] and not tasks_summary['upcoming']:
-        tasks_html = """
-        <div style="text-align: center; padding: 24px; color: #6B7280;">
-            <p>No pending tasks. You're all caught up!</p>
-        </div>
-        """
+    if not tasks_html:
+        tasks_html = (
+            '<div style="text-align:center;padding:24px;color:#6B7280;">'
+            "<p>No tasks overdue, due today, or in the next 7 days. You're all caught up!</p>"
+            '</div>'
+        )
 
     # Build projects section
     projects_html = ""
@@ -296,12 +300,21 @@ def generate_summary_email_html(user_name, user_timezone, tasks_summary, project
     return html
 
 
+ROB_USER_ID = 'e515407e-dbd6-4331-a815-1878815c89bc'
+ROB_SUMMARY_EMAIL = 'rob@cloudcleanenergy.com.au'
+
+
 def send_daily_summary(user):
     """Send daily summary email to a user"""
     user_id = user['id']
     user_email = user['email']
     user_name = user.get('full_name')
     user_timezone = user.get('timezone', 'Australia/Brisbane')
+
+    # Safety override: Rob's daily summary must land on the CCE inbox, not any
+    # alternate email the users row might end up with.
+    if user_id == ROB_USER_ID:
+        user_email = ROB_SUMMARY_EMAIL
 
     print(f"  📧 Sending daily summary to {user_email}...")
 
