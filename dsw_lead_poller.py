@@ -584,13 +584,18 @@ def make_task(name, phone, summary, crm_url, os_url, email='', prev_notes_block=
         tm = TaskManager()
         users = tm.supabase.table("users").select("id").eq("email","rob@cloudcleanenergy.com.au").execute()
         if not users.data: return
-        due = (datetime.now()+timedelta(days=1)).strftime("%Y-%m-%d")
+        # Default due: now + 4 hours in AEST (Australia/Brisbane is UTC+10, no DST).
+        # Ensures the task always lands inside today's daily-summary + reminder window.
+        _aest = timezone(timedelta(hours=10))
+        _target = datetime.now(_aest) + timedelta(hours=4)
+        due = _target.strftime("%Y-%m-%d")
+        due_time = _target.strftime("%H:%M:00")
         email_line = ("Email: "+email+"\n") if email else ""
         source_line = ("Source: "+source_badge_text+"\n") if source_badge_text else ""
         desc = "Phone: "+phone+"\n"+email_line+source_line+"CRM: "+crm_url+"\nOpenSolar: "+(os_url or "pending")+"\n\n"+summary
         if prev_notes_block:
             desc += "\n\n--- PREVIOUS NOTES ---\n" + prev_notes_block
-        result = tm.supabase.table("tasks").insert({"user_id":users.data[0]["id"],"title":"Call "+name+" - New DSW Lead","description":desc,"due_date":due,"due_time":"09:00","priority":"high","status":"pending","category":"DSW Solar","client_name":name}).execute()
+        result = tm.supabase.table("tasks").insert({"user_id":users.data[0]["id"],"title":"Call "+name+" - New DSW Lead","description":desc,"due_date":due,"due_time":due_time,"priority":"high","status":"pending","category":"DSW Solar","client_name":name}).execute()
         tid = result.data[0]["id"] if result.data else None
         print("Task created:", name, "id:", tid)
 
