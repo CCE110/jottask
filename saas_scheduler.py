@@ -478,10 +478,14 @@ def check_and_send_reminders():
         fourteen_days_ago = (now_aest - timedelta(days=14)).strftime('%Y-%m-%d')
         tomorrow_str = (now_aest + timedelta(days=1)).strftime('%Y-%m-%d')
 
+        # DSW Solar tasks still at lead_status='new_lead' are owned by
+        # check_and_send_dsw_reminders (24h + 3d cadence). Everything else
+        # — including DSW Solar tasks that have progressed past new_lead
+        # and therefore have a real due_time worth reminding on — goes
+        # through this loop.
         all_tasks_result = _get_supabase().table('tasks')\
-            .select('id, title, due_date, due_time, priority, status, client_name, user_id, reminder_sent_at')\
+            .select('id, title, due_date, due_time, priority, status, client_name, user_id, reminder_sent_at, category, lead_status')\
             .eq('status', 'pending')\
-        .neq('category', 'DSW Solar')\
             .gte('due_date', fourteen_days_ago)\
             .lte('due_date', tomorrow_str)\
             .order('due_date')\
@@ -503,6 +507,12 @@ def check_and_send_reminders():
                 task_id = task['id']
                 user_id = task.get('user_id')
                 if not user_id or user_id not in users:
+                    continue
+
+                # Don't double-fire on DSW leads still at new_lead — those are
+                # handled by check_and_send_dsw_reminders (24h + 3d cadence).
+                if task.get('category') == 'DSW Solar' and \
+                   (task.get('lead_status') or 'new_lead') == 'new_lead':
                     continue
 
                 user = users[user_id]
