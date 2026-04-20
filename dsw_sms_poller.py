@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """DSW SMS Poller - reads SolarQuotes SMS from Messages app and processes new leads"""
-import os, sys, sqlite3, json, time, importlib.util, requests
+import os, sys, sqlite3, json, time, importlib.util, requests, re
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
 
@@ -19,19 +19,50 @@ def load_done():
 def save_done(ids):
     json.dump(list(ids), open(DONE_FILE, 'w'))
 
+def _extract_text_from_attributed_body(blob):
+    """Pull the plain-text SMS body out of the NSKeyedArchiver blob that
+    macOS Messages stores in message.attributedBody when message.text is
+    NULL (the common case for modern Messages-sync'd SMS).
+
+    Anchors on the known DSW prefix "Hi Rob" — the SolarQuotes SMS we care
+    about always starts that way. Falls back to the longest printable-ASCII
+    run >= 40 chars so non-DSW texts at least decode to something.
+    """
+    if not blob:
+        return ''
+    try:
+        raw = bytes(blob)
+    except Exception:
+        return ''
+    idx = raw.find(b'Hi Rob')
+    if idx == -1:
+        runs = re.findall(rb'[\x20-\x7E\r\n]{40,}', raw)
+        return max(runs, key=len).decode('utf-8', 'replace') if runs else ''
+    end = idx
+    while end < len(raw) and end - idx < 500 and (raw[end] in b'\r\n' or 0x20 <= raw[end] <= 0x7E):
+        end += 1
+    return raw[idx:end].decode('utf-8', 'replace').strip()
+
+
 def get_new_sms():
     try:
         con = sqlite3.connect(CHAT_DB)
         cur = con.cursor()
+        # Don't filter on text IS NOT NULL — modern Messages leaves text NULL
+        # and stores the body in attributedBody. Decode that fallback below.
         cur.execute(
-            "SELECT m.ROWID, m.text, m.date "
+            "SELECT m.ROWID, m.text, m.attributedBody, m.date "
             "FROM message m "
             "JOIN handle h ON m.handle_id = h.ROWID "
-            "WHERE h.id = ? AND m.is_from_me = 0 AND m.text IS NOT NULL "
+            "WHERE h.id = ? AND m.is_from_me = 0 "
             "ORDER BY m.date DESC LIMIT 20",
             (SMS_SOURCE,)
         )
-        rows = cur.fetchall()
+        rows = []
+        for rowid, text, attr_body, date in cur.fetchall():
+            body = text if text else _extract_text_from_attributed_body(attr_body)
+            if body:
+                rows.append((rowid, body, date))
         con.close()
         return rows
     except Exception as e:
