@@ -486,7 +486,7 @@ def check_and_send_reminders():
         # and therefore have a real due_time worth reminding on — goes
         # through this loop.
         all_tasks_result = _get_supabase().table('tasks')\
-            .select('id, title, due_date, due_time, priority, status, client_name, user_id, reminder_sent_at, category, lead_status')\
+            .select('id, title, description, due_date, due_time, priority, status, client_name, user_id, reminder_sent_at, category, lead_status')\
             .eq('status', 'pending')\
             .gte('due_date', fourteen_days_ago)\
             .lte('due_date', tomorrow_str)\
@@ -619,15 +619,25 @@ def check_and_send_reminders():
                     subject = f"Reminder: {task['title'][:50]} - due {display_time}"
                     print(f"   📨 Reminder: '{task['title'][:45]}' -> {recipient}")
 
-                html_content = generate_reminder_email_html(
-                    task, display_time, user.get('full_name', ''), is_overdue=is_overdue
-                )
-
                 # ── SEND FIRST, then mark ──
                 # If send fails → reminder_sent_at stays old → next tick retries. Good.
                 # If send succeeds but DB update fails → duplicate next tick. Acceptable.
-                success, error = send_email(recipient, subject, html_content,
-                                           category='reminder', user_id=user_id, task_id=task_id)
+                if task.get('category') == 'DSW Solar':
+                    # Refresh from PipeReply and render with the full DSW lead template
+                    # so Rob sees current CRM data, current lead-status badge, and the
+                    # full action/status button set — not the plain reminder layout.
+                    from dsw_lead_poller import send_dsw_reminder_for_task
+                    tag = 'overdue' if is_overdue else display_time
+                    try:
+                        success, error = send_dsw_reminder_for_task(task, tag)
+                    except Exception as e:
+                        success, error = False, str(e)
+                else:
+                    html_content = generate_reminder_email_html(
+                        task, display_time, user.get('full_name', ''), is_overdue=is_overdue
+                    )
+                    success, error = send_email(recipient, subject, html_content,
+                                               category='reminder', user_id=user_id, task_id=task_id)
 
                 if success:
                     # Mark as reminded AFTER confirmed send

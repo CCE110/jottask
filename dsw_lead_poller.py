@@ -748,7 +748,10 @@ def send_email(name, phone, addr, src, summary, crm_url, os_url, task_id=None, l
             print("Email sent:", name)
         else:
             print(f"Email error ({name}): {err}")
-    except Exception as e: print("Email error:", e)
+        return ok, err
+    except Exception as e:
+        print("Email error:", e)
+        return False, str(e)
 
 def process(contact, task_id=None, lead_status=None, is_new_contact=True):
     """Process a DSW lead contact.
@@ -890,41 +893,93 @@ def process(contact, task_id=None, lead_status=None, is_new_contact=True):
     print("Done in", round(time.time()-t0,1), "s:", name)
 
 def send_dsw_reminder_for_task(task, reminder_tag):
-    """Send a DSW lead reminder email by reconstructing params from the task row.
+    """Send a DSW lead reminder using fresh PipeReply data.
 
-    Parses phone / email / CRM url / OpenSolar url / source / summary from the
-    task description (format written by make_task). Does NOT hit Pipereply —
-    cheap and safe to call from the scheduler loop.
+    Re-reads the contact, CRM notes, and OpenSolar URL from PipeReply and
+    rebuilds the summary via summarise() so Rob sees current lead data
+    (current status, latest CRM notes, new address if any) rather than
+    whatever was frozen into the task description when the lead first
+    arrived.
+
+    Falls back to reconstructing from the task description if PipeReply
+    is unreachable or the task predates the CRM-URL convention, so a
+    reminder still goes out during an outage.
+
+    Returns (ok, err).
     """
     desc = task.get('description') or ''
     name = task.get('client_name') or (task.get('title') or '').replace('Call ', '').replace(' - New DSW Lead', '').strip() or 'Unknown'
     task_id = task.get('id')
     lead_status = task.get('lead_status') or 'new_lead'
 
-    def _grab(label):
-        m = re.search(rf'^{label}:\s*(.+)$', desc, re.MULTILINE)
+    def _grab(label, text=desc):
+        m = re.search(rf'^{label}:\s*(.+)$', text, re.MULTILINE)
         return m.group(1).strip() if m else ''
 
-    phone = _grab('Phone') or 'N/A'
-    email = _grab('Email')
-    source_badge_text = _grab('Source')
     crm_url = _grab('CRM')
-    os_raw = _grab('OpenSolar')
-    os_url = os_raw if os_raw.startswith('http') else ''
+    cid = ''
+    if crm_url:
+        m = re.search(r'/contacts/detail/([^/?\s]+)', crm_url)
+        if m:
+            cid = m.group(1)
 
-    # Summary = everything after the blank line following the header block,
-    # stopped at the PREVIOUS NOTES marker if present.
-    body = desc
-    if '\n\n' in body:
-        body = body.split('\n\n', 1)[1]
-    if '--- PREVIOUS NOTES ---' in body:
-        body = body.split('--- PREVIOUS NOTES ---', 1)[0]
-    summary = body.strip() or '(summary unavailable)'
+    phone = email = source_badge_text = os_url = summary = ''
+    fresh = False
 
-    src = source_badge_text.split('·')[0].strip() if source_badge_text else ''
+    if cid:
+        try:
+            full = get_full(cid)
+            if full:
+                phone    = full.get('phone')      or ''
+                email    = full.get('email')      or ''
+                address  = full.get('address1')   or ''
+                city     = full.get('city')       or ''
+                state    = full.get('state')      or ''
+                postcode = full.get('postalCode') or ''
+                notes_field = full.get('notes') or ''
+                custom   = full.get('customFields', []) or []
 
-    send_email(
-        name, phone, '', src, summary, crm_url, os_url,
+                crm_notes_text = get_crm_notes_bodies(cid)
+
+                if not any([address, city, state, postcode]):
+                    parsed = extract_address_from_notes(crm_notes_text) or extract_address_from_notes(notes_field)
+                    if parsed:
+                        address, city, state, postcode = parsed
+
+                addr = ', '.join(filter(None, [address, city, state, postcode]))
+                os_url = get_os_url_from_crm(cid) or ''
+
+                src = source(full)
+                summary, referred_by = summarise(name, phone, addr, src, notes_field, custom)
+                if not referred_by and src.lower().startswith('referral'):
+                    referred_by = get_referred_by_from_crm(cid)
+                source_badge_text = source_badge(src, referred_by)
+
+                if crm_notes_text:
+                    summary = f"{summary}\n\nCRM NOTES:\n{crm_notes_text}"
+
+                fresh = True
+                print(f"[DSW reminder] Fresh PipeReply data for {name} ({cid[:8]})")
+        except Exception as e:
+            print(f"[DSW reminder] Fresh fetch failed for {cid[:8]}, falling back to description: {e}")
+
+    if not fresh:
+        phone = _grab('Phone') or 'N/A'
+        email = _grab('Email')
+        source_badge_text = _grab('Source')
+        os_raw = _grab('OpenSolar')
+        os_url = os_raw if os_raw.startswith('http') else ''
+        body = desc
+        if '\n\n' in body:
+            body = body.split('\n\n', 1)[1]
+        if '--- PREVIOUS NOTES ---' in body:
+            body = body.split('--- PREVIOUS NOTES ---', 1)[0]
+        summary = body.strip() or '(summary unavailable)'
+
+    src_label = source_badge_text.split('·')[0].strip() if source_badge_text else ''
+
+    return send_email(
+        name, phone or 'N/A', '', src_label, summary, crm_url, os_url,
         task_id=task_id, lead_status=lead_status,
         email=email, source_badge_text=source_badge_text,
         reminder_tag=reminder_tag,
