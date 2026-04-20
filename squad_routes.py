@@ -69,7 +69,15 @@ def _get_squad_for_user(user_id: str):
 
 # ── Manager: Dashboard ────────────────────────────────────────────────────────
 
+@squad_bp.route('/squad')
+@login_required
+def squad_landing():
+    """iPhone home-screen shortcut entry point — redirects to the Squad dashboard."""
+    return redirect(url_for('squad.dashboard'))
+
+
 @squad_bp.route('/squad/')
+@squad_bp.route('/squad/dashboard')
 @login_required
 def dashboard():
     user_id = session.get('user_id')

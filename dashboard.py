@@ -13,6 +13,9 @@ from supabase import create_client, Client
 
 app = Flask(__name__)
 app.secret_key = os.getenv('FLASK_SECRET_KEY', os.urandom(24))
+app.config['PERMANENT_SESSION_LIFETIME'] = timedelta(days=30)
+app.config['SESSION_COOKIE_SECURE'] = True
+app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
 
 # Register blueprints
 from auth import login_required, admin_required
@@ -1787,6 +1790,7 @@ def login():
             })
 
             if auth_response.user:
+                session.permanent = True
                 session['user_id'] = auth_response.user.id
                 session['user_email'] = auth_response.user.email
 

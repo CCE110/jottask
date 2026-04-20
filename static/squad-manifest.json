@@ -1,0 +1,22 @@
+{
+    "name": "Squad",
+    "short_name": "Squad",
+    "description": "AI-native youth soccer team management",
+    "start_url": "/squad/dashboard",
+    "scope": "/squad/",
+    "display": "standalone",
+    "background_color": "#f0fdf4",
+    "theme_color": "#16a34a",
+    "icons": [
+        {
+            "src": "/static/squad-icon.png",
+            "sizes": "192x192",
+            "type": "image/png"
+        },
+        {
+            "src": "/static/squad-icon.png",
+            "sizes": "512x512",
+            "type": "image/png"
+        }
+    ]
+}

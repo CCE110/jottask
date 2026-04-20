@@ -143,7 +143,8 @@ def login_user(email, password):
         })
 
         if auth_response.user:
-            # Set session
+            # Set session (persistent — PERMANENT_SESSION_LIFETIME set in dashboard.py)
+            session.permanent = True
             session['user_id'] = auth_response.user.id
             session['user_email'] = auth_response.user.email
             session['access_token'] = auth_response.session.access_token
