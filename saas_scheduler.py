@@ -301,20 +301,22 @@ def generate_summary_email_html(user_name, user_timezone, tasks_summary, project
 
 
 ROB_USER_ID = 'e515407e-dbd6-4331-a815-1878815c89bc'
-ROB_SUMMARY_EMAIL = 'rob@cloudcleanenergy.com.au'
+ROB_OUTBOUND_EMAIL = 'rob.l@directsolarwholesaler.com.au'
+
+
+def _resolve_recipient(user):
+    """Rob's outbound always goes to his DSW inbox, not whatever users.email holds."""
+    if user and user.get('id') == ROB_USER_ID:
+        return ROB_OUTBOUND_EMAIL
+    return user['email'] if user else None
 
 
 def send_daily_summary(user):
     """Send daily summary email to a user"""
     user_id = user['id']
-    user_email = user['email']
+    user_email = _resolve_recipient(user)
     user_name = user.get('full_name')
     user_timezone = user.get('timezone', 'Australia/Brisbane')
-
-    # Safety override: Rob's daily summary must land on the CCE inbox, not any
-    # alternate email the users row might end up with.
-    if user_id == ROB_USER_ID:
-        user_email = ROB_SUMMARY_EMAIL
 
     print(f"  📧 Sending daily summary to {user_email}...")
 
@@ -609,12 +611,13 @@ def check_and_send_reminders():
                     continue
 
                 # ── Build and send the email ──
+                recipient = _resolve_recipient(user)
                 if is_overdue:
                     subject = f"Overdue: {task['title'][:50]} - was due {display_time}"
-                    print(f"   📨 OVERDUE: '{task['title'][:45]}' -> {user['email']}")
+                    print(f"   📨 OVERDUE: '{task['title'][:45]}' -> {recipient}")
                 else:
                     subject = f"Reminder: {task['title'][:50]} - due {display_time}"
-                    print(f"   📨 Reminder: '{task['title'][:45]}' -> {user['email']}")
+                    print(f"   📨 Reminder: '{task['title'][:45]}' -> {recipient}")
 
                 html_content = generate_reminder_email_html(
                     task, display_time, user.get('full_name', ''), is_overdue=is_overdue
@@ -623,7 +626,7 @@ def check_and_send_reminders():
                 # ── SEND FIRST, then mark ──
                 # If send fails → reminder_sent_at stays old → next tick retries. Good.
                 # If send succeeds but DB update fails → duplicate next tick. Acceptable.
-                success, error = send_email(user['email'], subject, html_content,
+                success, error = send_email(recipient, subject, html_content,
                                            category='reminder', user_id=user_id, task_id=task_id)
 
                 if success:

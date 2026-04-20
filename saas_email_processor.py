@@ -29,6 +29,20 @@ import uuid
 import hashlib
 import pytz
 
+
+# Email addresses Rob sends DSW leads from. Any email whose sender contains
+# one of these substrings routes into the DSW lead handlers (new lead,
+# forward, reply) rather than the generic task-extraction path.
+DSW_SENDER_EMAILS = (
+    'rob.l@directsolarwholesaler.com.au',
+    'rob@cloudcleanenergy.com.au',
+)
+
+
+def _is_dsw_sender(sender_email):
+    s = (sender_email or '').lower()
+    return any(addr in s for addr in DSW_SENDER_EMAILS)
+
 load_dotenv()
 
 AEST = pytz.timezone('Australia/Brisbane')
@@ -1934,7 +1948,7 @@ def handle_dsw_forward(subject, body_text, sender_email):
     from anthropic import Anthropic
 
     sender_lower = (sender_email or '').lower()
-    if 'rob.l@directsolarwholesaler.com.au' not in sender_lower:
+    if not _is_dsw_sender(sender_email):
         return False
 
     subject_lower = (subject or '').lower()
@@ -2160,8 +2174,7 @@ def handle_dsw_new_lead(subject, body_text, sender_email):
     import re, os, requests, importlib.util as ilu
     from datetime import datetime, timedelta
 
-    sender_lower = (sender_email or '').lower()
-    if 'rob.l@directsolarwholesaler.com.au' not in sender_lower:
+    if not _is_dsw_sender(sender_email):
         return False
     subject_lower = (subject or '').lower()
     # Must start with "new lead:" but must NOT be a reply (re:)
@@ -2388,7 +2401,7 @@ def handle_dsw_reply(subject, body_text, sender_email):
     from datetime import datetime
     import pytz
 
-    if 'directsolarwholesaler' not in (sender_email or '').lower():
+    if not _is_dsw_sender(sender_email):
         return False
 
     body = body_text or ''

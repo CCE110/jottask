@@ -13,6 +13,17 @@ from supabase import create_client, Client
 SUPABASE_URL = os.getenv('SUPABASE_URL')
 SUPABASE_KEY = os.getenv('SUPABASE_KEY')
 
+# Rob's outbound always lands on his DSW inbox, not whatever users.email holds.
+ROB_USER_ID = 'e515407e-dbd6-4331-a815-1878815c89bc'
+ROB_OUTBOUND_EMAIL = 'rob.l@directsolarwholesaler.com.au'
+
+
+def _resolve_admin_email(admin):
+    if admin and admin.get('id') == ROB_USER_ID:
+        return ROB_OUTBOUND_EMAIL
+    return admin.get('email') if admin else None
+
+
 _supabase = None
 
 def _get_supabase():
@@ -209,7 +220,7 @@ def send_self_alert(subject, detail):
             if count_today >= 3:
                 continue
 
-            _send(admin['email'], f"[ALERT] {subject}", html)
+            _send(_resolve_admin_email(admin), f"[ALERT] {subject}", html)
 
             sb.table('users').update({
                 'last_system_alert_at': now.isoformat(),
@@ -359,7 +370,7 @@ def check_and_send_canary():
         admin = admins.data[0]
         from email_utils import send_email
         success, error = send_email(
-            admin['email'],
+            _resolve_admin_email(admin),
             'Jottask canary check — email delivery working',
             f'<p>Canary email sent at {now_aest.strftime("%Y-%m-%d %H:%M AEST")}. Email delivery is working.</p>',
             category='canary',
@@ -762,7 +773,7 @@ def send_daily_health_digest():
         for admin in admins.data:
             subject_prefix = 'ALL GREEN' if all_green else 'ISSUES DETECTED'
             success, error = send_email(
-                admin['email'],
+                _resolve_admin_email(admin),
                 f'[{subject_prefix}] Jottask Health Digest - {now_aest.strftime("%b %d")}',
                 html,
                 category='health_digest',

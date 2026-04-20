@@ -12,6 +12,19 @@ FROM_EMAIL = os.getenv('FROM_EMAIL', 'jottask@flowquote.ai')
 MAX_RETRIES = 2
 BACKOFF_BASE = 1  # seconds
 
+# Outbound routing: every email Rob should receive lands on his DSW inbox,
+# never on his CCE inbox. Applied at the send boundary so individual callers
+# don't all need to know about it.
+_RECIPIENT_REWRITES = {
+    'rob@cloudcleanenergy.com.au': 'rob.l@directsolarwholesaler.com.au',
+}
+
+
+def _rewrite_recipient(to_email):
+    if not to_email:
+        return to_email
+    return _RECIPIENT_REWRITES.get(to_email.strip().lower(), to_email)
+
 
 def send_email(to_email, subject, html_body, category=None, user_id=None, task_id=None):
     """
@@ -23,6 +36,8 @@ def send_email(to_email, subject, html_body, category=None, user_id=None, task_i
       user_id: which user this email is for
       task_id: which task this email relates to
     """
+    to_email = _rewrite_recipient(to_email)
+
     # Read API key at call time (not import time) so env vars are always fresh
     api_key = os.getenv('RESEND_API_KEY')
     if not api_key:
