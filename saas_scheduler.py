@@ -453,7 +453,10 @@ def check_and_send_reminders():
     2. Send first, mark after. Never set reminder_sent_at before confirming email sent.
        Worst case = duplicate reminder (acceptable). Never = missed reminder (unacceptable).
     3. Every exception is caught per-task. One bad task never kills the loop.
-    4. Throttle: max 1 reminder per task per hour (not 24h — that's too long for overdue).
+    4. Throttle: max 1 reminder per task per 4h (regardless of reminder_sent_at
+       history — same-window duplicates suppressed even for overdue tasks).
+       Reschedule endpoints write reminder_sent_at=now so the throttle picks
+       up the click and avoids re-firing against the new due_time.
 
     When a task needs a reminder:
     - Has due_time → remind when within reminder_window minutes, or overdue
@@ -501,7 +504,10 @@ def check_and_send_reminders():
         skipped_future = 0
         skipped_throttle = 0
         already_reminded_today = 0
-        eight_hours_ago = datetime.now(pytz.UTC) - timedelta(hours=8)
+        # 4h floor: never re-fire a reminder within 4 hours of the last one.
+        # Catches both the "immediately after reschedule" case (we stamp
+        # reminder_sent_at=now on button click) and generic spam prevention.
+        four_hours_ago = datetime.now(pytz.UTC) - timedelta(hours=4)
 
         # ── Step 3: Check each task ──
         for task in all_tasks:
@@ -526,14 +532,14 @@ def check_and_send_reminders():
                     user_tz = pytz.timezone('Australia/Brisbane')
                 now = datetime.now(user_tz)
 
-                # ── Throttle check: was this task reminded in the last hour? ──
+                # ── Throttle check: was this task reminded in the last 4h? ──
                 last_reminded = task.get('reminder_sent_at')
                 if last_reminded:
                     try:
                         last_dt = datetime.fromisoformat(last_reminded.replace('Z', '+00:00'))
-                        if last_dt > eight_hours_ago:
+                        if last_dt > four_hours_ago:
                             skipped_throttle += 1
-                            continue  # Reminded less than 8 hours ago — skip
+                            continue  # Reminded less than 4 hours ago — skip
                     except Exception:
                         pass  # Can't parse timestamp — proceed with reminder
 

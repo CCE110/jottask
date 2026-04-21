@@ -2974,7 +2974,7 @@ def handle_action():
                 supabase.table('tasks').update({
                     'due_date': new_date,
                     'due_time': new_time,
-                    'reminder_sent_at': None
+                    'reminder_sent_at': datetime.now(pytz.UTC).isoformat()
                 }).eq('id', task_id).execute()
 
                 # If DSW Solar task, resend lead email with current status
@@ -3003,7 +3003,7 @@ def handle_action():
 
                 supabase.table('tasks').update({
                     'due_date': new_date,
-                    'reminder_sent_at': None
+                    'reminder_sent_at': datetime.now(pytz.UTC).isoformat()
                 }).eq('id', task_id).execute()
 
                 if task_data.get('category') == 'DSW Solar':
@@ -3038,7 +3038,7 @@ def handle_action():
                 supabase.table('tasks').update({
                     'due_date': target.date().isoformat(),
                     'due_time': target.strftime('%H:%M:%S'),
-                    'reminder_sent_at': None
+                    'reminder_sent_at': datetime.now(pytz.UTC).isoformat()
                 }).eq('id', task_id).execute()
 
                 return render_template_string("""
@@ -3150,7 +3150,7 @@ def handle_action():
             supabase.table('tasks').update({
                 'due_date': new_due.date().isoformat(),
                 'due_time': new_due.strftime('%H:%M') + ':00',
-                'reminder_sent_at': None
+                'reminder_sent_at': now.isoformat()
             }).eq('id', keep_id).execute()
 
             # Get the kept task title for display
@@ -3225,7 +3225,7 @@ def handle_action():
             supabase.table('tasks').update({
                 'due_date': r_date,
                 'due_time': r_time + ':00',
-                'reminder_sent_at': None,
+                'reminder_sent_at': datetime.now(pytz.UTC).isoformat(),
             }).eq('id', task_id).execute()
         return redirect(url_for('lead_detail', task_id=task_id))
 
@@ -3241,7 +3241,7 @@ def handle_action():
             'due_date': tomorrow,
             'due_time': current_time,
             'lead_status': 'no_reply',
-            'reminder_sent_at': None,
+            'reminder_sent_at': datetime.now(pytz.UTC).isoformat(),
         }).eq('id', task_id).execute()
         return redirect(url_for('lead_detail', task_id=task_id))
 
@@ -3321,7 +3321,7 @@ def handle_reschedule_submit():
         update_data = {
             'due_date': new_date,
             'due_time': new_time + ':00',
-            'reminder_sent_at': None,
+            'reminder_sent_at': datetime.now(pytz.UTC).isoformat(),
             'status': 'pending'
         }
 
@@ -3967,7 +3967,7 @@ def api_delay_task(task_id):
         'due_date': new_dt.date().isoformat(),
         'due_time': new_dt.strftime('%H:%M:%S'),
         'status': 'pending',
-        'reminder_sent_at': None
+        'reminder_sent_at': datetime.now(pytz.UTC).isoformat()
     }).eq('id', task_id).execute()
 
     return jsonify({'success': True, 'new_due': new_dt.isoformat()})
@@ -4335,27 +4335,28 @@ def lead_detail(task_id):
     action = request.args.get('action', '')
     if action:
         update = {}
+        _rem_now = datetime.now(pytz.UTC).isoformat()
         if action == 'delay_1hour':
             nd = datetime.now(aest) + timedelta(hours=1)
-            update = {'due_date': nd.date().isoformat(), 'due_time': nd.strftime('%H:%M:00'), 'reminder_sent_at': None}
+            update = {'due_date': nd.date().isoformat(), 'due_time': nd.strftime('%H:%M:00'), 'reminder_sent_at': _rem_now}
         elif action == 'delay_1day':
             try:
                 base = datetime.fromisoformat(t.get('due_date', '')).replace(tzinfo=aest)
             except Exception:
                 base = datetime.now(aest)
             nd = base + timedelta(days=1)
-            update = {'due_date': nd.date().isoformat(), 'reminder_sent_at': None}
+            update = {'due_date': nd.date().isoformat(), 'reminder_sent_at': _rem_now}
         elif action == 'delay_next_day_8am':
             tgt = (datetime.now(aest) + timedelta(days=1)).replace(hour=8, minute=0, second=0, microsecond=0)
-            update = {'due_date': tgt.date().isoformat(), 'due_time': '08:00:00', 'reminder_sent_at': None}
+            update = {'due_date': tgt.date().isoformat(), 'due_time': '08:00:00', 'reminder_sent_at': _rem_now}
         elif action == 'delay_next_day_9am':
             tgt = (datetime.now(aest) + timedelta(days=1)).replace(hour=9, minute=0, second=0, microsecond=0)
-            update = {'due_date': tgt.date().isoformat(), 'due_time': '09:00:00', 'reminder_sent_at': None}
+            update = {'due_date': tgt.date().isoformat(), 'due_time': '09:00:00', 'reminder_sent_at': _rem_now}
         elif action == 'delay_next_monday_9am':
             now = datetime.now(aest)
             days = (7 - now.weekday()) % 7 or 7
             tgt = (now + timedelta(days=days)).replace(hour=9, minute=0, second=0, microsecond=0)
-            update = {'due_date': tgt.date().isoformat(), 'due_time': '09:00:00', 'reminder_sent_at': None}
+            update = {'due_date': tgt.date().isoformat(), 'due_time': '09:00:00', 'reminder_sent_at': _rem_now}
         elif action == 'set_status':
             sv = request.args.get('status', '')
             if sv in STATUS_LABELS:
@@ -4370,7 +4371,7 @@ def lead_detail(task_id):
                 update = {
                     'due_date': r_date,
                     'due_time': r_time + ':00',
-                    'reminder_sent_at': None,
+                    'reminder_sent_at': _rem_now,
                 }
                 supabase.table('tasks').update(update).eq('id', task_id).execute()
                 return redirect(url_for('lead_detail', task_id=task_id,
@@ -4884,7 +4885,7 @@ def email_action(token):
         supabase.table('tasks').update({
             'due_date': new_date,
             'due_time': new_time,
-            'reminder_sent_at': None  # Allow new reminder
+            'reminder_sent_at': datetime.now(pytz.UTC).isoformat()  # Re-remind at new time (throttled)
         }).eq('id', task_id).execute()
 
         return render_template_string("""
@@ -4909,7 +4910,7 @@ def email_action(token):
 
         supabase.table('tasks').update({
             'due_date': new_date,
-            'reminder_sent_at': None  # Allow new reminder
+            'reminder_sent_at': datetime.now(pytz.UTC).isoformat()  # Re-remind at new time (throttled)
         }).eq('id', task_id).execute()
 
         return render_template_string("""
@@ -4940,7 +4941,7 @@ def email_action(token):
         supabase.table('tasks').update({
             'due_date': target.date().isoformat(),
             'due_time': target.strftime('%H:%M:%S'),
-            'reminder_sent_at': None
+            'reminder_sent_at': datetime.now(pytz.UTC).isoformat()
         }).eq('id', task_id).execute()
 
         return render_template_string("""
