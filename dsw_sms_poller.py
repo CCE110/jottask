@@ -87,8 +87,10 @@ def find_pipereply_contact(name):
 def extract_name(sms_text):
     """Extract lead name from SolarQuotes SMS"""
     import re
-    # Name part: capitalised word, optionally with apostrophe (O'Neill, O'Brien)
-    NAME_PART = r"[A-Z][a-z']+(?:[A-Z][a-z']+)?"
+    # Name part: capital letter followed by letters/apostrophe. Accepts mixed
+    # case ("Johnson", "O'Neill", "McDonald") AND ALL-CAPS ("JOHNSON", "CHAN")
+    # — DSW Energy sometimes sends names shouting.
+    NAME_PART = r"[A-Z][A-Za-z']+(?:[A-Z][A-Za-z']+)?"
     NAME_FULL = rf'{NAME_PART}(?:\s+{NAME_PART})+'
     # DSW Energy format: "Hi Rob, Peter Smith has just been assigned to you."
     # Optional job reference (e.g. "Q2021980") may appear between name and "has just been".
