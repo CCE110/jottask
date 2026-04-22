@@ -453,10 +453,13 @@ def check_and_send_reminders():
     2. Send first, mark after. Never set reminder_sent_at before confirming email sent.
        Worst case = duplicate reminder (acceptable). Never = missed reminder (unacceptable).
     3. Every exception is caught per-task. One bad task never kills the loop.
-    4. Throttle: max 1 reminder per task per 4h (regardless of reminder_sent_at
-       history — same-window duplicates suppressed even for overdue tasks).
-       Reschedule endpoints write reminder_sent_at=now so the throttle picks
-       up the click and avoids re-firing against the new due_time.
+    4. Two-tier throttle:
+       - 4h floor on every task (catches reschedule bounces, short windows).
+         Reschedule endpoints stamp reminder_sent_at=now so this catches the
+         click and suppresses a near-term re-fire against the new due_time.
+       - 24h ceiling on overdue tasks — once an overdue re-reminder fires,
+         back off for a full day. Stops the "pinged every 4h forever" effect
+         on tasks Rob hasn't completed yet.
 
     When a task needs a reminder:
     - Has due_time → remind when within reminder_window minutes, or overdue
@@ -503,11 +506,15 @@ def check_and_send_reminders():
         sent_count = 0
         skipped_future = 0
         skipped_throttle = 0
+        skipped_overdue_throttle = 0
         already_reminded_today = 0
         # 4h floor: never re-fire a reminder within 4 hours of the last one.
         # Catches both the "immediately after reschedule" case (we stamp
         # reminder_sent_at=now on button click) and generic spam prevention.
         four_hours_ago = datetime.now(pytz.UTC) - timedelta(hours=4)
+        # 24h ceiling for overdue re-reminders — once the task is overdue and
+        # we've pinged about it, back off for a day before pinging again.
+        twenty_four_hours_ago = datetime.now(pytz.UTC) - timedelta(hours=24)
 
         # ── Step 3: Check each task ──
         for task in all_tasks:
@@ -610,6 +617,18 @@ def check_and_send_reminders():
                 if not needs_reminder:
                     continue
 
+                # ── 24h ceiling on overdue re-reminders ──
+                # Overdue tasks used to ping every 4h forever once they fell
+                # past due. Cap at one overdue re-reminder per 24h.
+                if last_reminded and is_overdue:
+                    try:
+                        last_dt = datetime.fromisoformat(last_reminded.replace('Z', '+00:00'))
+                        if last_dt > twenty_four_hours_ago:
+                            skipped_overdue_throttle += 1
+                            continue
+                    except Exception:
+                        pass
+
                 # ── Check if already reminded today (first-time only, not re-reminders) ──
                 if last_reminded and not is_overdue:
                     # Already got a first reminder and not overdue — don't spam
@@ -667,7 +686,8 @@ def check_and_send_reminders():
 
         # ── Summary ──
         print(f"   Reminders: {len(all_tasks)} checked, {sent_count} sent, "
-              f"{skipped_future} future, {skipped_throttle} throttled (<1h), "
+              f"{skipped_future} future, {skipped_throttle} throttled (<4h), "
+              f"{skipped_overdue_throttle} overdue-throttled (<24h), "
               f"{already_reminded_today} already reminded")
         return sent_count
 
