@@ -22,6 +22,26 @@ def _get_supabase():
     return _supabase
 
 
+def _retry_supabase(fn, attempts=3, delay=2, label='supabase call'):
+    """Retry a Supabase call up to `attempts` times with `delay` seconds
+    between tries. Targets transient 502/JSON/gateway failures that have
+    killed the daily-summary loop mid-run in the past. Re-raises on final
+    failure so the caller can decide what to do.
+    """
+    last_exc = None
+    for i in range(attempts):
+        try:
+            return fn()
+        except Exception as e:
+            last_exc = e
+            if i < attempts - 1:
+                print(f"   ⚠️ {label} attempt {i+1} failed ({e}); retry in {delay}s")
+                time.sleep(delay)
+            else:
+                print(f"   ❌ {label} failed after {attempts} attempts: {e}")
+    raise last_exc
+
+
 def get_users_needing_summary():
     """Get users who need their daily summary sent now"""
     users_to_notify = []
@@ -78,16 +98,19 @@ def get_user_tasks_summary(user_id, user_timezone):
     today_iso = now.date().isoformat()
     week_ahead_iso = (now.date() + timedelta(days=7)).isoformat()
 
-    tasks = _get_supabase().table('tasks')\
-        .select('id, title, due_date, due_time, priority, status, client_name, category')\
-        .eq('user_id', user_id)\
-        .eq('status', 'pending')\
-        .not_.is_('due_date', 'null')\
-        .lte('due_date', week_ahead_iso)\
-        .order('due_date')\
-        .order('due_time')\
-        .limit(500)\
-        .execute()
+    tasks = _retry_supabase(
+        lambda: _get_supabase().table('tasks')
+            .select('id, title, due_date, due_time, priority, status, client_name, category')
+            .eq('user_id', user_id)
+            .eq('status', 'pending')
+            .not_.is_('due_date', 'null')
+            .lte('due_date', week_ahead_iso)
+            .order('due_date')
+            .order('due_time')
+            .limit(500)
+            .execute(),
+        label=f'tasks.select for user {user_id[:8]}',
+    )
 
     all_tasks = tasks.data or []
 
@@ -129,23 +152,29 @@ def _group_tasks_by_category(tasks):
 def get_user_projects_summary(user_id):
     """Get project summary for a user"""
     # Get active projects
-    projects = _get_supabase().table('saas_projects')\
-        .select('id, name, color, status')\
-        .eq('user_id', user_id)\
-        .eq('status', 'active')\
-        .order('created_at', desc=True)\
-        .limit(10)\
-        .execute()
+    projects = _retry_supabase(
+        lambda: _get_supabase().table('saas_projects')
+            .select('id, name, color, status')
+            .eq('user_id', user_id)
+            .eq('status', 'active')
+            .order('created_at', desc=True)
+            .limit(10)
+            .execute(),
+        label=f'saas_projects.select for user {user_id[:8]}',
+    )
 
     projects_with_progress = []
     total_items_remaining = 0
 
     for project in (projects.data or []):
         # Get items for this project
-        items = _get_supabase().table('saas_project_items')\
-            .select('id, is_completed')\
-            .eq('project_id', project['id'])\
-            .execute()
+        items = _retry_supabase(
+            lambda p=project: _get_supabase().table('saas_project_items')
+                .select('id, is_completed')
+                .eq('project_id', p['id'])
+                .execute(),
+            label=f'saas_project_items.select project {project["id"][:8]}',
+        )
 
         items_list = items.data or []
         total = len(items_list)
@@ -328,9 +357,12 @@ def send_daily_summary(user):
     if tasks_summary['total_pending'] == 0 and projects_summary['active_count'] == 0:
         print(f"    ⏭️ No tasks or projects, skipping email")
         # Still update last_summary_sent_at
-        _get_supabase().table('users').update({
-            'last_summary_sent_at': datetime.now(pytz.UTC).isoformat()
-        }).eq('id', user_id).execute()
+        _retry_supabase(
+            lambda: _get_supabase().table('users').update({
+                'last_summary_sent_at': datetime.now(pytz.UTC).isoformat()
+            }).eq('id', user_id).execute(),
+            label=f'users.update (skip) for {user_id[:8]}',
+        )
         return
 
     # Generate email
@@ -347,9 +379,12 @@ def send_daily_summary(user):
 
     if success:
         # Update last_summary_sent_at
-        _get_supabase().table('users').update({
-            'last_summary_sent_at': datetime.now(pytz.UTC).isoformat()
-        }).eq('id', user_id).execute()
+        _retry_supabase(
+            lambda: _get_supabase().table('users').update({
+                'last_summary_sent_at': datetime.now(pytz.UTC).isoformat()
+            }).eq('id', user_id).execute(),
+            label=f'users.update (sent) for {user_id[:8]}',
+        )
 
 
 ACTION_URL = os.getenv('TASK_ACTION_URL', 'https://www.jottask.app/action')
