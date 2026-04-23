@@ -1964,6 +1964,21 @@ def handle_dsw_forward(subject, body_text, sender_email):
         print(f"[DSW FORWARD] SKIP — system subject prefix. Subject: '{subject}'")
         return False
 
+    # Personal task / reminder — Rob writing a note to himself rather than
+    # forwarding a lead ("Rob to build X...", "Remind me to Y..."). Return False
+    # so the email falls through to generic Claude task extraction instead of
+    # being forced through the DSW lead pipeline (which needs a customer).
+    PERSONAL_SUBJECT_PREFIXES = ('rob to ', 'remind me ')
+    if any(subject_lower.startswith(p) for p in PERSONAL_SUBJECT_PREFIXES):
+        print(f"[DSW FORWARD] SKIP — personal task/reminder subject. Subject: '{subject}'")
+        return False
+    # "remind me" anywhere in subject on a non-forward email is also personal.
+    # Forwards (FW:/Fwd:) are excluded because the original thread may contain
+    # the phrase and still represent a real lead being forwarded for action.
+    if not is_forward and 'remind me' in subject_lower:
+        print(f"[DSW FORWARD] SKIP — personal reminder phrase in non-forward subject. Subject: '{subject}'")
+        return False
+
     # Also fire for unstructured lead notes that don't have FW: or a phone number,
     # e.g. "Joe hill referral aw his neighbour to send bill" or
     # "Aw meeting energy retailer - Future X with Jack"
@@ -2067,14 +2082,21 @@ Rules:
     notes       = (extracted.get('notes') or '').strip()
     lead_source = (extracted.get('lead_source') or 'referral').strip()
 
-    # Never skip — even with no name/phone, create a task so the lead isn't lost.
-    # Reject Rob's own name and fall back to the subject line so we always
-    # get a meaningful customer name, never "Rob Lowe" in the task/email.
+    # Reject Rob's own name so it doesn't get treated as a customer below.
     _ROB_NAMES = {'rob lowe', 'rob'}
-    if not name or name.lower() in _ROB_NAMES:
-        if name:
-            print(f"[DSW FORWARD] Rejected extracted name '{name}' (Rob's name, not customer)")
-        # Strip FW:/Fwd: prefix and use the remainder as the customer name
+    _is_rob_name = name and name.lower() in _ROB_NAMES
+    if _is_rob_name:
+        print(f"[DSW FORWARD] Rejected extracted name '{name}' (Rob's name, not customer)")
+        name = ''
+
+    # No real customer signal anywhere → this is a personal task, not a lead.
+    # Fall through so generic task extraction can handle it properly.
+    if not name and not phone and not email_addr and not address:
+        print(f"[DSW FORWARD] SKIP — no customer data extracted (name/phone/email/address all empty). Subject: '{subject}'")
+        return False
+
+    # Still have phone/email/address but no name → use subject line as customer name.
+    if not name:
         name = re.sub(r'^(fw|fwd)\s*:\s*', '', subject or 'Unknown Lead', flags=re.IGNORECASE).strip() or 'Unknown Lead'
         print(f"[DSW FORWARD] Using subject as customer name fallback: '{name}'")
 
