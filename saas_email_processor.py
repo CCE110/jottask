@@ -1964,20 +1964,14 @@ def handle_dsw_forward(subject, body_text, sender_email):
         print(f"[DSW FORWARD] SKIP — system subject prefix. Subject: '{subject}'")
         return False
 
-    # Personal task / reminder — Rob writing a note to himself rather than
-    # forwarding a lead ("Rob to build X...", "Remind me to Y..."). Return False
-    # so the email falls through to generic Claude task extraction instead of
-    # being forced through the DSW lead pipeline (which needs a customer).
-    PERSONAL_SUBJECT_PREFIXES = ('rob to ', 'remind me ')
-    if any(subject_lower.startswith(p) for p in PERSONAL_SUBJECT_PREFIXES):
-        print(f"[DSW FORWARD] SKIP — personal task/reminder subject. Subject: '{subject}'")
-        return False
-    # "remind me" anywhere in subject on a non-forward email is also personal.
-    # Forwards (FW:/Fwd:) are excluded because the original thread may contain
-    # the phrase and still represent a real lead being forwarded for action.
-    if not is_forward and 'remind me' in subject_lower:
-        print(f"[DSW FORWARD] SKIP — personal reminder phrase in non-forward subject. Subject: '{subject}'")
-        return False
+    # Rob's self-note subjects where the client details are in the body, not
+    # the subject. Examples:
+    #   "Rob to build Aria Property energy billing integration - remind me ..."
+    #   "Build XYZ solar battery for Jane Smith"
+    # These must trigger the DSW pipeline but Claude has to be told to
+    # ignore the subject when extracting the customer name.
+    SELF_NOTE_PREFIXES = ('rob to ', 'build ')
+    subject_is_self_note = any(subject_lower.startswith(p) for p in SELF_NOTE_PREFIXES)
 
     # Also fire for unstructured lead notes that don't have FW: or a phone number,
     # e.g. "Joe hill referral aw his neighbour to send bill" or
@@ -1989,14 +1983,15 @@ def handle_dsw_forward(subject, body_text, sender_email):
     )
     has_lead_keywords = any(kw in body_lower or kw in subject_lower for kw in LEAD_KEYWORDS)
 
-    if not is_forward and not has_au_phone and not has_lead_keywords:
-        print(f"[DSW FORWARD] SKIP — no FW:/Fwd: prefix, no AU phone, no solar/lead keywords. Subject: '{subject}'")
+    if not is_forward and not has_au_phone and not has_lead_keywords and not subject_is_self_note:
+        print(f"[DSW FORWARD] SKIP — no FW:/Fwd: prefix, no AU phone, no solar/lead keywords, no self-note prefix. Subject: '{subject}'")
         return False
 
     trigger_reason = []
-    if is_forward:        trigger_reason.append('FW:/Fwd: prefix')
-    if has_au_phone:      trigger_reason.append('AU phone in body')
-    if has_lead_keywords: trigger_reason.append('solar/lead keywords')
+    if is_forward:            trigger_reason.append('FW:/Fwd: prefix')
+    if has_au_phone:          trigger_reason.append('AU phone in body')
+    if has_lead_keywords:     trigger_reason.append('solar/lead keywords')
+    if subject_is_self_note:  trigger_reason.append('Rob self-note prefix (client in body)')
     print(f"[DSW FORWARD] Triggered by: {', '.join(trigger_reason)}. Subject: '{subject}'")
 
     # ── Helper: send failure alert to Rob ─────────────────────────────────
@@ -2036,9 +2031,19 @@ def handle_dsw_forward(subject, body_text, sender_email):
 
     # ── 1b. Claude Haiku extracts contact details ──────────────────────────
     claude = Anthropic(api_key=os.getenv('ANTHROPIC_API_KEY'))
+    # When the subject looks like Rob's note-to-self (e.g. "Rob to build..."
+    # or "Build XYZ for Jane Smith"), the client details live in the body.
+    # Tell Claude to ignore the subject so it doesn't mistake "Aria Property
+    # energy billing integration" for a customer name.
+    subject_instruction = (
+        "IMPORTANT: The Subject line is Rob's note to himself — DO NOT extract "
+        "the client name/company from it. The actual client details are in the "
+        "Body below. If the Body has no customer data, return null for every field.\n\n"
+        if subject_is_self_note else ""
+    )
     extraction_prompt = f"""Extract contact details from this email and return JSON only. No explanation.
 
-Subject: {subject}
+{subject_instruction}Subject: {subject}
 Body:
 {clean_body[:3000]}
 
@@ -2095,10 +2100,21 @@ Rules:
         print(f"[DSW FORWARD] SKIP — no customer data extracted (name/phone/email/address all empty). Subject: '{subject}'")
         return False
 
-    # Still have phone/email/address but no name → use subject line as customer name.
+    # Still have phone/email/address but no name → derive a fallback.
     if not name:
-        name = re.sub(r'^(fw|fwd)\s*:\s*', '', subject or 'Unknown Lead', flags=re.IGNORECASE).strip() or 'Unknown Lead'
-        print(f"[DSW FORWARD] Using subject as customer name fallback: '{name}'")
+        if subject_is_self_note:
+            # Subject is Rob's own task description — can't use it as a customer
+            # name. Derive from email local-part, then phone, then give up.
+            if email_addr:
+                name = email_addr.split('@')[0].replace('.', ' ').replace('_', ' ').title()
+            elif phone:
+                name = f'Lead {phone[-4:]}'
+            else:
+                name = 'Unknown Lead'
+            print(f"[DSW FORWARD] Subject is Rob self-note; derived customer name '{name}' from body")
+        else:
+            name = re.sub(r'^(fw|fwd)\s*:\s*', '', subject or 'Unknown Lead', flags=re.IGNORECASE).strip() or 'Unknown Lead'
+            print(f"[DSW FORWARD] Using subject as customer name fallback: '{name}'")
 
     # Build the subject for the generated email: customer name + first requirement
     first_req = notes[:60].rstrip() if notes else ''
