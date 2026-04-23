@@ -4,6 +4,7 @@ Full SaaS task management interface
 """
 
 import os
+import re
 import json
 from flask import Flask, render_template_string, render_template, request, redirect, url_for, session, jsonify, flash
 from datetime import datetime, timedelta
@@ -37,6 +38,52 @@ app.register_blueprint(squad_bp)
 SUPABASE_URL = os.getenv('SUPABASE_URL')
 SUPABASE_KEY = os.getenv('SUPABASE_KEY')
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+
+# ── Lead-text junk filter ────────────────────────────────────────────────────
+# Mirrors dsw_lead_poller.filter_junk_lines so the lead detail page strips
+# the same SolarQuotes API junk fields. Kept local to avoid importing the
+# heavy dsw_lead_poller module (anthropic/resend/opensolar) at dashboard
+# startup. Keep the pattern list in sync with dsw_lead_poller._JUNK_PATTERNS.
+_LEAD_JUNK_PATTERNS = [
+    r'verified phone',
+    r'phone number verified',
+    r'phone.+verified',
+    r'consent(?:ed)?\b',
+    r'lead submitted',
+    r'\bsubmission\b',
+    r'requested quotes',
+    r'quote count',
+    r'number of quotes',
+    r'roof ownership',
+    r'north[\s\-]?facing',
+    r'\bsupplier\s*id\b',
+    r'\bsupplierid\b',
+    r'\bsuppliername\b',
+    r'\bidleadsupplier\b',
+    r'^\s*claimed\s*:',
+    r'^\s*id\s*:\s*\S',
+]
+_LEAD_JUNK_RE = re.compile('|'.join(_LEAD_JUNK_PATTERNS), re.IGNORECASE)
+
+
+def _filter_lead_junk(text):
+    """Drop SolarQuotes API junk lines and collapse blank runs."""
+    if not text:
+        return text
+    kept = []
+    prev_blank = False
+    for raw in text.splitlines():
+        if _LEAD_JUNK_RE.search(raw):
+            continue
+        if raw.strip() == '':
+            if prev_blank:
+                continue
+            prev_blank = True
+        else:
+            prev_blank = False
+        kept.append(raw)
+    return '\n'.join(kept).strip()
+
 
 # Shopping list secret token (allows access without login)
 SHOPPING_LIST_TOKEN = os.getenv('SHOPPING_LIST_TOKEN', '')
@@ -4402,10 +4449,11 @@ def lead_detail(task_id):
     else:
         cust_raw, notes_raw = desc, ''
 
-    # Strip Phone/Email/CRM/OpenSolar/Source/Sub-note header lines from customer requirements
+    # Strip Phone/Email/CRM/OpenSolar/Source/Sub-note header lines from customer requirements,
+    # then strip SolarQuotes API junk fields (Id:, Supplierid:, Claimed:, etc.)
     cust_lines = [ln for ln in cust_raw.splitlines()
                   if not ln.startswith(('Phone:', 'Email:', 'CRM:', 'OpenSolar:', 'Source:', 'Sub-note:'))]
-    cust_text = '\n'.join(cust_lines).strip()
+    cust_text = _filter_lead_junk('\n'.join(cust_lines).strip())
 
     sub_note = _field('Sub-note:', desc)
 

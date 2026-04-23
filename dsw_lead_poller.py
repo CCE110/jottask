@@ -50,6 +50,51 @@ def load_done():
 def save_done(ids):
     with open(PROCESSED, "w") as f: json.dump(list(ids), f)
 
+# ── Lead-text cleanup ─────────────────────────────────────────────────────────
+# SolarQuotes' API dumps internal fields into PipeReply notes and the Claude
+# summary occasionally parrots them back. Strip anything matching these from
+# lead summaries and raw CRM-notes rendering — they're noise for sales.
+_JUNK_PATTERNS = [
+    r'verified phone',
+    r'phone number verified',
+    r'phone.+verified',
+    r'consent(?:ed)?\b',
+    r'lead submitted',
+    r'\bsubmission\b',
+    r'requested quotes',
+    r'quote count',
+    r'number of quotes',
+    r'roof ownership',
+    r'north[\s\-]?facing',
+    r'\bsupplier\s*id\b',
+    r'\bsupplierid\b',
+    r'\bsuppliername\b',
+    r'\bidleadsupplier\b',
+    r'^\s*claimed\s*:',
+    r'^\s*id\s*:\s*\S',  # "Id: 12345" style leads-API dump
+]
+_JUNK_RE = re.compile('|'.join(_JUNK_PATTERNS), re.IGNORECASE)
+
+
+def filter_junk_lines(text):
+    """Drop lines matching SolarQuotes API junk fields and collapse blank runs."""
+    if not text:
+        return text
+    kept = []
+    prev_blank = False
+    for raw in text.splitlines():
+        if _JUNK_RE.search(raw):
+            continue
+        if raw.strip() == '':
+            if prev_blank:
+                continue
+            prev_blank = True
+        else:
+            prev_blank = False
+        kept.append(raw)
+    return '\n'.join(kept).strip()
+
+
 def get_contacts():
     # Fetch last 7 days of contacts - poller tracks processed IDs to avoid duplicates
     r = req.get(f"{BASE}/contacts/", headers=H, params={"locationId": LOCATION_ID, "limit": 100})
@@ -250,14 +295,18 @@ def get_referred_by_from_crm(cid):
 
 
 def get_crm_notes_bodies(cid):
-    """Return all CRM note bodies for a PipeReply contact, newest first, joined by blank lines."""
+    """Return all CRM note bodies for a PipeReply contact, newest first, joined by blank lines.
+
+    Lines matching SolarQuotes API junk fields (Id:, Supplierid:, Claimed:,
+    etc.) are stripped before joining — see filter_junk_lines().
+    """
     try:
         r = req.get(f"{BASE}/contacts/{cid}/notes", headers=H, timeout=10)
         if not r.ok:
             return ''
         notes = r.json().get('notes') or []
         notes.sort(key=lambda n: n.get('createdAt') or n.get('dateAdded') or '', reverse=True)
-        bodies = [(n.get('body') or '').strip() for n in notes]
+        bodies = [filter_junk_lines((n.get('body') or '').strip()) for n in notes]
         return '\n\n'.join(b for b in bodies if b)
     except Exception as e:
         print(f'[CRM notes] fetch failed for {cid}: {e}')
@@ -309,9 +358,23 @@ def summarise(name, phone, addr, src, notes, custom):
             referred_by = m.group(1).strip()
             break
 
-    prompt = "Summarise this into actionable customer requirements. Ignore duplicates. Ignore: verified phone number, consented to discuss energy plans, lead submitted, requested quotes number, roof ownership confirmed, north facing, supplier info, lead IDs.\n\nFormat exactly (plain text, no ## markdown):\nCUSTOMER REQUIREMENTS\n* [requirement]\n\nPROPERTY\n* [property detail]\n\nKeep: system size kW, solar/battery/both, EV charger, bill amount, payment method, urgency/timeframe, property type/storeys/roof type, motivation, blackout/backup needs, home visit.\nConcise bullets only.\n\nName: "+name+"\nSource: "+src+"\nAddress: "+addr+"\nNotes: "+(extra if len(extra) > len(notes) else notes)[:3000]
+    prompt = ("Summarise this into actionable customer requirements. Ignore duplicates. "
+              "NEVER include any of these — even as bullets: verified phone number, "
+              "phone number verified, consented / consent to discuss energy plans, "
+              "lead submitted, submission, requested quotes / quote count / number of "
+              "quotes, roof ownership, north facing / north-facing, supplier id / "
+              "supplierid / suppliername / idleadsupplier, claimed, standalone lead "
+              "'Id:' numbers. These are internal SolarQuotes API fields, not sales data.\n\n"
+              "Format exactly (plain text, no ## markdown):\n"
+              "CUSTOMER REQUIREMENTS\n* [requirement]\n\n"
+              "PROPERTY\n* [property detail]\n\n"
+              "Keep: system size kW, solar/battery/both, EV charger, bill amount, "
+              "payment method, urgency/timeframe, property type/storeys/roof type, "
+              "motivation, blackout/backup needs, home visit.\nConcise bullets only.\n\n"
+              f"Name: {name}\nSource: {src}\nAddress: {addr}\n"
+              f"Notes: {(extra if len(extra) > len(notes) else notes)[:3000]}")
     r = claude.messages.create(model="claude-haiku-4-5-20251001", max_tokens=600, messages=[{"role":"user","content":prompt}])
-    return r.content[0].text, referred_by
+    return filter_junk_lines(r.content[0].text), referred_by
 
 _STREET_ABBREVS = [
     ('St', 'Street'), ('Pl', 'Place'), ('Ave', 'Avenue'),
