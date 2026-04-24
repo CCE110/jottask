@@ -2383,9 +2383,12 @@ def edit_task(task_id):
 def task_detail(task_id):
     user_id = session['user_id']
 
-    # Get task
+    # Get task. maybe_single() returns None (not a result object) when no row
+    # matches — check both `task` and `task.data` to avoid the classic
+    # "NoneType has no attribute 'data'" crash for tasks owned by a
+    # different user.
     task = supabase.table('tasks').select('*').eq('id', task_id).eq('user_id', user_id).maybe_single().execute()
-    if not task.data:
+    if not task or not task.data:
         return redirect(url_for('dashboard'))
 
     # Get checklist items
@@ -4374,9 +4377,12 @@ def validate_action_token(token):
     return token_data['task_id'], token_data['user_id'], token_data['action']
 
 
-@app.route('/task/<task_id>', methods=['GET'])
-def lead_detail(task_id):
-    """DSW lead detail page — no login required."""
+def _render_lead_detail(task_id):
+    """DSW lead detail page — no login required.
+
+    Wrapped by lead_detail() which catches exceptions and shows a friendly
+    "Lead unavailable — Rebuild" page instead of a 500.
+    """
     import re, urllib.parse
 
     aest = pytz.timezone('Australia/Brisbane')
@@ -4720,6 +4726,184 @@ if(sp.get('reminder_set')==='1'){
         lead_status=lead_status, statuses=STATUSES,
         task_id=task_id, tomorrow=tomorrow, sub_note=sub_note,
     )
+
+
+# ── Friendly error page for lead_detail render failures ─────────────────────
+_LEAD_DETAIL_ERROR_HTML = r"""<!DOCTYPE html>
+<html lang="en"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Lead unavailable</title>
+<style>
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#f1f5f9;min-height:100vh;padding:40px 16px;color:#111}
+.card{max-width:520px;margin:0 auto;background:#fff;border-radius:12px;padding:22px;box-shadow:0 1px 4px rgba(0,0,0,.08)}
+h2{color:#b91c1c;margin:0 0 10px;font-size:20px}
+.meta{color:#6b7280;font-size:13px;margin:10px 0}
+.err{background:#fef2f2;border:1px solid #fecaca;padding:10px;border-radius:8px;font-family:monospace;font-size:12px;color:#991b1b;white-space:pre-wrap;margin:12px 0}
+form{margin-top:18px}
+.btn{display:inline-block;padding:11px 18px;border-radius:9px;font-weight:700;font-size:14px;text-decoration:none;color:#fff;border:none;cursor:pointer;margin-right:8px}
+.btn-rebuild{background:#1e40af}
+.btn-edit{background:#6b7280}
+</style></head><body>
+<div class="card">
+  <h2>Lead detail unavailable</h2>
+  <p>Something went wrong rendering this lead. The task itself is safe — only the
+     formatted view failed. Use <strong>Rebuild</strong> to pull fresh data from
+     PipeReply and regenerate the description.</p>
+  <div class="meta">Task ID: <code>{{ task_id }}</code></div>
+  {% if error %}<div class="err">{{ error }}</div>{% endif %}
+  <form action="/task/{{ task_id }}/rebuild" method="POST"
+        onsubmit="return confirm('Rebuild this task from PipeReply? Description will be overwritten with fresh data.');">
+    <button type="submit" class="btn btn-rebuild">Rebuild from PipeReply</button>
+    <a href="/tasks/{{ task_id }}/edit" class="btn btn-edit">Edit task instead</a>
+  </form>
+</div>
+</body></html>"""
+
+
+@app.route('/task/<task_id>', methods=['GET'])
+def lead_detail(task_id):
+    """Safe wrapper around _render_lead_detail. A malformed task — missing
+    description, bad CRM URL, PipeReply outage, whatever — now shows a
+    friendly error + Rebuild button instead of a 500."""
+    try:
+        return _render_lead_detail(task_id)
+    except Exception as e:
+        print(f"[lead_detail] render failed for {task_id}: {e}")
+        return render_template_string(
+            _LEAD_DETAIL_ERROR_HTML,
+            task_id=task_id,
+            error=str(e)[:400],
+        ), 200
+
+
+@app.route('/task/<task_id>/rebuild', methods=['POST'])
+def rebuild_task_from_pipereply(task_id):
+    """Rebuild a task's description from fresh PipeReply data.
+
+    Flow:
+      1. Look up the task; use client_name + any CRM URL in the description
+         to locate the PipeReply contact.
+      2. If no CRM URL, search PipeReply by client_name and take the best match.
+      3. Pull full contact + CRM notes, run summarise(), rebuild the
+         description in the make_task format, set category=DSW Solar.
+      4. Send a fresh lead email with all action buttons.
+
+    Any failure returns a plain HTML message (no template dep) so the
+    recovery path itself can't 500.
+    """
+    import re, importlib.util as ilu, requests as rq
+
+    try:
+        res = supabase.table('tasks').select('*').eq('id', task_id).single().execute()
+        t = res.data if res else None
+    except Exception:
+        t = None
+    if not t:
+        return '<p>Task not found.</p>', 404
+
+    desc = t.get('description') or ''
+    name = t.get('client_name') or t.get('title') or ''
+    # Drop "Call " / "- New DSW Lead" boilerplate so we search on the raw name
+    name_query = re.sub(r'^Call\s+', '', name, flags=re.IGNORECASE)
+    name_query = re.sub(r'\s*-\s*New DSW Lead.*$', '', name_query, flags=re.IGNORECASE).strip()
+
+    # 1. CRM cid from description
+    cid = ''
+    m = re.search(r'/detail/([A-Za-z0-9]+)', desc)
+    if m:
+        cid = m.group(1)
+
+    # 2. Fallback: PipeReply search by name
+    if not cid and name_query:
+        try:
+            PR_TOKEN = os.getenv('PIPEREPLY_TOKEN')
+            PR_LOC = os.getenv('PIPEREPLY_LOCATION_ID')
+            r = rq.get('https://services.leadconnectorhq.com/contacts/',
+                       headers={'Authorization': f'Bearer {PR_TOKEN}',
+                                'Content-Type': 'application/json',
+                                'Version': '2021-07-28'},
+                       params={'locationId': PR_LOC, 'query': name_query, 'limit': 3},
+                       timeout=10)
+            contacts = (r.json() or {}).get('contacts', []) if r.ok else []
+            if contacts:
+                cid = contacts[0]['id']
+        except Exception as e:
+            print(f'[REBUILD] PipeReply search failed: {e}')
+
+    if not cid:
+        return (f'<div style="font-family:sans-serif;padding:40px;text-align:center">'
+                f'<h3>PipeReply contact not found</h3>'
+                f'<p>No CRM URL in the task description and no search match for '
+                f'<code>{name_query or "(empty)"}</code>.</p>'
+                f'<p><a href="/tasks/{task_id}/edit">Edit task</a></p></div>'), 200
+
+    # 3. Load poller, fetch fresh data, rebuild
+    try:
+        spec = ilu.spec_from_file_location('dsw_lead_poller',
+            os.path.join(os.path.dirname(os.path.abspath(__file__)), 'dsw_lead_poller.py'))
+        dsw = ilu.module_from_spec(spec)
+        spec.loader.exec_module(dsw)
+
+        full = dsw.get_full(cid) or {}
+        fresh_name = ' '.join(w.capitalize() for w in (full.get('contactName') or name_query or 'Unknown').split())
+        phone = full.get('phone') or ''
+        email = full.get('email') or ''
+        addr_parts = [full.get('address1') or '', full.get('city') or '',
+                      full.get('state') or '', full.get('postalCode') or '']
+        addr = ', '.join(p for p in addr_parts if p)
+        src = dsw.source(full) or 'Referral'
+        crm_notes_text = dsw.get_crm_notes_bodies(cid)
+        summary, referred_by = dsw.summarise(fresh_name, phone, addr, src,
+                                             full.get('notes', '') or '',
+                                             full.get('customFields', []) or [])
+        if not referred_by and src.lower().startswith('referral'):
+            try:
+                referred_by = dsw.get_referred_by_from_crm(cid)
+            except Exception:
+                pass
+        badge = dsw.source_badge(src, referred_by)
+        os_url = dsw.get_os_url_from_crm(cid) or ''
+        crm_url = f'https://app.pipereply.com/v2/location/0k6Ix1hW5QoHuUh2YSru/contacts/detail/{cid}'
+
+        email_line  = f"Email: {email}\n" if email else ''
+        source_line = f"Source: {badge}\n" if badge else ''
+        new_desc = (
+            f"Phone: {phone or 'N/A'}\n"
+            f"{email_line}{source_line}"
+            f"CRM: {crm_url}\n"
+            f"OpenSolar: {os_url or 'pending'}\n\n"
+            f"{summary}"
+        )
+        if crm_notes_text:
+            new_desc += "\n\nCRM NOTES:\n" + crm_notes_text
+
+        supabase.table('tasks').update({
+            'title': f'Call {fresh_name} - New DSW Lead',
+            'description': new_desc,
+            'client_name': fresh_name,
+            'client_phone': phone or None,
+            'client_email': email or None,
+            'category': 'DSW Solar',
+            'lead_status': t.get('lead_status') or 'new_lead',
+            'priority': 'high',
+            'reminder_sent_at': datetime.now(pytz.UTC).isoformat(),
+        }).eq('id', task_id).execute()
+
+        # Send fresh lead email with all action buttons
+        try:
+            dsw.send_email(fresh_name, phone, addr, src, summary, crm_url, os_url,
+                           task_id=task_id, lead_status=(t.get('lead_status') or 'new_lead'),
+                           email=email, source_badge_text=badge)
+        except Exception as e:
+            print(f'[REBUILD] lead email send failed: {e}')
+
+        return redirect(url_for('lead_detail', task_id=task_id, rebuilt='1'))
+
+    except Exception as e:
+        print(f'[REBUILD] failed for {task_id}: {e}')
+        return (f'<div style="font-family:sans-serif;padding:40px;text-align:center">'
+                f'<h3>Rebuild failed</h3><p>{str(e)[:300]}</p>'
+                f'<p><a href="/tasks/{task_id}/edit">Edit task</a></p></div>'), 500
 
 
 @app.route('/task/<task_id>/notes', methods=['POST'])
