@@ -40,11 +40,12 @@ SUPABASE_KEY = os.getenv('SUPABASE_KEY')
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 # ── Lead-text junk filter ────────────────────────────────────────────────────
-# Mirrors dsw_lead_poller.filter_junk_lines so the lead detail page strips
-# the same SolarQuotes API junk fields. Kept local to avoid importing the
-# heavy dsw_lead_poller module (anthropic/resend/opensolar) at dashboard
-# startup. Keep the pattern list in sync with dsw_lead_poller._JUNK_PATTERNS.
+# Mirrors dsw_lead_poller.filter_junk_lines + _strip_html so the lead detail
+# page cleans the same noise. Kept local to avoid importing the heavy
+# dsw_lead_poller module (anthropic/resend/opensolar) at dashboard startup.
+# Keep pattern list in sync with dsw_lead_poller._JUNK_PATTERNS.
 _LEAD_JUNK_PATTERNS = [
+    # SolarQuotes API dump
     r'verified phone',
     r'phone number verified',
     r'phone.+verified',
@@ -62,14 +63,49 @@ _LEAD_JUNK_PATTERNS = [
     r'\bidleadsupplier\b',
     r'^\s*claimed\s*:',
     r'^\s*id\s*:\s*\S',
+    # DSW Energy system-note noise
+    r'link\.dswenergy\.com\.au',
+    r'^\s*system added note',
+    r'click here',
+    r'\bB-\d+-WF-',
+    r'sales meeting status',
+    r'site inspection form',
+    r'appt\s+to\s+quote',
+    r'appt\s+confirmed',
 ]
 _LEAD_JUNK_RE = re.compile('|'.join(_LEAD_JUNK_PATTERNS), re.IGNORECASE)
 
+# Minimal HTML → plain text. Mirrors dsw_lead_poller._strip_html — any changes
+# should be applied to both. Used for CRM notes + user-pasted MY NOTES.
+_LEAD_HTML_BLOCK_RE = re.compile(r'<(script|style)[^>]*>.*?</\1>', re.IGNORECASE | re.DOTALL)
+_LEAD_HTML_BR_RE    = re.compile(r'<\s*br\s*/?\s*>', re.IGNORECASE)
+_LEAD_HTML_BLK_END  = re.compile(r'</\s*(p|div|li|h[1-6]|tr)\s*>', re.IGNORECASE)
+_LEAD_HTML_TAG_RE   = re.compile(r'<[^>]+>')
+_LEAD_HTML_ENTITIES = {
+    '&nbsp;': ' ', '&amp;': '&', '&lt;': '<', '&gt;': '>',
+    '&quot;': '"', '&#39;': "'", '&#x27;': "'", '&apos;': "'",
+}
+
+
+def _strip_lead_html(text):
+    """Convert HTML fragments to plain text. No-op if no '<' present."""
+    if not text or '<' not in text:
+        return text
+    t = _LEAD_HTML_BLOCK_RE.sub('', text)
+    t = _LEAD_HTML_BR_RE.sub('\n', t)
+    t = _LEAD_HTML_BLK_END.sub('\n', t)
+    t = _LEAD_HTML_TAG_RE.sub('', t)
+    for k, v in _LEAD_HTML_ENTITIES.items():
+        t = t.replace(k, v)
+    lines = [re.sub(r'[ \t]+', ' ', ln).strip() for ln in t.splitlines()]
+    return '\n'.join(lines)
+
 
 def _filter_lead_junk(text):
-    """Drop SolarQuotes API junk lines and collapse blank runs."""
+    """Strip HTML, drop junk-pattern lines, collapse blank runs."""
     if not text:
         return text
+    text = _strip_lead_html(text)
     kept = []
     prev_blank = False
     for raw in text.splitlines():
@@ -4454,6 +4490,9 @@ def lead_detail(task_id):
     cust_lines = [ln for ln in cust_raw.splitlines()
                   if not ln.startswith(('Phone:', 'Email:', 'CRM:', 'OpenSolar:', 'Source:', 'Sub-note:'))]
     cust_text = _filter_lead_junk('\n'.join(cust_lines).strip())
+    # Users sometimes paste HTML (copied from emails) into MY NOTES — strip
+    # tags before render so the notes panel shows plain text.
+    notes_raw = _strip_lead_html(notes_raw)
 
     sub_note = _field('Sub-note:', desc)
 

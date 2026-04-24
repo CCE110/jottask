@@ -51,10 +51,11 @@ def save_done(ids):
     with open(PROCESSED, "w") as f: json.dump(list(ids), f)
 
 # ── Lead-text cleanup ─────────────────────────────────────────────────────────
-# SolarQuotes' API dumps internal fields into PipeReply notes and the Claude
-# summary occasionally parrots them back. Strip anything matching these from
-# lead summaries and raw CRM-notes rendering — they're noise for sales.
+# SolarQuotes' API dumps internal fields into PipeReply notes and DSW Energy
+# drops HTML-formatted system emails into them too. Strip HTML + anything
+# matching these patterns from lead summaries and raw CRM-notes rendering.
 _JUNK_PATTERNS = [
+    # SolarQuotes API dump
     r'verified phone',
     r'phone number verified',
     r'phone.+verified',
@@ -71,15 +72,54 @@ _JUNK_PATTERNS = [
     r'\bsuppliername\b',
     r'\bidleadsupplier\b',
     r'^\s*claimed\s*:',
-    r'^\s*id\s*:\s*\S',  # "Id: 12345" style leads-API dump
+    r'^\s*id\s*:\s*\S',
+    # DSW Energy system-note noise
+    r'link\.dswenergy\.com\.au',
+    r'^\s*system added note',
+    r'click here',
+    r'\bB-\d+-WF-',           # appointment codes like "B-008-WF-..."
+    r'sales meeting status',
+    r'site inspection form',
+    r'appt\s+to\s+quote',
+    r'appt\s+confirmed',
 ]
 _JUNK_RE = re.compile('|'.join(_JUNK_PATTERNS), re.IGNORECASE)
 
 
+# Minimal HTML-to-text. Handles <br>, <p>, <div>, <li>, <h*> as line breaks;
+# drops <script>/<style> blocks; strips remaining tags; decodes common
+# entities. Good enough for DSW Energy system-email notes and hand-pasted
+# "My Notes" — avoids adding BeautifulSoup as a dep.
+_HTML_BLOCK_RE  = re.compile(r'<(script|style)[^>]*>.*?</\1>', re.IGNORECASE | re.DOTALL)
+_HTML_BR_RE     = re.compile(r'<\s*br\s*/?\s*>', re.IGNORECASE)
+_HTML_BLK_END   = re.compile(r'</\s*(p|div|li|h[1-6]|tr)\s*>', re.IGNORECASE)
+_HTML_TAG_RE    = re.compile(r'<[^>]+>')
+_HTML_ENTITIES = {
+    '&nbsp;': ' ', '&amp;': '&', '&lt;': '<', '&gt;': '>',
+    '&quot;': '"', '&#39;': "'", '&#x27;': "'", '&apos;': "'",
+}
+
+
+def _strip_html(text):
+    """Convert HTML fragments to plain text. No-op if no '<' present."""
+    if not text or '<' not in text:
+        return text
+    t = _HTML_BLOCK_RE.sub('', text)
+    t = _HTML_BR_RE.sub('\n', t)
+    t = _HTML_BLK_END.sub('\n', t)
+    t = _HTML_TAG_RE.sub('', t)
+    for k, v in _HTML_ENTITIES.items():
+        t = t.replace(k, v)
+    # Collapse runs of whitespace inside each line, preserve newlines.
+    lines = [re.sub(r'[ \t]+', ' ', ln).strip() for ln in t.splitlines()]
+    return '\n'.join(lines)
+
+
 def filter_junk_lines(text):
-    """Drop lines matching SolarQuotes API junk fields and collapse blank runs."""
+    """Strip HTML, drop junk-pattern lines, collapse blank runs."""
     if not text:
         return text
+    text = _strip_html(text)
     kept = []
     prev_blank = False
     for raw in text.splitlines():
