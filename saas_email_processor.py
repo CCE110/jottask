@@ -2713,9 +2713,16 @@ if __name__ == "__main__":
 
     processor = AIEmailProcessor()
     poll_interval = int(os.getenv('POLL_INTERVAL_SECONDS', '60'))
+    # Escape hatch: set SCHEDULER_DISABLED=1 on Railway to stop the worker from
+    # running reminder loops — use when a separate scheduler service is already
+    # running them and the duplicate is causing double-sends / API-key noise.
+    SCHEDULER_DISABLED = os.getenv('SCHEDULER_DISABLED', '').strip().lower() in ('1', 'true', 'yes', 'on')
     print(f"Starting worker (email processor + scheduler) every {poll_interval}s...")
     print(f"  Email processing: every cycle")
-    print(f"  Reminders + daily summaries: every cycle")
+    if SCHEDULER_DISABLED:
+        print(f"  Reminders: DISABLED via SCHEDULER_DISABLED env var")
+    else:
+        print(f"  Reminders + daily summaries: every cycle")
     print(f"  Monitoring: heartbeat every cycle, cleanup daily")
 
     tick = 0
@@ -2738,21 +2745,22 @@ if __name__ == "__main__":
             log_error('email_processing', e, category='email')
             tick_errors += 1
 
-        try:
-            # 2. Check and send task reminders
-            reminders_sent = check_and_send_reminders() or 0
-        except Exception as e:
-            print(f"Error in reminders: {e}")
-            log_error('reminders', e, category='reminder')
-            tick_errors += 1
+        if not SCHEDULER_DISABLED:
+            try:
+                # 2. Check and send task reminders
+                reminders_sent = check_and_send_reminders() or 0
+            except Exception as e:
+                print(f"Error in reminders: {e}")
+                log_error('reminders', e, category='reminder')
+                tick_errors += 1
 
-        try:
-            # 2a. DSW Solar lead reminders (24h + 3d, gated on lead_status='new_lead')
-            reminders_sent += check_and_send_dsw_reminders() or 0
-        except Exception as e:
-            print(f"Error in DSW reminders: {e}")
-            log_error('dsw_reminders', e, category='reminder')
-            tick_errors += 1
+            try:
+                # 2a. DSW Solar lead reminders (24h + 3d, gated on lead_status='new_lead')
+                reminders_sent += check_and_send_dsw_reminders() or 0
+            except Exception as e:
+                print(f"Error in DSW reminders: {e}")
+                log_error('dsw_reminders', e, category='reminder')
+                tick_errors += 1
 
         try:
             # 2b. Functional reminder health check
