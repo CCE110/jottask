@@ -6,8 +6,7 @@ Stripe integration for subscriptions
 import os
 import stripe
 from flask import Blueprint, request, redirect, url_for, session, jsonify
-from supabase import create_client, Client
-from auth import login_required
+from auth import login_required, supabase  # supabase is a lazy proxy
 
 billing_bp = Blueprint('billing', __name__, url_prefix='/billing')
 
@@ -15,11 +14,6 @@ billing_bp = Blueprint('billing', __name__, url_prefix='/billing')
 stripe.api_key = os.getenv('STRIPE_SECRET_KEY')
 STRIPE_PUBLISHABLE_KEY = os.getenv('STRIPE_PUBLISHABLE_KEY')
 STRIPE_WEBHOOK_SECRET = os.getenv('STRIPE_WEBHOOK_SECRET')
-
-# Supabase
-SUPABASE_URL = os.getenv('SUPABASE_URL')
-SUPABASE_KEY = os.getenv('SUPABASE_KEY')
-supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 # Price IDs (set these in your Stripe dashboard)
 PRICE_IDS = {

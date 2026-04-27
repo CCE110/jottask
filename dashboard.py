@@ -34,10 +34,32 @@ app.register_blueprint(crm_setup_bp)
 app.register_blueprint(chat_bp)
 app.register_blueprint(squad_bp)
 
-# Supabase client
-SUPABASE_URL = os.getenv('SUPABASE_URL')
+# Supabase client — lazy-init proxy. Defers create_client() until the first
+# .table()/.auth/.rpc() call so a missing env var at import time can't crash
+# gunicorn before any request is served. Mirrors auth._LazySupabase.
+class _LazySupabase:
+    def __init__(self):
+        self._client = None
+
+    def _ensure(self):
+        if self._client is None:
+            url = os.getenv('SUPABASE_URL')
+            key = os.getenv('SUPABASE_KEY')
+            if not url or not key:
+                raise RuntimeError(
+                    "Supabase env vars missing — set SUPABASE_URL and "
+                    "SUPABASE_KEY on the running service before serving."
+                )
+            self._client = create_client(url, key)
+        return self._client
+
+    def __getattr__(self, name):
+        return getattr(self._ensure(), name)
+
+
+SUPABASE_URL = os.getenv('SUPABASE_URL')  # kept for any module reading the const directly
 SUPABASE_KEY = os.getenv('SUPABASE_KEY')
-supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+supabase = _LazySupabase()
 
 # ── Lead-text junk filter ────────────────────────────────────────────────────
 # Mirrors dsw_lead_poller.filter_junk_lines + _strip_html so the lead detail

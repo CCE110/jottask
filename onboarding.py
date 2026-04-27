@@ -6,14 +6,9 @@ Steps: 1=Profile, 2=Email, 3=CRM, 4=First Task
 
 import os
 from flask import Blueprint, render_template, request, redirect, url_for, session
-from supabase import create_client, Client
-from auth import login_required
+from auth import login_required, supabase  # supabase is a lazy proxy
 
 onboarding_bp = Blueprint('onboarding', __name__, url_prefix='/onboarding')
-
-SUPABASE_URL = os.getenv('SUPABASE_URL')
-SUPABASE_KEY = os.getenv('SUPABASE_KEY')
-supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 
 @onboarding_bp.route('/')

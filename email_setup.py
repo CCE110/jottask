@@ -5,14 +5,9 @@ Allows users to connect their email accounts for automatic task creation
 
 import os
 from flask import Blueprint, render_template, request, redirect, url_for, session, jsonify
-from supabase import create_client, Client
-from auth import login_required
+from auth import login_required, supabase  # supabase is a lazy proxy
 
 email_setup_bp = Blueprint('email_setup', __name__, url_prefix='/email')
-
-SUPABASE_URL = os.getenv('SUPABASE_URL')
-SUPABASE_KEY = os.getenv('SUPABASE_KEY')
-supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 
 @email_setup_bp.route('/')

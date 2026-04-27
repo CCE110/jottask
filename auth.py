@@ -8,10 +8,41 @@ from functools import wraps
 from flask import session, redirect, url_for, request, jsonify
 from supabase import create_client, Client
 
-# Initialize Supabase client (service role — used for all DB queries)
-SUPABASE_URL = os.getenv('SUPABASE_URL')
-SUPABASE_KEY = os.getenv('SUPABASE_KEY')
-supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+
+class _LazySupabase:
+    """Lazy proxy for the Supabase service-role client.
+
+    Defers create_client() until the first attribute access so a missing
+    env var at import time can't crash gunicorn before it serves a single
+    request. The first .table() / .auth / .rpc() call instantiates the
+    real client; missing env vars raise a clear RuntimeError that lands
+    in Railway logs instead of an opaque supabase trace.
+    """
+
+    def __init__(self):
+        self._client = None
+
+    def _ensure(self) -> Client:
+        if self._client is None:
+            url = os.getenv('SUPABASE_URL')
+            key = os.getenv('SUPABASE_KEY')
+            if not url or not key:
+                raise RuntimeError(
+                    "Supabase env vars missing — set SUPABASE_URL and "
+                    "SUPABASE_KEY on the running service before serving."
+                )
+            self._client = create_client(url, key)
+        return self._client
+
+    def __getattr__(self, name):
+        # Only triggered for attributes _NOT_ already on this proxy
+        # (so self._client access stays cheap).
+        return getattr(self._ensure(), name)
+
+
+# Service-role client used for all DB queries. Lazy so import-time env
+# lookups can't crash the app at startup.
+supabase = _LazySupabase()
 
 
 def _auth_client() -> Client:
@@ -24,7 +55,13 @@ def _auth_client() -> Client:
 
     Using a throwaway client keeps the global client's headers clean.
     """
-    return create_client(SUPABASE_URL, SUPABASE_KEY)
+    url = os.getenv('SUPABASE_URL')
+    key = os.getenv('SUPABASE_KEY')
+    if not url or not key:
+        raise RuntimeError(
+            "Supabase env vars missing — set SUPABASE_URL and SUPABASE_KEY."
+        )
+    return create_client(url, key)
 
 
 def login_required(f):

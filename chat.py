@@ -8,18 +8,14 @@ import json
 from datetime import datetime, date
 from flask import Blueprint, request, session, jsonify, render_template, Response, stream_with_context
 from anthropic import Anthropic
-from supabase import create_client, Client
 import pytz
 
-from auth import login_required
+from auth import login_required, supabase  # supabase is a lazy proxy
 from chat_tools import TOOL_HANDLERS
 
 chat_bp = Blueprint('chat', __name__)
 
 # Clients
-SUPABASE_URL = os.getenv('SUPABASE_URL')
-SUPABASE_KEY = os.getenv('SUPABASE_KEY')
-supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 claude = Anthropic(api_key=os.getenv('ANTHROPIC_API_KEY'))
 
 AEST = pytz.timezone('Australia/Brisbane')

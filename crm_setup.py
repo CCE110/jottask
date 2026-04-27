@@ -13,14 +13,27 @@ from urllib.parse import urlencode
 import pytz
 import requests
 from flask import Blueprint, render_template, request, redirect, url_for, session
-from supabase import create_client, Client
 from auth import login_required
 from crm_manager import CRMManager
 from opensolar_connector import OpenSolarConnector
 
 crm_setup_bp = Blueprint('crm_setup', __name__, url_prefix='/crm')
 
-crm_mgr = CRMManager()
+
+# Lazy proxy — defers CRMManager() (which validates SUPABASE_URL/KEY) until
+# the first attribute access, so a missing env var at import time can't
+# crash gunicorn before serving a single request.
+class _LazyCRMManager:
+    def __init__(self):
+        self._mgr = None
+
+    def __getattr__(self, name):
+        if self._mgr is None:
+            self._mgr = CRMManager()
+        return getattr(self._mgr, name)
+
+
+crm_mgr = _LazyCRMManager()
 
 # In-memory cache for OpenSolar connectors (keyed by user_id)
 _opensolar_connectors = {}
