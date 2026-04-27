@@ -499,7 +499,7 @@
                   <span class="mon">{{ months[parts[1] | int] }}</span>
                 </div>
                 <div class="event-info" style="cursor:pointer;flex:1;"
-                     onclick="openEditSheet('{{ ev.id }}','{{ ev.event_date }}','{{ ev.event_time[:5] if ev.event_time else '' }}','{{ ev.opponent or '' }}','{{ ev.venue or '' }}','{{ 'true' if ev.is_home is sameas true else ('false' if ev.is_home is sameas false else '') }}','{{ ev.event_type or 'game' }}')">
+                     onclick="openEditSheet('{{ ev.id }}','{{ ev.event_date }}','{{ ev.event_time[:5] if ev.event_time else '' }}','{{ ev.opponent or '' }}','{{ ev.venue or '' }}','{{ 'true' if ev.is_home is sameas true else ('false' if ev.is_home is sameas false else '') }}','{{ ev.event_type or 'game' }}','{{ ev.fruit_player_id or '' }}')">
                   <div class="event-title">
                     {% if ev.opponent %}
                       {% if ev.is_home %}vs {{ ev.opponent }}{% else %}@ {{ ev.opponent }}{% endif %}
@@ -517,6 +517,9 @@
                     {% if ev.venue %}{{ ev.venue }}{% endif %}
                     {% if not ev.event_time and not ev.venue %}Venue TBD{% endif %}
                   </div>
+                  {% if ev.fruit_player_name %}
+                  <div class="event-fruit" style="font-size:12px;color:#9a3412;margin-top:3px;">🍊 Fruit: {{ ev.fruit_player_name }}</div>
+                  {% endif %}
                   <span class="event-type-badge badge-{{ ev.event_type or 'other' }}">{{ ev.event_type or 'event' }}</span>
                   {% set p = ev.poll %}
                   {% if p.yes > 0 or p.no > 0 or p.pending > 0 %}
@@ -535,7 +538,7 @@
                   <button class="btn-poll" title="Poll parents"
                           onclick="pollEvent('{{ ev.id }}', this)">📢</button>
                   <button class="event-edit" title="Edit event"
-                          onclick="openEditSheet('{{ ev.id }}','{{ ev.event_date }}','{{ ev.event_time[:5] if ev.event_time else '' }}','{{ ev.opponent or '' }}','{{ ev.venue or '' }}','{{ 'true' if ev.is_home is sameas true else ('false' if ev.is_home is sameas false else '') }}','{{ ev.event_type or 'game' }}')">✏️</button>
+                          onclick="openEditSheet('{{ ev.id }}','{{ ev.event_date }}','{{ ev.event_time[:5] if ev.event_time else '' }}','{{ ev.opponent or '' }}','{{ ev.venue or '' }}','{{ 'true' if ev.is_home is sameas true else ('false' if ev.is_home is sameas false else '') }}','{{ ev.event_type or 'game' }}','{{ ev.fruit_player_id or '' }}')">✏️</button>
                   <form method="POST" action="/squad/events/{{ ev.id }}/delete"
                         onsubmit="return confirm('Remove this event?')">
                     <button type="submit" class="event-delete" title="Remove event">✕</button>
@@ -764,6 +767,15 @@
       <option value="false">Away</option>
     </select>
   </div>
+  <div class="edit-field" id="editFruitField">
+    <label>🍊 Fruit Duty</label>
+    <select id="editFruitPlayer">
+      <option value="">— None —</option>
+      {% for p in players | sort(attribute='player_name') %}
+      <option value="{{ p.id }}">{{ p.player_name }}</option>
+      {% endfor %}
+    </select>
+  </div>
   <button class="edit-save" onclick="saveEvent()">Save Changes</button>
 </div>
 
@@ -786,7 +798,7 @@
 </nav>
 
 <script>
-function openEditSheet(id, date, time, opponent, venue, isHome, type) {
+function openEditSheet(id, date, time, opponent, venue, isHome, type, fruitPlayerId) {
   document.getElementById('editEventId').value  = id;
   document.getElementById('editDate').value     = date;
   document.getElementById('editTime').value     = time;
@@ -794,6 +806,11 @@ function openEditSheet(id, date, time, opponent, venue, isHome, type) {
   document.getElementById('editVenue').value    = venue;
   document.getElementById('editIsHome').value   = isHome;
   document.getElementById('editType').value     = type;
+  // Fruit Duty dropdown — only meaningful for games. Hide for training/other.
+  const fruitField = document.getElementById('editFruitField');
+  const fruitSel   = document.getElementById('editFruitPlayer');
+  if (fruitField) fruitField.style.display = (type === 'game') ? '' : 'none';
+  if (fruitSel)   fruitSel.value = fruitPlayerId || '';
   document.getElementById('editBackdrop').classList.add('open');
   requestAnimationFrame(() => document.getElementById('editSheet').classList.add('open'));
 }
@@ -813,6 +830,7 @@ async function saveEvent() {
     is_home:    document.getElementById('editIsHome').value === 'true' ? true :
                 document.getElementById('editIsHome').value === 'false' ? false : null,
     event_type: document.getElementById('editType').value,
+    fruit_player_id: document.getElementById('editFruitPlayer').value || null,
   };
   const btn = document.querySelector('.edit-save');
   btn.textContent = 'Saving…'; btn.disabled = true;

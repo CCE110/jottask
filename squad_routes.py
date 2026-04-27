@@ -67,6 +67,74 @@ def _get_squad_for_user(user_id: str):
     return result.data[0] if result.data else None
 
 
+# ── Fruit Roster ──────────────────────────────────────────────────────────────
+# One player per game brings fruit. Rotation is alphabetical by player_name and
+# wraps after everyone has had a turn. Stored on squad_events.fruit_player_id
+# so swaps and history are first-class. Migration 028 adds the column.
+
+def _is_missing_column_error(exc) -> bool:
+    """True if this is a 'column does not exist' Postgres error — i.e. the
+    028 migration hasn't been applied yet. Lets us fail soft and keep
+    creating events without fruit duty until Rob runs the SQL."""
+    msg = str(exc).lower()
+    return 'fruit_player_id' in msg and ('does not exist' in msg or 'column' in msg)
+
+
+def _pick_next_fruit_player(squad_id: str, exclude_event_id: str = None):
+    """Return the player_id whose turn it is on fruit duty for this squad.
+
+    Algorithm: list players alphabetically, find the most recent
+    fruit_player_id assignment in this squad's events (any date), and pick
+    the next player after that one — wrapping at end. If no prior assignment
+    exists, return the first player. Returns None when there are no players
+    or the migration isn't applied yet.
+    """
+    pl = _db().table('squad_players').select('id, player_name')\
+        .eq('squad_id', squad_id).order('player_name').execute()
+    players = pl.data or []
+    if not players:
+        return None
+
+    last_fruit_id = None
+    try:
+        q = _db().table('squad_events').select('fruit_player_id, created_at')\
+            .eq('squad_id', squad_id).not_.is_('fruit_player_id', 'null')\
+            .order('created_at', desc=True).limit(1)
+        if exclude_event_id:
+            q = q.neq('id', exclude_event_id)
+        r = q.execute()
+        if r.data:
+            last_fruit_id = r.data[0].get('fruit_player_id')
+    except Exception as e:
+        if _is_missing_column_error(e):
+            return None  # Migration 028 not applied yet — skip auto-assign
+        raise
+
+    if not last_fruit_id:
+        return players[0]['id']
+
+    ids = [p['id'] for p in players]
+    if last_fruit_id not in ids:
+        # Previous assignee was removed from squad — start from the top
+        return players[0]['id']
+    nxt = (ids.index(last_fruit_id) + 1) % len(ids)
+    return players[nxt]['id']
+
+
+def _safe_insert_event(payload: dict):
+    """Insert into squad_events. If the fruit_player_id column doesn't exist
+    yet (pre-migration), retry without that key so event creation still
+    succeeds.
+    """
+    try:
+        return _db().table('squad_events').insert(payload).execute()
+    except Exception as e:
+        if 'fruit_player_id' in payload and _is_missing_column_error(e):
+            payload = {k: v for k, v in payload.items() if k != 'fruit_player_id'}
+            return _db().table('squad_events').insert(payload).execute()
+        raise
+
+
 # ── Manager: Dashboard ────────────────────────────────────────────────────────
 
 @squad_bp.route('/squad')
@@ -155,6 +223,19 @@ def dashboard():
     else:
         for ev in upcoming_events:
             ev['poll'] = {'yes': 0, 'no': 0, 'pending': 0, 'players': []}
+
+    # Fruit roster: resolve fruit_player_id → player_name for each event.
+    # Pre-028 the column is absent and ev.get returns None — no-op.
+    fruit_ids = [ev.get('fruit_player_id') for ev in upcoming_events if ev.get('fruit_player_id')]
+    fruit_ids += [ev.get('fruit_player_id') for ev in past_events if ev.get('fruit_player_id')]
+    fruit_name_by_id = {}
+    if fruit_ids:
+        fp = _db().table('squad_players').select('id, player_name')\
+            .in_('id', list(set(fruit_ids))).execute()
+        fruit_name_by_id = {p['id']: p['player_name'] for p in (fp.data or [])}
+    for ev in upcoming_events + past_events:
+        fpid = ev.get('fruit_player_id')
+        ev['fruit_player_name'] = fruit_name_by_id.get(fpid) if fpid else None
 
     # Pending inbox count
     inbox_q = _db().table('squad_email_inbox').select('id', count='exact').eq('status', 'pending')
@@ -332,7 +413,8 @@ def approve_inbox_item(item_id):
         if not fixture.get('date'):
             continue
         try:
-            _db().table('squad_events').insert({
+            event_type = fixture.get('type', 'game')
+            payload = {
                 'id':              str(uuid.uuid4()),
                 'squad_id':        squad_id,
                 'event_date':      fixture['date'],
@@ -340,12 +422,16 @@ def approve_inbox_item(item_id):
                 'opponent':        fixture.get('opponent'),
                 'venue':           fixture.get('venue'),
                 'is_home':         fixture.get('is_home'),
-                'event_type':      fixture.get('type', 'game'),
+                'event_type':      event_type,
                 'notes':           fixture.get('notes'),
                 'round':           fixture.get('round'),
                 'source_inbox_id': item_id,
                 'created_at':      datetime.now(pytz.UTC).isoformat(),
-            }).execute()
+            }
+            # Auto-assign fruit duty for games (not training/other)
+            if event_type == 'game':
+                payload['fruit_player_id'] = _pick_next_fruit_player(squad_id)
+            _safe_insert_event(payload)
             actions_executed.append(
                 f"Created event: {fixture['date']} vs {fixture.get('opponent', 'TBD')}"
             )
@@ -414,7 +500,8 @@ def paste_inbox():
     if simple and squad_id:
         saved = []
         for fixture in fixtures:
-            _db().table('squad_events').insert({
+            event_type = fixture.get('type', 'game')
+            payload = {
                 'id':         str(uuid.uuid4()),
                 'squad_id':   squad_id,
                 'event_date': fixture['date'],
@@ -422,11 +509,14 @@ def paste_inbox():
                 'opponent':   fixture.get('opponent'),
                 'venue':      fixture.get('venue'),
                 'is_home':    fixture.get('is_home'),
-                'event_type': fixture.get('type', 'game'),
+                'event_type': event_type,
                 'notes':      fixture.get('notes'),
                 'round':      fixture.get('round'),
                 'created_at': datetime.now(pytz.UTC).isoformat(),
-            }).execute()
+            }
+            if event_type == 'game':
+                payload['fruit_player_id'] = _pick_next_fruit_player(squad_id)
+            _safe_insert_event(payload)
             saved.append(fixture['date'])
         # Still log to inbox (status=approved) so there's an audit trail
         _db().table('squad_email_inbox').insert({
@@ -481,14 +571,24 @@ def update_event(event_id):
 
     data = request.get_json(silent=True) or {}
     update = {}
-    for field in ('event_date', 'event_time', 'opponent', 'venue', 'is_home', 'event_type', 'notes', 'round'):
+    for field in ('event_date', 'event_time', 'opponent', 'venue', 'is_home',
+                  'event_type', 'notes', 'round', 'fruit_player_id'):
         if field in data:
             update[field] = data[field] or None
 
     if not update:
         return jsonify({'error': 'Nothing to update'}), 400
 
-    _db().table('squad_events').update(update).eq('id', event_id).execute()
+    try:
+        _db().table('squad_events').update(update).eq('id', event_id).execute()
+    except Exception as e:
+        # Pre-028 retry without fruit_player_id rather than 500
+        if 'fruit_player_id' in update and _is_missing_column_error(e):
+            update.pop('fruit_player_id', None)
+            if update:
+                _db().table('squad_events').update(update).eq('id', event_id).execute()
+        else:
+            raise
     return jsonify({'ok': True})
 
 
@@ -1086,6 +1186,16 @@ def poll_event(event_id):
     else:
         event_title = (event.get('event_type') or 'Event').title()
 
+    # Fruit duty: lookup the assigned player's first name (if any) so we can
+    # add the P.S. line to that player's parents only.
+    fruit_player_id = event.get('fruit_player_id')
+    fruit_first_name = ''
+    if fruit_player_id:
+        for p in players:
+            if p['id'] == fruit_player_id:
+                fruit_first_name = (p['player_name'] or '').split()[0] if p.get('player_name') else ''
+                break
+
     sent    = 0
     now_iso = datetime.now(pytz.UTC).isoformat()
 
@@ -1122,11 +1232,16 @@ def poll_event(event_id):
         yes_url = f"{app_url}/squad/rsvp/{poll_token}/yes"
         no_url  = f"{app_url}/squad/rsvp/{poll_token}/no"
 
+        # Only add the fruit-duty P.S. for the parents of the assigned player.
+        is_fruit_player = (fruit_player_id == player_id)
+        fruit_note = fruit_first_name if is_fruit_player else ''
+
         for pa in player_parents:
             html = _poll_email_html(
                 squad_name, player_name, pa.get('parent_name', 'there'),
                 event_title, ev_date_str, ev_time_str,
                 event.get('venue') or '', yes_url, no_url,
+                fruit_player_first_name=fruit_note,
             )
             ok, _ = send_email(
                 pa['parent_email'],
@@ -1142,7 +1257,7 @@ def poll_event(event_id):
 
 def _poll_email_html(squad_name, player_name, parent_name,
                      event_title, ev_date_str, ev_time_str, venue,
-                     yes_url, no_url):
+                     yes_url, no_url, fruit_player_first_name=''):
     time_venue = ''
     if ev_time_str:
         time_venue += ev_time_str
@@ -1150,6 +1265,13 @@ def _poll_email_html(squad_name, player_name, parent_name,
         time_venue += (' · ' if time_venue else '') + venue
     tv_line = (f"<div style='font-size:13px;color:#4b5563;margin-top:2px;'>{time_venue}</div>"
                if time_venue else '')
+    fruit_ps = (
+        f'<div style="background:#fff7ed;border:1px solid #fed7aa;border-radius:10px;'
+        f'padding:12px 16px;margin:14px 0;font-size:13px;color:#9a3412;line-height:1.5;">'
+        f'<strong>P.S.</strong> {fruit_player_first_name} is on fruit duty this game — '
+        f'please bring enough fruit for the whole team to share at half time! 🍊</div>'
+        if fruit_player_first_name else ''
+    )
     return f"""
 <html><body style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
                     max-width:560px;margin:0 auto;padding:20px;background:#f0fdf4;">
@@ -1170,6 +1292,7 @@ def _poll_email_html(squad_name, player_name, parent_name,
       <div style="font-size:13px;color:#374151;margin-top:4px;">{ev_date_str}</div>
       {tv_line}
     </div>
+    {fruit_ps}
     <table width="100%" style="margin:24px 0;border-collapse:collapse;">
       <tr>
         <td style="padding-right:8px;">

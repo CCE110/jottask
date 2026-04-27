@@ -2708,7 +2708,7 @@ def handle_dsw_reply(subject, body_text, sender_email):
 
 if __name__ == "__main__":
     import time
-    from saas_scheduler import check_and_send_reminders, check_and_send_dsw_reminders, get_users_needing_summary, send_daily_summary
+    from saas_scheduler import check_and_send_reminders, check_and_send_dsw_reminders, get_users_needing_summary, send_daily_summary, send_squad_tuesday_whatsapp
     from monitoring import log_heartbeat, log_error, send_self_alert, cleanup_old_events, check_reminder_health, check_and_send_canary, check_email_processing_health, send_daily_health_digest
 
     processor = AIEmailProcessor()
@@ -2813,6 +2813,16 @@ if __name__ == "__main__":
         except Exception as e:
             print(f"Error in email processing audit: {e}")
             log_error('email_audit', e, category='audit')
+
+        try:
+            # 2f. Squad Tuesday-morning WhatsApp prep email (gates internally
+            # on AEST Tuesday 8 AM, dedups by date)
+            squad_tue = send_squad_tuesday_whatsapp()
+            if squad_tue == 'sent':
+                print("Squad Tuesday WhatsApp prep email sent")
+        except Exception as e:
+            print(f"Error in Squad Tuesday reminder: {e}")
+            log_error('squad_tuesday', e, category='squad')
 
         try:
             # 3. Check and send daily summaries

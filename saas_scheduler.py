@@ -820,6 +820,143 @@ def check_and_send_dsw_reminders():
         return 0
 
 
+# ── Squad: Tuesday WhatsApp game-reminder ───────────────────────────────────
+# Once per Tuesday 8 AM AEST, look ahead to that Saturday. If there's a game,
+# email Rob a copy/paste-ready WhatsApp message for the team group. Idempotent
+# via a module-level last-sent-date marker — fine for a single-process worker.
+
+_squad_tuesday_last_date = None
+
+
+def send_squad_tuesday_whatsapp():
+    """Tuesday 8 AM AEST: email a WhatsApp-ready Saturday game message to Rob.
+
+    Returns 'sent' | 'skipped' | 'failed'. Looks up every squad in the DB,
+    finds Saturday's game (is_cancelled=false), and sends one email per
+    squad. fruit_player_id (if set, post-028) is rendered as the duty family.
+    """
+    global _squad_tuesday_last_date
+    aest = pytz.timezone('Australia/Brisbane')
+    now = datetime.now(aest)
+
+    # Gate: Tuesday + 8 AM hour
+    if now.weekday() != 1 or now.hour != 8:
+        return 'skipped'
+    if _squad_tuesday_last_date == now.date():
+        return 'skipped'  # already sent this morning
+
+    # That Saturday is 4 days after Tuesday
+    saturday = (now + timedelta(days=4)).date().isoformat()
+
+    sb = _get_supabase()
+    try:
+        squads = (sb.table('squads').select('id, name').execute().data) or []
+    except Exception as e:
+        print(f"[SquadTue] squad lookup failed: {e}")
+        return 'failed'
+    if not squads:
+        _squad_tuesday_last_date = now.date()
+        return 'skipped'
+
+    sent_any = False
+    for squad in squads:
+        squad_id = squad['id']
+        squad_name = squad.get('name') or 'Devils'
+        try:
+            ev_q = sb.table('squad_events').select('*')\
+                .eq('squad_id', squad_id).eq('event_date', saturday)\
+                .eq('event_type', 'game').eq('is_cancelled', False)\
+                .order('event_time')
+            events = (ev_q.execute().data) or []
+        except Exception as e:
+            print(f"[SquadTue] event lookup failed for squad {squad_id[:8]}: {e}")
+            continue
+        if not events:
+            continue
+
+        # Resolve fruit player names in one batch
+        fruit_ids = [e.get('fruit_player_id') for e in events if e.get('fruit_player_id')]
+        name_by_id = {}
+        if fruit_ids:
+            try:
+                fp = sb.table('squad_players').select('id, player_name')\
+                    .in_('id', list(set(fruit_ids))).execute()
+                name_by_id = {p['id']: p['player_name'] for p in (fp.data or [])}
+            except Exception:
+                pass
+
+        for ev in events:
+            try:
+                # Format date: e.g. "Saturday 2 May at 9:30 AM"
+                dt = datetime.fromisoformat(saturday)
+                date_str = dt.strftime(f'%A {dt.day} %B').replace(' 0', ' ')
+                time_raw = (ev.get('event_time') or '')[:5]
+                if time_raw:
+                    try:
+                        h, m = time_raw.split(':')
+                        h12 = ((int(h) - 1) % 12) + 1
+                        ampm = 'AM' if int(h) < 12 else 'PM'
+                        time_str = f"{h12}:{m} {ampm}"
+                    except Exception:
+                        time_str = time_raw
+                else:
+                    time_str = 'TBC'
+                opponent = ev.get('opponent') or 'TBD'
+                home_or_away = 'Home' if ev.get('is_home') else ('Away' if ev.get('is_home') is False else 'TBC')
+                venue = ev.get('venue') or 'Venue TBC'
+                # Try to extract field number from venue ("Runcorn Fields #3" or "Runcorn, Field 3")
+                import re as _re
+                fmatch = _re.search(r'(?:field|fld|f)\s*#?\s*(\d+)', venue, _re.IGNORECASE)
+                field_part = f", Field {fmatch.group(1)}" if fmatch else ''
+                # Strip the field bit out of the venue display so it doesn't double up
+                venue_clean = _re.sub(r'(?:field|fld|f)\s*#?\s*\d+', '', venue, flags=_re.IGNORECASE).strip(' ,#-') or venue
+
+                fruit_name = name_by_id.get(ev.get('fruit_player_id'))
+                fruit_line = (
+                    f"\n🍊 Fruit duty: {fruit_name} family\n" if fruit_name
+                    else "\n🍊 Fruit duty: (not assigned)\n"
+                )
+
+                whatsapp = (
+                    f"⚽ {squad_name} Game This Saturday!\n\n"
+                    f"📅 {date_str} at {time_str}\n"
+                    f"🆚 vs {opponent} ({home_or_away})\n"
+                    f"📍 {venue_clean}{field_part}\n"
+                    f"{fruit_line}"
+                    f"\nGood luck {squad_name}! 🟢⚫"
+                )
+
+                html = (
+                    f'<div style="font-family:-apple-system,BlinkMacSystemFont,sans-serif;'
+                    f'max-width:560px;margin:0 auto;padding:20px;">'
+                    f'<h2 style="color:#15803d;margin:0 0 8px;">Tuesday WhatsApp prep — {squad_name}</h2>'
+                    f'<p style="color:#374151;font-size:14px;">Copy &amp; paste this into the team group:</p>'
+                    f'<pre style="background:#f0fdf4;border:1px solid #bbf7d0;border-radius:10px;'
+                    f'padding:16px;font-family:-apple-system,sans-serif;font-size:15px;line-height:1.6;'
+                    f'white-space:pre-wrap;color:#1a2e1a;">{whatsapp}</pre>'
+                    f'<p style="color:#9ca3af;font-size:12px;margin-top:16px;">'
+                    f'Auto-generated Tuesday 8 AM AEST · '
+                    f'<a href="https://www.jottask.app/squad/" style="color:#15803d;">Open Squad</a></p>'
+                    f'</div>'
+                )
+
+                ok, err = send_email(
+                    'rob@cloudcleanenergy.com.au',
+                    f'⚽ {squad_name} Saturday — WhatsApp copy ({date_str})',
+                    html, category='squad_tuesday',
+                )
+                if ok:
+                    sent_any = True
+                    print(f"[SquadTue] sent for {squad_name} vs {opponent}")
+                else:
+                    print(f"[SquadTue] send failed for {squad_name}: {err}")
+            except Exception as e:
+                print(f"[SquadTue] format/send error: {e}")
+
+    _squad_tuesday_last_date = now.date()
+    return 'sent' if sent_any else 'skipped'
+
+
 def run_scheduler():
     """Main scheduler loop"""
     print("🚀 Starting Jottask Scheduler (Summaries + Reminders)")
