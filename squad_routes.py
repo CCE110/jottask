@@ -603,13 +603,17 @@ def admin_bulk_seed():
           "assignments": [
               {"event_date": "2026-05-02", "player_name": "Jaylen"},
               ...
-          ]
+          ],
+          "delete_event_ids": ["uuid", ...]   # optional — for cleaning duplicates
         }
 
     Idempotent — skips players that already exist (case-insensitive name
     match). For assignments with multiple events on the same date, picks
     event_type='game' first, then the oldest (= the original, not later
     duplicates). Returns an audit trail.
+
+    Event deletion is scoped to this manager's squad — IDs in
+    delete_event_ids that belong to a different squad are silently ignored.
     """
     user_id = session.get('user_id')
     squad = _get_squad_for_user(user_id)
@@ -620,6 +624,7 @@ def admin_bulk_seed():
     body = request.get_json(silent=True) or {}
     names = [n.strip() for n in (body.get('players') or []) if isinstance(n, str) and n.strip()]
     assignments = body.get('assignments') or []
+    delete_ids = [i for i in (body.get('delete_event_ids') or []) if isinstance(i, str) and i.strip()]
     now_iso = datetime.now(pytz.UTC).isoformat()
 
     # 1. Insert missing players
@@ -683,12 +688,37 @@ def admin_bulk_seed():
             'player_id':   pid,
         })
 
+    # 4. Delete events (manager-scoped — never delete another squad's rows)
+    deleted = []
+    delete_errors = []
+    for eid in delete_ids:
+        try:
+            check = _db().table('squad_events').select('id, squad_id, event_date, opponent, venue')\
+                .eq('id', eid).maybe_single().execute()
+            if not check or not check.data:
+                delete_errors.append({'event_id': eid, 'error': 'not found'})
+                continue
+            if check.data.get('squad_id') != sid:
+                delete_errors.append({'event_id': eid, 'error': 'belongs to a different squad'})
+                continue
+            _db().table('squad_events').delete().eq('id', eid).execute()
+            deleted.append({
+                'event_id':   eid,
+                'event_date': check.data.get('event_date'),
+                'opponent':   check.data.get('opponent'),
+                'venue':      check.data.get('venue'),
+            })
+        except Exception as e:
+            delete_errors.append({'event_id': eid, 'error': str(e)[:200]})
+
     return jsonify({
         'ok': True,
-        'players_added':   added,
-        'players_skipped': skipped,
-        'assignments_made':   made,
-        'assignment_errors':  errors,
+        'players_added':     added,
+        'players_skipped':   skipped,
+        'assignments_made':  made,
+        'assignment_errors': errors,
+        'events_deleted':    deleted,
+        'delete_errors':     delete_errors,
     })
 
 
