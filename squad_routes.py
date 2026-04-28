@@ -592,6 +592,106 @@ def update_event(event_id):
     return jsonify({'ok': True})
 
 
+@squad_bp.route('/squad/admin/bulk-seed', methods=['POST'])
+@login_required
+def admin_bulk_seed():
+    """One-shot: insert missing players + pin fruit duty to specific games.
+
+    JSON body:
+        {
+          "players": ["Benham", "Eddie", ...],
+          "assignments": [
+              {"event_date": "2026-05-02", "player_name": "Jaylen"},
+              ...
+          ]
+        }
+
+    Idempotent — skips players that already exist (case-insensitive name
+    match). For assignments with multiple events on the same date, picks
+    event_type='game' first, then the oldest (= the original, not later
+    duplicates). Returns an audit trail.
+    """
+    user_id = session.get('user_id')
+    squad = _get_squad_for_user(user_id)
+    if not squad:
+        return jsonify({'error': 'No squad'}), 404
+    sid = squad['id']
+
+    body = request.get_json(silent=True) or {}
+    names = [n.strip() for n in (body.get('players') or []) if isinstance(n, str) and n.strip()]
+    assignments = body.get('assignments') or []
+    now_iso = datetime.now(pytz.UTC).isoformat()
+
+    # 1. Insert missing players
+    existing = _db().table('squad_players').select('id, player_name')\
+        .eq('squad_id', sid).execute().data or []
+    existing_lower = {(p['player_name'] or '').strip().lower() for p in existing}
+
+    added = 0
+    skipped = 0
+    for n in names:
+        if n.lower() in existing_lower:
+            skipped += 1
+            continue
+        _db().table('squad_players').insert({
+            'id':          str(uuid.uuid4()),
+            'squad_id':    sid,
+            'player_name': n,
+            'created_at':  now_iso,
+        }).execute()
+        added += 1
+
+    # 2. Refresh name→id map (includes the newly-added rows)
+    players = _db().table('squad_players').select('id, player_name')\
+        .eq('squad_id', sid).execute().data or []
+    name_to_id = {(p['player_name'] or '').strip().lower(): p['id'] for p in players}
+
+    # 3. Apply assignments
+    made = []
+    errors = []
+    type_priority = {'game': 0, 'other': 1, 'cup': 2, 'friendly': 3, 'training': 4}
+    for a in assignments:
+        d = (a.get('event_date') or '').strip()
+        pn = (a.get('player_name') or '').strip()
+        if not d or not pn:
+            errors.append({'assignment': a, 'error': 'missing event_date or player_name'})
+            continue
+        pid = name_to_id.get(pn.lower())
+        if not pid:
+            errors.append({'assignment': a, 'error': f'player "{pn}" not found'})
+            continue
+        evs = _db().table('squad_events')\
+            .select('id, opponent, event_type, event_time, created_at, is_cancelled')\
+            .eq('squad_id', sid).eq('event_date', d).execute().data or []
+        evs = [e for e in evs if not e.get('is_cancelled')]
+        if not evs:
+            errors.append({'assignment': a, 'error': f'no event on {d}'})
+            continue
+        # Prefer game type, then oldest record (= original, not later dup)
+        evs.sort(key=lambda e: (
+            type_priority.get(e.get('event_type') or '', 99),
+            e.get('created_at') or '',
+        ))
+        target = evs[0]
+        _db().table('squad_events').update({'fruit_player_id': pid})\
+            .eq('id', target['id']).execute()
+        made.append({
+            'event_date':  d,
+            'event_id':    target['id'],
+            'opponent':    target.get('opponent'),
+            'player_name': pn,
+            'player_id':   pid,
+        })
+
+    return jsonify({
+        'ok': True,
+        'players_added':   added,
+        'players_skipped': skipped,
+        'assignments_made':   made,
+        'assignment_errors':  errors,
+    })
+
+
 @squad_bp.route('/squad/fruit/backfill', methods=['POST'])
 @login_required
 def backfill_fruit_duty():
