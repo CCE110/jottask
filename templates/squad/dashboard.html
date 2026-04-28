@@ -517,8 +517,12 @@
                     {% if ev.venue %}{{ ev.venue }}{% endif %}
                     {% if not ev.event_time and not ev.venue %}Venue TBD{% endif %}
                   </div>
-                  {% if ev.fruit_player_name %}
-                  <div class="event-fruit" style="font-size:12px;color:#9a3412;margin-top:3px;">🍊 Fruit: {{ ev.fruit_player_name }}</div>
+                  {# Fruit duty — always rendered for games (placeholder when unassigned) #}
+                  {% if ev.event_type == 'game' %}
+                  <div class="event-fruit" style="display:inline-block;background:#fff7ed;border:1px solid #fed7aa;color:#9a3412;font-size:13px;font-weight:700;padding:4px 10px;border-radius:14px;margin-top:8px;">
+                    🍊 Fruit:
+                    {% if ev.fruit_player_name %}{{ ev.fruit_player_name }}{% else %}<span style="color:#c2410c;font-weight:500;font-style:italic;">not assigned</span>{% endif %}
+                  </div>
                   {% endif %}
                   <span class="event-type-badge badge-{{ ev.event_type or 'other' }}">{{ ev.event_type or 'event' }}</span>
                   {% set p = ev.poll %}
@@ -596,6 +600,9 @@
                   {% if ev.venue %}{{ ev.venue }}{% endif %}
                   {% if not ev.event_time and not ev.venue %}Venue TBD{% endif %}
                 </div>
+                {% if ev.event_type == 'game' and ev.fruit_player_name %}
+                <div class="event-fruit" style="display:inline-block;background:#fff7ed;border:1px solid #fed7aa;color:#9a3412;font-size:12px;font-weight:600;padding:3px 8px;border-radius:12px;margin-top:6px;opacity:0.75;">🍊 {{ ev.fruit_player_name }}</div>
+                {% endif %}
                 <span class="event-type-badge badge-{{ ev.event_type or 'other' }}" style="opacity:0.6;">{{ ev.event_type or 'event' }}</span>
               </div>
               <form method="POST" action="/squad/events/{{ ev.id }}/delete"

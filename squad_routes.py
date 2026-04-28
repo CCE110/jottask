@@ -592,6 +592,61 @@ def update_event(event_id):
     return jsonify({'ok': True})
 
 
+@squad_bp.route('/squad/fruit/backfill', methods=['POST'])
+@login_required
+def backfill_fruit_duty():
+    """Walk alphabetical rotation across every upcoming game (today onward)
+    in this squad that doesn't yet have a fruit_player_id assigned. Skips
+    training and other event types — fruit duty is for games only.
+
+    Anchors on the most recent existing assignment so the rotation picks up
+    where it left off. Returns JSON with an audit trail.
+    """
+    user_id = session.get('user_id')
+    squad = _get_squad_for_user(user_id)
+    if not squad:
+        return jsonify({'error': 'No squad'}), 404
+    sid = squad['id']
+
+    players = _db().table('squad_players').select('id, player_name')\
+        .eq('squad_id', sid).order('player_name').execute().data or []
+    if not players:
+        return jsonify({'error': 'No players in squad — add players via /squad/team first', 'assigned': 0}), 400
+    ids = [p['id'] for p in players]
+    name_by_id = {p['id']: p['player_name'] for p in players}
+
+    # Anchor: most recent assignment in this squad's events, by event_date+time
+    anchor = _db().table('squad_events').select('fruit_player_id, event_date, event_time')\
+        .eq('squad_id', sid).not_.is_('fruit_player_id', 'null')\
+        .order('event_date', desc=True).order('event_time', desc=True).limit(1).execute().data
+    cursor = ids.index(anchor[0]['fruit_player_id']) if (anchor and anchor[0].get('fruit_player_id') in ids) else -1
+
+    today = datetime.now(AEST).date().isoformat()
+    upcoming = _db().table('squad_events').select('id, event_date, opponent, fruit_player_id')\
+        .eq('squad_id', sid).eq('event_type', 'game').eq('is_cancelled', False)\
+        .gte('event_date', today).order('event_date').order('event_time').execute().data or []
+
+    assigned = []
+    for ev in upcoming:
+        if ev.get('fruit_player_id') and ev['fruit_player_id'] in ids:
+            # Already validly assigned — skip but advance cursor so the next
+            # game still rotates relative to this anchor.
+            cursor = ids.index(ev['fruit_player_id'])
+            continue
+        cursor = (cursor + 1) % len(ids)
+        pid = ids[cursor]
+        _db().table('squad_events').update({'fruit_player_id': pid}).eq('id', ev['id']).execute()
+        assigned.append({
+            'event_id':   ev['id'],
+            'event_date': ev['event_date'],
+            'opponent':   ev.get('opponent') or 'TBD',
+            'player_id':  pid,
+            'player_name': name_by_id[pid],
+        })
+
+    return jsonify({'ok': True, 'assigned': len(assigned), 'assignments': assigned})
+
+
 @squad_bp.route('/squad/events/<event_id>/delete', methods=['POST'])
 @login_required
 def delete_event(event_id):
