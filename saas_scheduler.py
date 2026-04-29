@@ -16,8 +16,9 @@ _supabase = None
 def _get_supabase():
     global _supabase
     if _supabase is None:
+        from db_keys import get_admin_key
         url = os.getenv('SUPABASE_URL')
-        key = os.getenv('SUPABASE_KEY')
+        key = get_admin_key()  # service-role bypasses RLS
         _supabase = create_client(url, key)
     return _supabase
 

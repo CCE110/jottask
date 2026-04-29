@@ -10,8 +10,9 @@ import pytz
 
 class TaskManager:
     def __init__(self):
+        from db_keys import get_admin_key
         url = os.getenv('SUPABASE_URL')
-        key = os.getenv('SUPABASE_KEY')
+        key = get_admin_key()  # service-role bypasses RLS
         
         if not url or not key:
             raise ValueError("SUPABASE_URL and SUPABASE_KEY must be set")

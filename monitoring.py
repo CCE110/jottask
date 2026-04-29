@@ -11,7 +11,8 @@ import pytz
 from supabase import create_client, Client
 
 SUPABASE_URL = os.getenv('SUPABASE_URL')
-SUPABASE_KEY = os.getenv('SUPABASE_KEY')
+from db_keys import get_admin_key
+SUPABASE_KEY = get_admin_key()  # service-role bypasses RLS for system_events writes
 
 # Rob's outbound always lands on his DSW inbox, not whatever users.email holds.
 ROB_USER_ID = 'e515407e-dbd6-4331-a815-1878815c89bc'

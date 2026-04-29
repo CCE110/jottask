@@ -1105,7 +1105,8 @@ def resend_email_only(contact_name):
     project is created.
     """
     from supabase import create_client
-    sb = create_client(os.getenv("SUPABASE_URL"), os.getenv("SUPABASE_KEY"))
+    from db_keys import get_admin_key
+    sb = create_client(os.getenv("SUPABASE_URL"), get_admin_key())
 
     # 1. Find existing pending DSW Solar task for this contact
     result = sb.table('tasks')\

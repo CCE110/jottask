@@ -36,7 +36,12 @@ app.register_blueprint(squad_bp)
 
 # Supabase client — lazy-init proxy. Defers create_client() until the first
 # .table()/.auth/.rpc() call so a missing env var at import time can't crash
-# gunicorn before any request is served. Mirrors auth._LazySupabase.
+# gunicorn before any request is served. Mirrors auth._LazySupabase. Uses
+# the service-role key (via db_keys.get_admin_key) so RLS-locked-down tables
+# remain writable from the Flask backend.
+from db_keys import get_admin_key
+
+
 class _LazySupabase:
     def __init__(self):
         self._client = None
@@ -44,11 +49,11 @@ class _LazySupabase:
     def _ensure(self):
         if self._client is None:
             url = os.getenv('SUPABASE_URL')
-            key = os.getenv('SUPABASE_KEY')
+            key = get_admin_key()
             if not url or not key:
                 raise RuntimeError(
                     "Supabase env vars missing — set SUPABASE_URL and "
-                    "SUPABASE_KEY on the running service before serving."
+                    "SUPABASE_SERVICE_KEY (or SUPABASE_KEY) on the running service."
                 )
             self._client = create_client(url, key)
         return self._client
@@ -57,8 +62,8 @@ class _LazySupabase:
         return getattr(self._ensure(), name)
 
 
-SUPABASE_URL = os.getenv('SUPABASE_URL')  # kept for any module reading the const directly
-SUPABASE_KEY = os.getenv('SUPABASE_KEY')
+SUPABASE_URL = os.getenv('SUPABASE_URL')
+SUPABASE_KEY = get_admin_key()  # service-role first; was anon-only, blocked writes after RLS
 supabase = _LazySupabase()
 
 # ── Lead-text junk filter ────────────────────────────────────────────────────
@@ -6030,7 +6035,7 @@ def approve_action():
         from datetime import datetime
         import pytz
         supabase_url = os.getenv('SUPABASE_URL')
-        supabase_key = os.getenv('SUPABASE_KEY') or os.getenv('SUPABASE_SERVICE_KEY')
+        supabase_key = get_admin_key()  # service-role first, anon fallback
         from supabase import create_client
         sb = create_client(supabase_url, supabase_key)
         result = sb.table('pending_actions').select('*').eq('token', token).eq('status', 'pending').execute()
@@ -6119,7 +6124,7 @@ def reject_action():
         from datetime import datetime
         import pytz
         supabase_url = os.getenv('SUPABASE_URL')
-        supabase_key = os.getenv('SUPABASE_KEY') or os.getenv('SUPABASE_SERVICE_KEY')
+        supabase_key = get_admin_key()  # service-role first, anon fallback
         from supabase import create_client
         sb = create_client(supabase_url, supabase_key)
         result = sb.table('pending_actions').select('*').eq('token', token).eq('status', 'pending').execute()
@@ -6152,7 +6157,7 @@ def edit_action():
     try:
         import json as _json
         supabase_url = os.getenv('SUPABASE_URL')
-        supabase_key = os.getenv('SUPABASE_KEY') or os.getenv('SUPABASE_SERVICE_KEY')
+        supabase_key = get_admin_key()  # service-role first, anon fallback
         from supabase import create_client
         sb = create_client(supabase_url, supabase_key)
         result = sb.table('pending_actions').select('*').eq('token', token).execute()
@@ -6266,7 +6271,7 @@ def save_action():
         from datetime import datetime
         import pytz
         supabase_url = os.getenv('SUPABASE_URL')
-        supabase_key = os.getenv('SUPABASE_KEY') or os.getenv('SUPABASE_SERVICE_KEY')
+        supabase_key = get_admin_key()  # service-role first, anon fallback
         from supabase import create_client
         sb = create_client(supabase_url, supabase_key)
 

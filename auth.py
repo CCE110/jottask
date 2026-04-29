@@ -7,6 +7,7 @@ import os
 from functools import wraps
 from flask import session, redirect, url_for, request, jsonify
 from supabase import create_client, Client
+from db_keys import get_admin_key
 
 
 class _LazySupabase:
@@ -25,11 +26,11 @@ class _LazySupabase:
     def _ensure(self) -> Client:
         if self._client is None:
             url = os.getenv('SUPABASE_URL')
-            key = os.getenv('SUPABASE_KEY')
+            key = get_admin_key()  # service-role first, anon fallback
             if not url or not key:
                 raise RuntimeError(
                     "Supabase env vars missing — set SUPABASE_URL and "
-                    "SUPABASE_KEY on the running service before serving."
+                    "SUPABASE_SERVICE_KEY (or SUPABASE_KEY) on the running service."
                 )
             self._client = create_client(url, key)
         return self._client
@@ -56,10 +57,10 @@ def _auth_client() -> Client:
     Using a throwaway client keeps the global client's headers clean.
     """
     url = os.getenv('SUPABASE_URL')
-    key = os.getenv('SUPABASE_KEY')
+    key = get_admin_key()
     if not url or not key:
         raise RuntimeError(
-            "Supabase env vars missing — set SUPABASE_URL and SUPABASE_KEY."
+            "Supabase env vars missing — set SUPABASE_URL and SUPABASE_SERVICE_KEY."
         )
     return create_client(url, key)
 

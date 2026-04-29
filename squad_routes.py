@@ -32,20 +32,23 @@ _supabase_admin = None  # service-role client (bypasses RLS) — used for public
 def _db() -> Client:
     global _supabase
     if _supabase is None:
-        _supabase = create_client(os.getenv('SUPABASE_URL'), os.getenv('SUPABASE_KEY'))
+        from db_keys import get_admin_key
+        _supabase = create_client(os.getenv('SUPABASE_URL'), get_admin_key())
     return _supabase
 
 
 def _admin_db() -> Client:
     """Service-role Supabase client — bypasses RLS for public unauthenticated routes.
 
-    Prefers SUPABASE_SERVICE_KEY if set; falls back to SUPABASE_KEY.
-    If SUPABASE_KEY is already the service-role key this is a no-op.
+    Same key resolution as _db() now that all clients prefer the
+    service-role key (via db_keys.get_admin_key). Kept as a separate
+    function for callers that want the explicit semantic of "I'm hitting
+    a public endpoint and need to bypass RLS".
     """
     global _supabase_admin
     if _supabase_admin is None:
-        key = os.getenv('SUPABASE_SERVICE_KEY') or os.getenv('SUPABASE_KEY')
-        _supabase_admin = create_client(os.getenv('SUPABASE_URL'), key)
+        from db_keys import get_admin_key
+        _supabase_admin = create_client(os.getenv('SUPABASE_URL'), get_admin_key())
     return _supabase_admin
 
 

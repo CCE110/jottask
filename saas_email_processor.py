@@ -2198,7 +2198,8 @@ Rules:
     # ── Patch task due time to 30 minutes from now ─────────────────────────
     try:
         from supabase import create_client
-        sb = create_client(os.getenv('SUPABASE_URL'), os.getenv('SUPABASE_KEY'))
+        from db_keys import get_admin_key
+        sb = create_client(os.getenv('SUPABASE_URL'), get_admin_key())
         due_dt = datetime.now() + timedelta(minutes=30)
         task_search = sb.table('tasks')\
             .select('id')\
@@ -2512,7 +2513,8 @@ def handle_dsw_reply(subject, body_text, sender_email):
 
     # ── Fetch task from Supabase ──────────────────────────────────────────
     from supabase import create_client
-    sb = create_client(os.getenv('SUPABASE_URL'), os.getenv('SUPABASE_KEY'))
+    from db_keys import get_admin_key
+    sb = create_client(os.getenv('SUPABASE_URL'), get_admin_key())
 
     task = None
     if task_id:

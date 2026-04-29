@@ -38,7 +38,8 @@ _supabase = None
 def _get_supabase() -> Client:
     global _supabase
     if _supabase is None:
-        _supabase = create_client(os.getenv('SUPABASE_URL'), os.getenv('SUPABASE_KEY'))
+        from db_keys import get_admin_key
+        _supabase = create_client(os.getenv('SUPABASE_URL'), get_admin_key())
     return _supabase
 
 
