@@ -4644,19 +4644,17 @@ textarea:focus{border-color:#1e40af;box-shadow:0 0 0 3px rgba(30,64,175,.1)}
 {% endif %}
 
 <!-- Customer Requirements -->
-{% if cust_text %}
-<div class="card">
+<div class="card" id="custReqCard" style="{% if not cust_text %}display:none;{% endif %}">
   <div class="sec">Customer Requirements</div>
-  <div class="req-box">{{ cust_text }}</div>
+  <div class="req-box" id="custReqBox">{{ cust_text }}</div>
 </div>
-{% endif %}
 
 <!-- My Notes -->
 <div class="card">
   <div class="sec">My Notes</div>
-  <form action="/task/{{ task_id }}/notes" method="POST">
-    <textarea name="notes" placeholder="Call notes, outcome, next steps...">{{ notes_raw }}</textarea>
-    <button type="submit" class="save-btn">Save Notes</button>
+  <form action="/task/{{ task_id }}/notes" method="POST" id="notesForm">
+    <textarea id="notesTextarea" name="notes" placeholder="Call notes, outcome, next steps...">{{ notes_raw }}</textarea>
+    <button type="submit" class="save-btn" id="saveNotesBtn">Save Notes</button>
   </form>
 </div>
 
@@ -4735,6 +4733,52 @@ if(sp.get('reminder_set')==='1'){
   });
   inp.addEventListener('blur',_save);
   form.addEventListener('submit',function(e){ e.preventDefault(); _save(); });
+})();
+
+// MY NOTES: AJAX save + auto-refresh from PipeReply (no page reload).
+// Server pulls fresh contact + CRM notes, re-runs summarise(), and returns
+// the rebuilt cust_text so we can swap it into the req-box in place.
+(function(){
+  var form = document.getElementById('notesForm');
+  var ta   = document.getElementById('notesTextarea');
+  var btn  = document.getElementById('saveNotesBtn');
+  var box  = document.getElementById('custReqBox');
+  var card = document.getElementById('custReqCard');
+  if(!form||!ta||!btn) return;
+
+  form.addEventListener('submit', async function(e){
+    e.preventDefault();
+    var origLabel = btn.textContent;
+    btn.textContent = 'Saving…'; btn.disabled = true;
+    try {
+      var res = await fetch(form.action, {
+        method: 'POST',
+        headers: { 'Content-Type':'application/json', 'Accept':'application/json' },
+        body: JSON.stringify({ notes: ta.value })
+      });
+      if(!res.ok) throw new Error('HTTP '+res.status);
+      var data = await res.json();
+      if(data && data.refreshed && data.refreshed.cust_text) {
+        if(box) box.textContent = data.refreshed.cust_text;
+        if(card) card.style.display = '';
+        showToast('Saved & refreshed from PipeReply ✓', 2200);
+      } else {
+        showToast('Notes saved ✓');
+      }
+      // Update sub-note input if the refresh derived a new one
+      var subInp = document.getElementById('sub-note-input');
+      if(subInp && data && data.refreshed && data.refreshed.sub_note != null) {
+        subInp.value = data.refreshed.sub_note;
+      }
+    } catch (err) {
+      // Fall back to a regular form submit so the user never loses their note
+      console.error('Notes save AJAX failed:', err);
+      form.submit();
+      return;
+    } finally {
+      btn.textContent = origLabel; btn.disabled = false;
+    }
+  });
 })();
 </script>
 </body>
@@ -4930,10 +4974,32 @@ def rebuild_task_from_pipereply(task_id):
 
 @app.route('/task/<task_id>/notes', methods=['POST'])
 def lead_save_notes(task_id):
-    """Save MY NOTES section to task description and replace Pipereply CRM note."""
-    import re, requests as rq
+    """Save MY NOTES section, mirror to PipeReply, then refresh customer
+    requirements + CRM notes from PipeReply so the lead view reflects the
+    latest contact data without a manual migrate.
 
-    notes_text = request.form.get('notes', '').strip()
+    Response shape:
+      - JSON request (Content-Type: application/json or Accept: application/json):
+        returns {ok, saved, refreshed: {cust_text, phone, email, name, ...}}
+        so the client can update the DOM in place without a full reload.
+      - Form POST: redirects to /task/<id>?saved=1 as before.
+
+    The refresh step is best-effort — if PipeReply is unreachable or the
+    AI summary call fails, the local + PipeReply note saves still complete
+    and the response just omits the `refreshed` payload.
+    """
+    import re, requests as rq, importlib.util as ilu
+
+    wants_json = (
+        'application/json' in (request.headers.get('Accept') or '').lower()
+        or (request.headers.get('Content-Type') or '').startswith('application/json')
+    )
+
+    # Read notes from JSON body or form POST
+    if (request.headers.get('Content-Type') or '').startswith('application/json'):
+        notes_text = ((request.get_json(silent=True) or {}).get('notes') or '').strip()
+    else:
+        notes_text = (request.form.get('notes') or '').strip()
 
     # Strip email signature lines
     _sig_re = re.compile(
@@ -4958,12 +5024,14 @@ def lead_save_notes(task_id):
         res = supabase.table('tasks').select('description').eq('id', task_id).single().execute()
         t = res.data
     except Exception:
+        if wants_json:
+            return jsonify({'ok': False, 'error': 'task not found'}), 404
         return redirect(url_for('lead_detail', task_id=task_id, saved='1'))
 
     desc = t.get('description') or ''
     NOTES_SEP = 'MY NOTES:'
 
-    # Rebuild description: keep everything before MY NOTES:, replace after
+    # ── Step 1: save locally (existing flow — unchanged) ──────────────────
     if NOTES_SEP in desc:
         cust_part = desc.split(NOTES_SEP, 1)[0].rstrip()
     else:
@@ -4983,7 +5051,7 @@ def lead_save_notes(task_id):
     new_desc = cust_part + '\n\n' + NOTES_SEP + '\n' + notes_text if notes_text else cust_part
     supabase.table('tasks').update({'description': new_desc}).eq('id', task_id).execute()
 
-    # Replace Pipereply CRM note body
+    # ── Step 2: mirror to PipeReply CRM note (existing) ────────────────────
     PIPEREPLY_TOKEN = os.getenv('PIPEREPLY_TOKEN')
     crm_url = ''
     m = re.search(r'^CRM:\s*(.+)$', desc, re.MULTILINE)
@@ -5000,10 +5068,8 @@ def lead_save_notes(task_id):
         aest = pytz.timezone('Australia/Brisbane')
         ts = datetime.now(aest).strftime('%-d %b %Y %I:%M %p')
         try:
-            # Find existing notes for this contact and replace the latest, or create new
             r_notes = rq.get(f'{PR_BASE}/contacts/{crm_cid}/notes', headers=PR_H, timeout=8)
             existing_notes = r_notes.json().get('notes', []) if r_notes.ok else []
-            # Look for a note with "MY NOTES" tag to replace
             my_note = next((n for n in existing_notes if 'MY NOTES' in (n.get('body') or '')), None)
             note_body = f'MY NOTES ({ts}):\n{notes_text}'
             if my_note:
@@ -5015,6 +5081,81 @@ def lead_save_notes(task_id):
         except Exception as e:
             print(f'[LEAD NOTES] Pipereply note error: {e}')
 
+    # ── Step 3: refresh from PipeReply — pull fresh contact + CRM notes,
+    #            re-run summarise(), rebuild customer-requirements section,
+    #            overwrite description so the lead view reflects current data.
+    refreshed = None
+    if crm_cid:
+        try:
+            spec = ilu.spec_from_file_location('dsw_lead_poller',
+                os.path.join(os.path.dirname(os.path.abspath(__file__)), 'dsw_lead_poller.py'))
+            dsw = ilu.module_from_spec(spec); spec.loader.exec_module(dsw)
+
+            full = dsw.get_full(crm_cid) or {}
+            fresh_name = ' '.join(w.capitalize() for w in (full.get('contactName') or '').split())
+            phone = full.get('phone') or ''
+            email = full.get('email') or ''
+            addr_parts = [full.get('address1') or '', full.get('city') or '',
+                          full.get('state') or '', full.get('postalCode') or '']
+            addr = ', '.join(p for p in addr_parts if p)
+            src = dsw.source(full) or 'Referral'
+            crm_notes_text = dsw.get_crm_notes_bodies(crm_cid)
+            summary, referred_by = dsw.summarise(
+                fresh_name or 'Unknown', phone, addr, src,
+                full.get('notes', '') or '',
+                full.get('customFields', []) or [],
+            )
+            badge = dsw.source_badge(src, referred_by)
+            os_url = dsw.get_os_url_from_crm(crm_cid) or ''
+
+            # Preserve existing Sub-note if any (might've been auto-set above)
+            sub_m = re.search(r'^Sub-note:\s*(.+)$', new_desc, re.MULTILINE)
+            sub_note = sub_m.group(1).strip() if sub_m else ''
+
+            # Rebuild the customer-requirements block in the same shape as
+            # dsw_lead_poller.make_task — Phone/Email/Source/CRM/OpenSolar
+            # headers, Sub-note (if present), blank line, summary, CRM notes.
+            email_line  = f"Email: {email}\n" if email else ''
+            source_line = f"Source: {badge}\n" if badge else ''
+            sub_line    = f"Sub-note: {sub_note}\n" if sub_note else ''
+            rebuilt_cust = (
+                f"Phone: {phone or 'N/A'}\n"
+                f"{email_line}{source_line}"
+                f"CRM: {crm_url}\n"
+                f"OpenSolar: {os_url or 'pending'}\n"
+                f"{sub_line}\n"
+                f"{summary.strip()}"
+            )
+            if crm_notes_text:
+                rebuilt_cust += "\n\nCRM NOTES:\n" + crm_notes_text
+
+            full_desc = rebuilt_cust.rstrip()
+            if notes_text:
+                full_desc += '\n\n' + NOTES_SEP + '\n' + notes_text
+
+            supabase.table('tasks').update({'description': full_desc}).eq('id', task_id).execute()
+
+            # Compute the rendered cust_text the same way lead_detail does
+            cust_lines = [ln for ln in rebuilt_cust.splitlines()
+                          if not ln.startswith(('Phone:', 'Email:', 'CRM:', 'OpenSolar:', 'Source:', 'Sub-note:'))]
+            cust_text_rendered = _filter_lead_junk('\n'.join(cust_lines).strip())
+
+            refreshed = {
+                'cust_text':    cust_text_rendered,
+                'name':         fresh_name,
+                'phone':        phone,
+                'email':        email,
+                'address':      addr,
+                'os_url':       os_url,
+                'source_badge': badge,
+                'sub_note':     sub_note,
+                'notes_text':   notes_text,
+            }
+        except Exception as e:
+            print(f'[LEAD NOTES] PipeReply refresh failed: {e}')
+
+    if wants_json:
+        return jsonify({'ok': True, 'saved': True, 'refreshed': refreshed})
     return redirect(url_for('lead_detail', task_id=task_id, saved='1'))
 
 
