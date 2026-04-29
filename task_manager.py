@@ -10,19 +10,38 @@ import pytz
 
 class TaskManager:
     def __init__(self):
-        from db_keys import get_admin_key
-        url = os.getenv('SUPABASE_URL')
-        key = get_admin_key()  # service-role bypasses RLS
-        
-        if not url or not key:
-            raise ValueError("SUPABASE_URL and SUPABASE_KEY must be set")
-        
-        self.supabase: Client = create_client(url, key)
+        # Lazy: defer create_client() until the first .supabase access so a
+        # bad/missing env var (or any Supabase blip) at process start doesn't
+        # kill the worker before it can even log a heartbeat. This mirrors
+        # auth._LazySupabase / dashboard._LazySupabase.
+        self._supabase = None
+        self._statuses_loaded = False
         self.aest = pytz.timezone('Australia/Brisbane')
-        
-        # Cache project statuses on init
-        self.statuses = self.load_project_statuses()
-        print(f"📊 Loaded {len(self.statuses)} project statuses")
+        self.statuses = []  # populated on first DB access via the property below
+
+    @property
+    def supabase(self) -> Client:
+        if self._supabase is None:
+            from db_keys import get_admin_key
+            url = os.getenv('SUPABASE_URL')
+            key = get_admin_key()  # service-role bypasses RLS
+            if not url or not key:
+                raise RuntimeError(
+                    "Supabase env vars missing — set SUPABASE_URL and "
+                    "SUPABASE_SERVICE_KEY (or SUPABASE_KEY)."
+                )
+            self._supabase = create_client(url, key)
+            # Opportunistic one-time status load on first DB access.
+            # Wrapped so any DB error never poisons the supabase property
+            # itself (prior version crashed worker startup on RLS denial).
+            if not self._statuses_loaded:
+                self._statuses_loaded = True
+                try:
+                    self.statuses = self.load_project_statuses()
+                    print(f"📊 Loaded {len(self.statuses)} project statuses")
+                except Exception as e:
+                    print(f"⚠️ Could not load project statuses on first access: {e}")
+        return self._supabase
     
     # ========================================
     # PROJECT STATUS METHODS
