@@ -371,19 +371,41 @@ class AIEmailProcessor:
                 sender_raw = email_body.get('From', '')
                 sender_addr = self._get_sender_email_address(sender_raw)
 
-                result = self.process_single_email_body(email_body, user_context=user_ctx)
-                outcome, outcome_detail = result if result else ('error', 'No result returned')
+                # Wrap process_single_email_body so a per-email exception
+                # doesn't bubble up and skip _mark_email_processed below —
+                # otherwise the worker reprocesses the same broken email
+                # on every tick (this happened with the abtns2 bug + the
+                # forwarded "Michael Radley call back" email which got
+                # stuck in a loop).
+                try:
+                    result = self.process_single_email_body(email_body, user_context=user_ctx)
+                    outcome, outcome_detail = result if result else ('error', 'No result returned')
+                except Exception as _e:
+                    import traceback
+                    traceback.print_exc()
+                    outcome = 'error'
+                    outcome_detail = f'unhandled exception: {type(_e).__name__}: {str(_e)[:300]}'
+                    print(f"  ⚠️ Per-email exception for {raw_subject[:60]!r}: {_e}")
                 processed_count += 1
 
-                self._mark_email_processed(
-                    message_id, msg_id_str,
-                    connection_id=user_ctx.connection_id, user_id=user_ctx.user_id,
-                    sender_email=sender_addr, sender_name=sender_raw,
-                    subject=raw_subject,
-                    outcome=outcome, outcome_detail=outcome_detail,
-                )
+                # ALWAYS mark processed — even on error — so the dedup
+                # cache learns about this email and the loop moves on.
+                # outcome='error' is preserved in processed_emails for audit.
+                try:
+                    self._mark_email_processed(
+                        message_id, msg_id_str,
+                        connection_id=user_ctx.connection_id, user_id=user_ctx.user_id,
+                        sender_email=sender_addr, sender_name=sender_raw,
+                        subject=raw_subject,
+                        outcome=outcome, outcome_detail=outcome_detail,
+                    )
+                except Exception as _mark_err:
+                    print(f"  ⚠️ _mark_email_processed failed for {message_id}: {_mark_err}")
 
-                mail.uid('store', msg_id, '+FLAGS', '\\Seen')
+                try:
+                    mail.uid('store', msg_id, '+FLAGS', '\\Seen')
+                except Exception as _seen_err:
+                    print(f"  ⚠️ Failed to mark seen flag: {_seen_err}")
 
             print(f"  Processed {processed_count} emails ({skipped_dupes} duplicates skipped) for {user_ctx.email_address}")
 
