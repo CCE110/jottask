@@ -148,6 +148,82 @@ def _filter_lead_junk(text):
     return '\n'.join(kept).strip()
 
 
+# ── Lead tags ────────────────────────────────────────────────────────────────
+# Display metadata for the 5 tag types defined in migration 031. (label, color,
+# bg, border) drives the pill rendering in the email + lead detail page.
+LEAD_TAG_META = {
+    'v2g':          ('⚡ V2G Ready',    '#7c3aed', '#ede9fe', '#c4b5fd'),
+    'three_phase':  ('🔌 3 Phase',      '#0369a1', '#dbeafe', '#93c5fd'),
+    'single_phase': ('🔌 Single Phase', '#0891b2', '#cffafe', '#67e8f9'),
+    'battery':      ('🔋 Battery',      '#10b981', '#d1fae5', '#6ee7b7'),
+    'ev_charger':   ('🚗 EV Charger',   '#f59e0b', '#fef3c7', '#fcd34d'),
+}
+LEAD_TAG_KEYS = list(LEAD_TAG_META.keys())
+
+# Patterns used by the retrospective scan (only v2g + three_phase + single_phase
+# get auto-tagged from existing notes; battery + ev_charger are checkbox-only)
+LEAD_TAG_SCAN_PATTERNS = {
+    'v2g':          [r'\bv2g\b', r'vehicle[\s\-]?to[\s\-]?grid'],
+    'three_phase':  [r'\bthree[\s\-]?phase\b', r'\b3[\s\-]?phase\b'],
+    'single_phase': [r'\bsingle[\s\-]?phase\b', r'\b1[\s\-]?phase\b'],
+}
+
+
+def _fetch_task_tags(task_id):
+    """Return a set of tag strings currently set on this task."""
+    try:
+        r = supabase.table('lead_tags').select('tag').eq('task_id', task_id).execute()
+        return {row['tag'] for row in (r.data or [])}
+    except Exception as e:
+        print(f"[lead_tags] fetch failed for {task_id[:8]}: {e}")
+        return set()
+
+
+def _set_task_tag(task_id, tag, enabled):
+    """Add or remove a single tag on a task. Idempotent."""
+    if tag not in LEAD_TAG_META:
+        raise ValueError(f"unknown tag: {tag!r}")
+    if enabled:
+        try:
+            supabase.table('lead_tags').insert({'task_id': task_id, 'tag': tag}).execute()
+        except Exception as e:
+            # Unique violation — already tagged. Treat as success.
+            if '23505' not in str(e) and 'duplicate' not in str(e).lower():
+                raise
+    else:
+        supabase.table('lead_tags').delete()\
+            .eq('task_id', task_id).eq('tag', tag).execute()
+
+
+def _render_tag_pill_html(tag, *, size='sm'):
+    """Render one tag as a coloured HTML pill. Used in the reminder email
+    header and the lead detail tags section."""
+    meta = LEAD_TAG_META.get(tag)
+    if not meta:
+        return ''
+    label, fg, bg, border = meta
+    pad = '3px 9px' if size == 'sm' else '5px 12px'
+    fs = '11px' if size == 'sm' else '13px'
+    return (
+        f'<span style="display:inline-block;background:{bg};color:{fg};'
+        f'border:1px solid {border};padding:{pad};border-radius:14px;'
+        f'font-size:{fs};font-weight:700;margin:2px 4px 2px 0;'
+        f'white-space:nowrap;">{label}</span>'
+    )
+
+
+def _render_tag_pills_block(tags):
+    """Render a row of pills for the given iterable of tag keys (header use)."""
+    if not tags:
+        return ''
+    # Preserve canonical order regardless of input order
+    ordered = [t for t in LEAD_TAG_KEYS if t in tags]
+    if not ordered:
+        return ''
+    pills = ''.join(_render_tag_pill_html(t) for t in ordered)
+    return f'<div style="margin:6px 0 0;line-height:1.9">{pills}</div>'
+
+
 # Shopping list secret token (allows access without login)
 SHOPPING_LIST_TOKEN = os.getenv('SHOPPING_LIST_TOKEN', '')
 SHOPPING_LIST_USER_EMAIL = os.getenv('SHOPPING_LIST_USER_EMAIL', '')
@@ -4567,6 +4643,14 @@ def _render_lead_detail(task_id):
 
     tomorrow = (datetime.now(aest) + timedelta(days=1)).strftime('%Y-%m-%d')
 
+    # Lead tags — for the checkbox UI on this page. Each entry: (key, label,
+    # currently_set). Template renders the checkboxes and the JS below saves
+    # via AJAX to /task/<id>/tags on toggle.
+    current_tags = _fetch_task_tags(task_id)
+    tag_options = [
+        (k, LEAD_TAG_META[k][0], k in current_tags) for k in LEAD_TAG_KEYS
+    ]
+
     return render_template_string(r"""<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -4652,6 +4736,22 @@ textarea:focus{border-color:#1e40af;box-shadow:0 0 0 3px rgba(30,64,175,.1)}
 <div class="card" id="custReqCard" style="{% if not cust_text %}display:none;{% endif %}">
   <div class="sec">Customer Requirements</div>
   <div class="req-box" id="custReqBox">{{ cust_text }}</div>
+</div>
+
+<!-- Tags -->
+<div class="card">
+  <div class="sec">Tags</div>
+  <div id="tagsBox" style="display:flex;flex-wrap:wrap;gap:10px 18px;">
+    {% for key, label, checked in tag_options %}
+    <label style="display:inline-flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;user-select:none;">
+      <input type="checkbox" class="tag-cb" data-tag="{{ key }}"
+             {% if checked %}checked{% endif %}
+             style="width:18px;height:18px;cursor:pointer;accent-color:#1e40af;">
+      <span>{{ label }}</span>
+    </label>
+    {% endfor %}
+  </div>
+  <div id="tagsStatus" style="font-size:12px;color:#9ca3af;margin-top:8px;min-height:14px;"></div>
 </div>
 
 <!-- My Notes -->
@@ -4740,6 +4840,36 @@ if(sp.get('reminder_set')==='1'){
   form.addEventListener('submit',function(e){ e.preventDefault(); _save(); });
 })();
 
+// Tags: AJAX toggle on each checkbox. POSTs to /task/<id>/tags with
+// {tag, enabled}. Optimistic — flips immediately; on server error reverts
+// the checkbox and shows a brief status hint.
+(function(){
+  var taskId = '{{ task_id }}';
+  var status = document.getElementById('tagsStatus');
+  document.querySelectorAll('.tag-cb').forEach(function(cb){
+    cb.addEventListener('change', async function(){
+      var tag = cb.dataset.tag;
+      var enabled = cb.checked;
+      if(status) status.textContent = 'Saving…';
+      try {
+        var r = await fetch('/task/'+taskId+'/tags', {
+          method:'POST',
+          headers:{'Content-Type':'application/json'},
+          body: JSON.stringify({tag: tag, enabled: enabled})
+        });
+        if(!r.ok) throw new Error('HTTP '+r.status);
+        var data = await r.json();
+        if(!data.ok) throw new Error(data.error || 'save failed');
+        if(status) status.textContent = (enabled ? 'Tagged ' : 'Untagged ') + tag + ' ✓';
+        setTimeout(function(){ if(status) status.textContent=''; }, 1800);
+      } catch (e) {
+        cb.checked = !enabled;  // revert
+        if(status) status.textContent = 'Save failed — try again';
+      }
+    });
+  });
+})();
+
 // MY NOTES: AJAX save + auto-refresh from PipeReply (no page reload).
 // Server pulls fresh contact + CRM notes, re-runs summarise(), and returns
 // the rebuilt cust_text so we can swap it into the req-box in place.
@@ -4796,6 +4926,7 @@ if(sp.get('reminder_set')==='1'){
         cust_text=cust_text, notes_raw=notes_raw,
         lead_status=lead_status, statuses=STATUSES,
         task_id=task_id, tomorrow=tomorrow, sub_note=sub_note,
+        tag_options=tag_options,
     )
 
 
@@ -4975,6 +5106,172 @@ def rebuild_task_from_pipereply(task_id):
         return (f'<div style="font-family:sans-serif;padding:40px;text-align:center">'
                 f'<h3>Rebuild failed</h3><p>{str(e)[:300]}</p>'
                 f'<p><a href="/tasks/{task_id}/edit">Edit task</a></p></div>'), 500
+
+
+@app.route('/task/<task_id>/tags', methods=['GET', 'POST'])
+def task_tags(task_id):
+    """GET → return the tag set for a task. POST → toggle one tag.
+
+    Body for POST: {"tag": "v2g", "enabled": true}.
+    Returns {ok, tags: ['v2g', ...]} on either verb.
+    """
+    if request.method == 'POST':
+        body = request.get_json(silent=True) or {}
+        tag = (body.get('tag') or '').strip()
+        enabled = bool(body.get('enabled'))
+        if tag not in LEAD_TAG_META:
+            return jsonify({'ok': False, 'error': f'unknown tag {tag!r}'}), 400
+        try:
+            _set_task_tag(task_id, tag, enabled)
+        except Exception as e:
+            return jsonify({'ok': False, 'error': str(e)[:200]}), 500
+    tags = sorted(_fetch_task_tags(task_id))
+    return jsonify({'ok': True, 'tags': tags})
+
+
+@app.route('/admin/leads-tag/retroscan', methods=['POST'])
+def admin_leads_tag_retroscan():
+    """Walk every DSW Solar task, regex-scan its description for tag
+    keywords (V2G / vehicle-to-grid / three-phase / single-phase / 1-phase /
+    3-phase) and insert matching rows into lead_tags. Idempotent — the
+    UNIQUE(task_id, tag) constraint silently skips already-tagged rows.
+
+    Returns counts per tag + a list of (task_id, tag) pairs added.
+    """
+    # Auth: simple internal-API-key gate or admin login
+    api_key = request.headers.get('X-Internal-API-Key', '')
+    expected = os.getenv('INTERNAL_API_KEY', 'jottask-internal-2026')
+    if api_key != expected and 'user_id' not in session:
+        return jsonify({'error': 'auth required'}), 401
+
+    compiled = {tag: [re.compile(p, re.IGNORECASE) for p in pats]
+                for tag, pats in LEAD_TAG_SCAN_PATTERNS.items()}
+
+    res = supabase.table('tasks').select('id, description')\
+        .eq('category', 'DSW Solar').execute()
+    tasks = res.data or []
+
+    by_tag = {tag: 0 for tag in LEAD_TAG_SCAN_PATTERNS}
+    added = []
+    skipped = 0
+    for t in tasks:
+        desc = t.get('description') or ''
+        if not desc:
+            continue
+        for tag, regexes in compiled.items():
+            if any(rx.search(desc) for rx in regexes):
+                try:
+                    supabase.table('lead_tags').insert(
+                        {'task_id': t['id'], 'tag': tag}).execute()
+                    by_tag[tag] += 1
+                    added.append({'task_id': t['id'], 'tag': tag})
+                except Exception as e:
+                    if '23505' in str(e) or 'duplicate' in str(e).lower():
+                        skipped += 1  # already tagged on a prior run
+                    else:
+                        print(f"[retroscan] insert error for {t['id'][:8]}/{tag}: {e}")
+
+    return jsonify({
+        'ok': True,
+        'tasks_scanned': len(tasks),
+        'tags_added':    sum(by_tag.values()),
+        'by_tag':        by_tag,
+        'already_tagged_skipped': skipped,
+        'added':         added,
+    })
+
+
+@app.route('/admin/leads-by-tag', methods=['GET'])
+@login_required
+def admin_leads_by_tag():
+    """List every DSW Solar task with the given tag, formatted for batch
+    outreach (e.g. "all V2G leads when the SolaX V2G charger lands").
+
+    Query: ?tag=v2g  (defaults to v2g if omitted)
+    """
+    tag = (request.args.get('tag') or 'v2g').strip()
+    if tag not in LEAD_TAG_META:
+        return f'<p>Unknown tag: <code>{tag}</code>. Valid: {", ".join(LEAD_TAG_KEYS)}</p>', 400
+
+    # Fetch task_ids for this tag, then hydrate from tasks
+    tag_rows = supabase.table('lead_tags').select('task_id, created_at')\
+        .eq('tag', tag).order('created_at', desc=True).execute().data or []
+    task_ids = [r['task_id'] for r in tag_rows]
+    if not task_ids:
+        leads = []
+    else:
+        leads = supabase.table('tasks')\
+            .select('id, title, client_name, client_phone, client_email, '
+                    'lead_status, status, due_date, created_at')\
+            .in_('id', task_ids).order('created_at', desc=True)\
+            .execute().data or []
+
+    label = LEAD_TAG_META[tag][0]
+    rows_html = ''
+    for t in leads:
+        name = t.get('client_name') or t.get('title') or 'Unknown'
+        phone = t.get('client_phone') or ''
+        email = t.get('client_email') or ''
+        ls = t.get('lead_status') or t.get('status') or ''
+        rows_html += (
+            f'<tr>'
+            f'<td><a href="/task/{t["id"]}" target="_blank">{name}</a></td>'
+            f'<td>{phone or "—"}</td>'
+            f'<td>{email or "—"}</td>'
+            f'<td>{ls}</td>'
+            f'<td>{(t.get("created_at") or "")[:10]}</td>'
+            f'</tr>'
+        )
+
+    tag_links = ''.join(
+        f'<a href="?tag={k}" style="margin-right:8px;padding:4px 10px;'
+        f'border-radius:14px;background:{LEAD_TAG_META[k][2]};'
+        f'color:{LEAD_TAG_META[k][1]};text-decoration:none;font-size:13px;'
+        f'font-weight:700;border:1px solid {LEAD_TAG_META[k][3]};'
+        f'{"opacity:1" if k == tag else "opacity:0.55"}">{LEAD_TAG_META[k][0]}</a>'
+        for k in LEAD_TAG_KEYS
+    )
+
+    emails = [l.get('client_email') for l in leads if l.get('client_email')]
+    emails_csv = ', '.join(emails)
+
+    return render_template_string(r"""<!DOCTYPE html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Leads by tag — {{ label }}</title>
+<style>
+  body{font-family:-apple-system,sans-serif;background:#f1f5f9;margin:0;padding:24px;color:#111}
+  .wrap{max-width:1100px;margin:0 auto}
+  h1{margin:0 0 14px;font-size:22px}
+  .tag-row{margin:0 0 18px;line-height:2}
+  table{width:100%;border-collapse:collapse;background:#fff;border-radius:10px;overflow:hidden;box-shadow:0 1px 3px rgba(0,0,0,.08)}
+  th,td{padding:10px 14px;text-align:left;font-size:14px;border-bottom:1px solid #e5e7eb}
+  th{background:#f8fafc;font-size:12px;text-transform:uppercase;color:#6b7280;letter-spacing:.5px}
+  tr:last-child td{border-bottom:none}
+  .meta{color:#6b7280;font-size:13px;margin-bottom:6px}
+  details{margin-top:18px;background:#fff;border-radius:10px;padding:12px 16px;box-shadow:0 1px 3px rgba(0,0,0,.08)}
+  summary{cursor:pointer;font-weight:700;font-size:14px;color:#1e40af}
+  textarea{width:100%;min-height:90px;padding:8px;font-family:monospace;font-size:12px;border:1px solid #e5e7eb;border-radius:6px;margin-top:8px;color:#111}
+</style></head><body>
+<div class="wrap">
+  <h1>Leads tagged {{ label }}</h1>
+  <div class="tag-row">{{ tag_links | safe }}</div>
+  <div class="meta">{{ count }} lead(s) · sorted newest first</div>
+  {% if leads %}
+  <table>
+    <thead><tr><th>Lead</th><th>Phone</th><th>Email</th><th>Status</th><th>Created</th></tr></thead>
+    <tbody>{{ rows | safe }}</tbody>
+  </table>
+  <details>
+    <summary>Copy email addresses ({{ email_count }} with email)</summary>
+    <textarea readonly onclick="this.select()">{{ emails_csv }}</textarea>
+  </details>
+  {% else %}
+  <p style="color:#6b7280">No leads tagged with this yet.</p>
+  {% endif %}
+</div></body></html>""",
+        label=label, tag_links=tag_links, count=len(leads),
+        rows=rows_html, leads=leads, email_count=len(emails), emails_csv=emails_csv,
+    )
 
 
 @app.route('/task/<task_id>/notes', methods=['POST'])

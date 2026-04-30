@@ -784,6 +784,39 @@ def send_email(name, phone, addr, src, summary, crm_url, os_url, task_id=None, l
     os_btn = '<a href="'+os_url+'" style="display:inline-block;background:#f59e0b;color:white;padding:10px 16px;border-radius:8px;text-decoration:none;font-weight:600;font-size:13px">&#9728;&#65039; OpenSolar</a>' if os_url else ""
     badge_text = STATUS_LABELS.get(lead_status, '🔵 NEW LEAD') if lead_status else '🔵 NEW LEAD'
 
+    # ── Lead tag pills ──────────────────────────────────────────────────────
+    # Look up any tags set on this task and render coloured pills in the
+    # header below the source badge. Best-effort — silent skip on any error
+    # so a tagging glitch can't block a reminder going out.
+    tag_pills_html = ''
+    if task_id:
+        try:
+            from supabase import create_client
+            from db_keys import get_admin_key
+            _sb = create_client(os.getenv('SUPABASE_URL'), get_admin_key())
+            _tag_rows = _sb.table('lead_tags').select('tag').eq('task_id', task_id).execute().data or []
+            _tags = {row['tag'] for row in _tag_rows}
+            _TAG_META = {
+                'v2g':          ('⚡ V2G Ready',    '#7c3aed', '#ede9fe', '#c4b5fd'),
+                'three_phase':  ('🔌 3 Phase',      '#0369a1', '#dbeafe', '#93c5fd'),
+                'single_phase': ('🔌 Single Phase', '#0891b2', '#cffafe', '#67e8f9'),
+                'battery':      ('🔋 Battery',      '#10b981', '#d1fae5', '#6ee7b7'),
+                'ev_charger':   ('🚗 EV Charger',   '#f59e0b', '#fef3c7', '#fcd34d'),
+            }
+            ordered = [k for k in ('v2g','three_phase','single_phase','battery','ev_charger') if k in _tags]
+            if ordered:
+                pills = ''.join(
+                    f'<span style="display:inline-block;background:{_TAG_META[t][2]};'
+                    f'color:{_TAG_META[t][1]};border:1px solid {_TAG_META[t][3]};'
+                    f'padding:3px 10px;border-radius:14px;font-size:11px;'
+                    f'font-weight:700;margin:2px 4px 2px 0;white-space:nowrap;">'
+                    f'{_TAG_META[t][0]}</span>'
+                    for t in ordered
+                )
+                tag_pills_html = f'<p style="margin:8px 0 0">{pills}</p>'
+        except Exception as _tag_err:
+            print(f'[email tags] lookup failed for {task_id}: {_tag_err}')
+
     appt_banner = ''
     if appointment:
         _when = appointment.get('when') or 'TBC'
@@ -811,6 +844,7 @@ def send_email(name, phone, addr, src, summary, crm_url, os_url, task_id=None, l
         '</div>'
         '<p style="opacity:.8;margin:4px 0 0">'+now+' &middot; '+src+'</p>'
         +('<p style="margin:6px 0 0"><span style="display:inline-block;background:rgba(255,255,255,0.18);padding:4px 12px;border-radius:16px;font-size:12px;font-weight:600">Lead Source: '+source_badge_text+'</span></p>' if source_badge_text else '')
+        +tag_pills_html
         +'</div>'
         +appt_banner
         +'<div style="padding:20px;border:1px solid #e2e8f0">'
