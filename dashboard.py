@@ -6342,6 +6342,40 @@ def admin_resend_reminders():
     })
 
 
+@app.route('/admin/tasks/reset-reminder-flags', methods=['POST'])
+def admin_tasks_reset_reminder_flags():
+    """Targeted reset of reminder_sent_at=NULL for a specific list of task_ids.
+
+    Used to manually unstick reminders that got blocked by a throttle gate
+    (e.g. the pre-deploy "already reminded today" issue from 2026-04-30).
+    Next scheduler tick will pick them up and fire normally.
+
+    Auth: same X-Internal-API-Key pattern as the retroscan/diagnostic
+    endpoints, OR a logged-in session. Body: {"task_ids": ["uuid", ...]}.
+    """
+    api_key = request.headers.get('X-Internal-API-Key', '')
+    expected = os.getenv('INTERNAL_API_KEY', 'jottask-internal-2026')
+    if api_key != expected and 'user_id' not in session:
+        return jsonify({'error': 'auth required'}), 401
+
+    body = request.get_json(silent=True) or {}
+    task_ids = [i for i in (body.get('task_ids') or []) if isinstance(i, str) and i.strip()]
+    if not task_ids:
+        return jsonify({'error': 'task_ids required'}), 400
+
+    reset = []
+    errors = []
+    for tid in task_ids:
+        try:
+            r = supabase.table('tasks').update({'reminder_sent_at': None})\
+                .eq('id', tid).execute()
+            reset.append(tid)
+        except Exception as e:
+            errors.append({'task_id': tid, 'error': str(e)[:200]})
+    return jsonify({'ok': not errors, 'reset_count': len(reset),
+                    'reset': reset, 'errors': errors})
+
+
 @app.route('/admin/reset-reminders', methods=['POST'])
 @admin_required
 def admin_reset_reminders():

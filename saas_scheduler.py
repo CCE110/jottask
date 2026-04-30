@@ -543,7 +543,6 @@ def check_and_send_reminders():
         skipped_future = 0
         skipped_throttle = 0
         skipped_overdue_throttle = 0
-        already_reminded_today = 0
         # 4h floor: never re-fire a reminder within 4 hours of the last one.
         # Catches both the "immediately after reschedule" case (we stamp
         # reminder_sent_at=now on button click) and generic spam prevention.
@@ -653,9 +652,18 @@ def check_and_send_reminders():
                 if not needs_reminder:
                     continue
 
-                # ── 24h ceiling on overdue re-reminders ──
-                # Overdue tasks used to ping every 4h forever once they fell
-                # past due. Cap at one overdue re-reminder per 24h.
+                # ── 24h ceiling on OVERDUE re-reminders only ──
+                # Overdue tasks used to ping every 4h forever; cap at one
+                # overdue re-reminder per 24h.
+                #
+                # Pre-due windows (is_overdue=False) deliberately bypass this
+                # ceiling AND the previous "if last_reminded and not is_overdue
+                # then skip" gate — the latter was silently dropping today's
+                # pre-due fires for tasks that got an overdue ping yesterday
+                # (e.g. last night at 22:47 AEST burning the 8am/9am windows
+                # the next morning). Pre-due spam protection comes solely from
+                # the 4h floor above, which catches a single pre-due window
+                # firing repeatedly within its own reminder_minutes_before.
                 if last_reminded and is_overdue:
                     try:
                         last_dt = datetime.fromisoformat(last_reminded.replace('Z', '+00:00'))
@@ -664,12 +672,6 @@ def check_and_send_reminders():
                             continue
                     except Exception:
                         pass
-
-                # ── Check if already reminded today (first-time only, not re-reminders) ──
-                if last_reminded and not is_overdue:
-                    # Already got a first reminder and not overdue — don't spam
-                    already_reminded_today += 1
-                    continue
 
                 # ── Build and send the email ──
                 recipient = _resolve_recipient(user)
@@ -723,8 +725,7 @@ def check_and_send_reminders():
         # ── Summary ──
         print(f"   Reminders: {len(all_tasks)} checked, {sent_count} sent, "
               f"{skipped_future} future, {skipped_throttle} throttled (<4h), "
-              f"{skipped_overdue_throttle} overdue-throttled (<24h), "
-              f"{already_reminded_today} already reminded")
+              f"{skipped_overdue_throttle} overdue-throttled (<24h)")
         return sent_count
 
     except Exception as e:
