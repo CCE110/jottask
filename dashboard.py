@@ -5193,6 +5193,89 @@ def admin_leads_tag_retroscan():
     }), (200 if overall_ok else 500)
 
 
+@app.route('/admin/reminder-diagnostic', methods=['GET'])
+def admin_reminder_diagnostic():
+    """Diagnostic JSON for "did the reminder loop fire?" investigations.
+
+    Auth: same X-Internal-API-Key header pattern as the retroscan endpoint
+    (default 'jottask-internal-2026' if INTERNAL_API_KEY env unset) OR a
+    logged-in session.
+
+    Returns:
+      • email_events:     all email_sent + email_failed system_events in
+                          the [from_iso, to_iso] window (default last 24h),
+                          newest first, max 200.
+      • pending_due_today: every pending DSW Solar task with due_date=today
+                          (AEST) including its reminder_sent_at and a
+                          computed throttle_blocks_now flag.
+    """
+    api_key = request.headers.get('X-Internal-API-Key', '')
+    expected = os.getenv('INTERNAL_API_KEY', 'jottask-internal-2026')
+    if api_key != expected and 'user_id' not in session:
+        return jsonify({'error': 'auth required'}), 401
+
+    aest = pytz.timezone('Australia/Brisbane')
+    now_utc = datetime.now(pytz.UTC)
+
+    from_iso = request.args.get('from') or (now_utc - timedelta(hours=24)).isoformat()
+    to_iso   = request.args.get('to')   or now_utc.isoformat()
+
+    # Email events
+    ev_q = supabase.table('system_events')\
+        .select('created_at, event_type, category, status, error_detail, metadata')\
+        .in_('event_type', ['email_sent', 'email_failed'])\
+        .gte('created_at', from_iso).lte('created_at', to_iso)\
+        .order('created_at', desc=True).limit(200).execute()
+    ev_rows = ev_q.data or []
+    sent_count   = sum(1 for r in ev_rows if r['event_type'] == 'email_sent')
+    failed_count = sum(1 for r in ev_rows if r['event_type'] == 'email_failed')
+    by_category = {}
+    for r in ev_rows:
+        c = r.get('category') or '-'
+        by_category[c] = by_category.get(c, 0) + 1
+
+    # Pending DSW Solar tasks due today
+    today_aest = datetime.now(aest).date().isoformat()
+    four_hours_ago = (now_utc - timedelta(hours=4)).isoformat()
+    twentyfour_hours_ago = (now_utc - timedelta(hours=24)).isoformat()
+
+    t_q = supabase.table('tasks')\
+        .select('id, title, due_date, due_time, status, lead_status, reminder_sent_at, client_name, category')\
+        .eq('status', 'pending').eq('category', 'DSW Solar')\
+        .eq('due_date', today_aest)\
+        .order('due_time').execute()
+    pending = t_q.data or []
+    for t in pending:
+        rem = t.get('reminder_sent_at')
+        t['four_hour_throttle_blocks'] = bool(rem and rem >= four_hours_ago)
+        t['twentyfour_hour_throttle_blocks'] = bool(rem and rem >= twentyfour_hours_ago)
+
+    # Heartbeats in same window — confirms worker was alive
+    hb_q = supabase.table('system_events')\
+        .select('created_at, metadata')\
+        .eq('event_type', 'heartbeat')\
+        .gte('created_at', from_iso).lte('created_at', to_iso)\
+        .order('created_at', desc=True).limit(20).execute()
+    hb_rows = hb_q.data or []
+
+    return jsonify({
+        'window':           {'from': from_iso, 'to': to_iso},
+        'now_utc':          now_utc.isoformat(),
+        'now_aest':         datetime.now(aest).isoformat(),
+        'today_aest':       today_aest,
+        'email_events': {
+            'total':        len(ev_rows),
+            'sent':         sent_count,
+            'failed':       failed_count,
+            'by_category':  by_category,
+            'rows':         ev_rows,
+        },
+        'pending_dsw_due_today': pending,
+        'recent_heartbeats':    hb_rows[:5],
+        'heartbeat_count':      len(hb_rows),
+    })
+
+
 @app.route('/admin/leads-by-tag', methods=['GET'])
 @login_required
 def admin_leads_by_tag():
