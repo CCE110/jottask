@@ -5152,33 +5152,45 @@ def admin_leads_tag_retroscan():
     tasks = res.data or []
 
     by_tag = {tag: 0 for tag in LEAD_TAG_SCAN_PATTERNS}
+    matched_by_tag = {tag: 0 for tag in LEAD_TAG_SCAN_PATTERNS}
     added = []
     skipped = 0
+    insert_errors = []  # surface non-duplicate failures so a missing table
+                        # doesn't silently look like a successful zero-tag run
     for t in tasks:
         desc = t.get('description') or ''
         if not desc:
             continue
         for tag, regexes in compiled.items():
             if any(rx.search(desc) for rx in regexes):
+                matched_by_tag[tag] += 1
                 try:
                     supabase.table('lead_tags').insert(
                         {'task_id': t['id'], 'tag': tag}).execute()
                     by_tag[tag] += 1
                     added.append({'task_id': t['id'], 'tag': tag})
                 except Exception as e:
-                    if '23505' in str(e) or 'duplicate' in str(e).lower():
-                        skipped += 1  # already tagged on a prior run
+                    msg = str(e)
+                    if '23505' in msg or 'duplicate' in msg.lower():
+                        skipped += 1
                     else:
+                        # Capture up to 5 distinct error shapes for the response
+                        snippet = msg[:200]
+                        if snippet not in insert_errors and len(insert_errors) < 5:
+                            insert_errors.append(snippet)
                         print(f"[retroscan] insert error for {t['id'][:8]}/{tag}: {e}")
 
+    overall_ok = not insert_errors
     return jsonify({
-        'ok': True,
-        'tasks_scanned': len(tasks),
-        'tags_added':    sum(by_tag.values()),
-        'by_tag':        by_tag,
-        'already_tagged_skipped': skipped,
-        'added':         added,
-    })
+        'ok':                       overall_ok,
+        'tasks_scanned':            len(tasks),
+        'regex_matches_by_tag':     matched_by_tag,
+        'tags_added':               sum(by_tag.values()),
+        'inserted_by_tag':          by_tag,
+        'already_tagged_skipped':   skipped,
+        'insert_errors':            insert_errors,
+        'added':                    added if overall_ok else added[:50],
+    }), (200 if overall_ok else 500)
 
 
 @app.route('/admin/leads-by-tag', methods=['GET'])
