@@ -6459,11 +6459,15 @@ def admin_create_opensolar_for_task(task_id):
     except Exception as e:
         return jsonify({'error': f'could not load dsw_lead_poller: {e}'}), 500
 
-    # Pull fresh contact
+    # Pull fresh contact (web's PipeReply token may return a stripped-down
+    # view — phone/email blank — so allow body-level overrides to win).
     full = dsw.get_full(cid) or {}
-    name = ' '.join(w.capitalize() for w in (full.get('contactName') or t.get('client_name') or 'Unknown').split())
-    phone = full.get('phone') or t.get('client_phone') or ''
-    email = full.get('email') or t.get('client_email') or ''
+    overrides = body.get('overrides') or {}
+    name = ' '.join(w.capitalize() for w in (
+        overrides.get('name') or full.get('contactName') or t.get('client_name') or 'Unknown'
+    ).split())
+    phone = (overrides.get('phone') or full.get('phone') or t.get('client_phone') or '').strip()
+    email = (overrides.get('email') or full.get('email') or t.get('client_email') or '').strip()
     address = addr_override['address'] or full.get('address1') or ''
     city = addr_override['city']   or full.get('city')       or ''
     state = addr_override['state']  or full.get('state')      or ''
@@ -6527,16 +6531,26 @@ def admin_create_opensolar_for_task(task_id):
         sub_m = re.search(r'^Sub-note:\s*(.+)$', new_desc, re.MULTILINE)
         sub_note = sub_m.group(1).strip() if sub_m else ''
 
-        # Build canonical header block (mirrors dsw_lead_poller.make_task)
+        # Build canonical header block (mirrors dsw_lead_poller.make_task).
+        # Body overrides win over PipeReply data so we can patch through
+        # cases where web's token returns a stripped contact.
+        override_summary = (overrides.get('summary') or '').strip()
+        override_badge   = (overrides.get('source_badge') or '').strip()
+        override_referred_by = (overrides.get('referred_by') or '').strip()
         try:
             src = dsw.source(full) or 'Referral'
-            summary, referred_by = dsw.summarise(name, phone, addr_full, src,
-                                                 full.get('notes', '') or '',
-                                                 full.get('customFields', []) or [])
-            badge = dsw.source_badge(src, referred_by)
+            if override_summary:
+                summary, referred_by = override_summary, override_referred_by
+            else:
+                summary, referred_by = dsw.summarise(name, phone, addr_full, src,
+                                                     full.get('notes', '') or '',
+                                                     full.get('customFields', []) or [])
+            badge = override_badge or dsw.source_badge(src, referred_by)
         except Exception as _se:
             print(f'[create-opensolar] summarise failed during rebuild: {_se}')
-            summary, badge, src = '', '', 'Referral'
+            summary = override_summary
+            badge   = override_badge or '📋 Referral'
+            src     = 'Referral'
 
         email_line  = f"Email: {email}\n" if email else ''
         source_line = f"Source: {badge}\n" if badge else ''
