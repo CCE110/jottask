@@ -443,6 +443,34 @@ def _expand_street_abbrevs(addr):
     return out
 
 
+def join_address_parts(*parts):
+    """Join address components without duplicate tokens.
+
+    Handles the common PipeReply case where address1 already contains the
+    suburb (e.g. "59 Hazelton Street, Riverhills") AND city is also set
+    ("Riverhills") — naive ", ".join() produces a doubled "Riverhills,
+    Riverhills". Each part is split on commas, then deduped case-insensitively
+    while preserving the input order before re-joining.
+
+    Whitespace and empty fragments are stripped.
+    """
+    seen = set()
+    out = []
+    for p in parts:
+        if not p:
+            continue
+        for piece in str(p).split(','):
+            piece = piece.strip()
+            if not piece:
+                continue
+            key = piece.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(piece)
+    return ', '.join(out)
+
+
 def make_opensolar(name, phone, email, address, city, state, postcode,
                    first_name=None, last_name=None):
     try:
@@ -463,9 +491,11 @@ def make_opensolar(name, phone, email, address, city, state, postcode,
         first = (first_name or (parts[0] if parts else 'Unknown')).strip()
         last  = (last_name  or (' '.join(parts[1:]) if len(parts) > 1 else '')).strip()
 
-        # Build full address string — OpenSolar geocodes from this
+        # Build full address string — OpenSolar geocodes from this. Use
+        # join_address_parts so a suburb baked into address1 doesn't appear
+        # twice when city is also set.
         clean_addr = _expand_street_abbrevs(address or '')
-        full_addr = ", ".join(filter(None, [clean_addr, city, state, postcode]))
+        full_addr = join_address_parts(clean_addr, city, state, postcode)
 
         print(f"[OpenSolar] Address components: street='{address}' city='{city}' state='{state}' postcode='{postcode}'")
         print(f"[OpenSolar] Full address string: '{full_addr}'")
@@ -937,7 +967,7 @@ def process(contact, task_id=None, lead_status=None, is_new_contact=True):
             address, city, state, postcode = parsed
             print(f"[Address] Recovered from CRM notes: {address}, {city}, {state} {postcode}")
 
-    addr = ", ".join(filter(None,[address,city,state,postcode]))
+    addr = join_address_parts(address, city, state, postcode)
 
     if is_reminder:
         print(f"[Pipereply] Resending reminder: {name} ({cid[:8]})")
@@ -1091,7 +1121,7 @@ def send_dsw_reminder_for_task(task, reminder_tag):
                     if parsed:
                         address, city, state, postcode = parsed
 
-                addr = ', '.join(filter(None, [address, city, state, postcode]))
+                addr = join_address_parts(address, city, state, postcode)
                 os_url = get_os_url_from_crm(cid) or ''
 
                 src = source(full)

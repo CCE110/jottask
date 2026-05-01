@@ -6541,7 +6541,9 @@ def admin_create_opensolar_for_task(task_id):
     city = addr_override['city']   or full.get('city')       or ''
     state = addr_override['state']  or full.get('state')      or ''
     postcode = addr_override['postcode'] or full.get('postalCode') or ''
-    addr_full = ', '.join(p for p in (address, city, state, postcode) if p)
+    # Use dsw.join_address_parts so a suburb baked into address1 doesn't
+    # appear twice when city is also set ("Hazelton St, Riverhills" + "Riverhills").
+    addr_full = dsw.join_address_parts(address, city, state, postcode)
 
     # Split firstName/lastName for OpenSolar contact
     parts = name.split()
