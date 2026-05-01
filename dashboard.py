@@ -6471,16 +6471,30 @@ def admin_create_opensolar_for_task(task_id):
     first_name = full.get('firstName') or (parts[0] if parts else 'Unknown')
     last_name  = full.get('lastName')  or (' '.join(parts[1:]) if len(parts) > 1 else '')
 
-    # 1. Create OpenSolar project
+    # 1. Create OpenSolar project. make_opensolar returns (pid, url) in that
+    # order; capture stdout so we can surface the underlying error if it
+    # returns (None, None) — otherwise the caller has no diagnostic.
+    import io, contextlib
+    _buf = io.StringIO()
     try:
-        os_url, _project_id = dsw.make_opensolar(
-            name, phone, email, address, city, state, postcode,
-            first_name=first_name, last_name=last_name,
-        )
+        with contextlib.redirect_stdout(_buf):
+            project_id, os_url = dsw.make_opensolar(
+                name, phone, email, address, city, state, postcode,
+                first_name=first_name, last_name=last_name,
+            )
     except Exception as e:
-        return jsonify({'error': f'make_opensolar failed: {e}'}), 500
+        return jsonify({
+            'error': f'make_opensolar raised: {e}',
+            'stdout': _buf.getvalue()[-800:],
+        }), 500
     if not os_url:
-        return jsonify({'error': 'make_opensolar returned no URL'}), 500
+        return jsonify({
+            'error':  'make_opensolar returned no URL',
+            'stdout': _buf.getvalue()[-1200:],
+            'opensolar_email_set': bool(os.getenv('OPENSOLAR_EMAIL')),
+            'opensolar_password_set': bool(os.getenv('OPENSOLAR_PASSWORD')),
+        }), 500
+    print(_buf.getvalue())  # mirror to real stdout for the Railway log too
 
     # 2. Update task description — replace "OpenSolar: pending" or any existing
     # "OpenSolar: ..." line with the new URL. If neither pattern is present,
