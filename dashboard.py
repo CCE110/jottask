@@ -6342,6 +6342,41 @@ def admin_resend_reminders():
     })
 
 
+@app.route('/admin/tasks/lookup', methods=['GET'])
+def admin_tasks_lookup():
+    """Lightweight task lookup: ?client_name=… or ?cid=… or ?title=…
+    Returns id/title/client_name/due_date/status of matches. X-Internal-API-Key
+    or session auth.
+    """
+    api_key = request.headers.get('X-Internal-API-Key', '')
+    expected = os.getenv('INTERNAL_API_KEY', 'jottask-internal-2026')
+    if api_key != expected and 'user_id' not in session:
+        return jsonify({'error': 'auth required'}), 401
+
+    cn = (request.args.get('client_name') or '').strip()
+    cid = (request.args.get('cid') or '').strip()
+    ttl = (request.args.get('title') or '').strip()
+    if not (cn or cid or ttl):
+        return jsonify({'error': 'client_name, cid, or title required'}), 400
+
+    q = supabase.table('tasks')\
+        .select('id, title, client_name, status, lead_status, category, '
+                'due_date, due_time, created_at, description')\
+        .order('created_at', desc=True).limit(20)
+    if cn:
+        q = q.ilike('client_name', f'%{cn}%')
+    elif ttl:
+        q = q.ilike('title', f'%{ttl}%')
+    elif cid:
+        q = q.ilike('description', f'%{cid}%')
+    rows = q.execute().data or []
+    # Trim description for response payload
+    for r in rows:
+        d = r.get('description') or ''
+        r['description'] = (d[:200] + '…') if len(d) > 200 else d
+    return jsonify({'count': len(rows), 'rows': rows})
+
+
 @app.route('/admin/tasks/<task_id>/create-opensolar', methods=['POST'])
 def admin_create_opensolar_for_task(task_id):
     """One-shot recovery: create an OpenSolar project for an existing DSW
