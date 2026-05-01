@@ -6428,6 +6428,10 @@ def admin_create_opensolar_for_task(task_id):
     if not cid:
         return jsonify({'error': 'no PipeReply cid (none in desc, none in body)'}), 400
 
+    # PipeReply public CRM URL — used in both the rebuilt description and
+    # the lead email below.
+    crm_url = f'https://app.pipereply.com/v2/location/0k6Ix1hW5QoHuUh2YSru/contacts/detail/{cid}'
+
     # PipeReply env
     PR_TOKEN = os.getenv('PIPEREPLY_TOKEN')
     PR_BASE  = 'https://services.leadconnectorhq.com'
@@ -6505,18 +6509,58 @@ def admin_create_opensolar_for_task(task_id):
             }), 500
         print(_buf.getvalue())
 
-    # 2. Update task description — replace "OpenSolar: pending" or any existing
-    # "OpenSolar: ..." line with the new URL. If neither pattern is present,
-    # insert after the CRM line.
+    # 2. Update task description.
+    #    - rebuild_description=true: do a full Phone/Email/Source/CRM/OpenSolar
+    #      header rebuild from fresh PipeReply data + summarise(), preserving
+    #      any existing MY NOTES section. Use this when Phone/Source got
+    #      corrupted by an earlier run.
+    #    - else (default): targeted regex swap of the OpenSolar: line only.
     new_desc = desc
-    if re.search(r'^OpenSolar:\s*\S', new_desc, re.MULTILINE):
-        new_desc = re.sub(r'^OpenSolar:\s*.+$', f'OpenSolar: {os_url}',
-                          new_desc, count=1, flags=re.MULTILINE)
-    elif re.search(r'^CRM:', new_desc, re.MULTILINE):
-        new_desc = re.sub(r'^(CRM:[^\n]*)', rf'\1\nOpenSolar: {os_url}',
-                          new_desc, count=1, flags=re.MULTILINE)
+    rebuild_full = bool(body.get('rebuild_description'))
+
+    if rebuild_full:
+        # Preserve MY NOTES if present
+        notes_part = ''
+        if 'MY NOTES:' in new_desc:
+            notes_part = new_desc.split('MY NOTES:', 1)[1].strip()
+        # Preserve existing Sub-note if present
+        sub_m = re.search(r'^Sub-note:\s*(.+)$', new_desc, re.MULTILINE)
+        sub_note = sub_m.group(1).strip() if sub_m else ''
+
+        # Build canonical header block (mirrors dsw_lead_poller.make_task)
+        try:
+            src = dsw.source(full) or 'Referral'
+            summary, referred_by = dsw.summarise(name, phone, addr_full, src,
+                                                 full.get('notes', '') or '',
+                                                 full.get('customFields', []) or [])
+            badge = dsw.source_badge(src, referred_by)
+        except Exception as _se:
+            print(f'[create-opensolar] summarise failed during rebuild: {_se}')
+            summary, badge, src = '', '', 'Referral'
+
+        email_line  = f"Email: {email}\n" if email else ''
+        source_line = f"Source: {badge}\n" if badge else ''
+        sub_line    = f"Sub-note: {sub_note}\n" if sub_note else ''
+        rebuilt = (
+            f"Phone: {phone or 'N/A'}\n"
+            f"{email_line}{source_line}"
+            f"CRM: {crm_url}\n"
+            f"OpenSolar: {os_url}\n"
+            f"{sub_line}\n"
+            f"{summary.strip()}"
+        )
+        new_desc = rebuilt.rstrip()
+        if notes_part:
+            new_desc += '\n\nMY NOTES:\n' + notes_part
     else:
-        new_desc = f'OpenSolar: {os_url}\n\n' + new_desc
+        if re.search(r'^OpenSolar:\s*\S', new_desc, re.MULTILINE):
+            new_desc = re.sub(r'^OpenSolar:\s*.+$', f'OpenSolar: {os_url}',
+                              new_desc, count=1, flags=re.MULTILINE)
+        elif re.search(r'^CRM:', new_desc, re.MULTILINE):
+            new_desc = re.sub(r'^(CRM:[^\n]*)', rf'\1\nOpenSolar: {os_url}',
+                              new_desc, count=1, flags=re.MULTILINE)
+        else:
+            new_desc = f'OpenSolar: {os_url}\n\n' + new_desc
     supabase.table('tasks').update({'description': new_desc}).eq('id', task_id).execute()
 
     # 3. Save OS URL to PipeReply CRM note (best-effort)
@@ -6528,8 +6572,7 @@ def admin_create_opensolar_for_task(task_id):
     except Exception as e:
         print(f'[create-opensolar] save_to_crm failed: {e}')
 
-    # 4. Resend lead email with the new OpenSolar button
-    crm_url = f'https://app.pipereply.com/v2/location/0k6Ix1hW5QoHuUh2YSru/contacts/detail/{cid}'
+    # 4. Resend lead email with the new OpenSolar button (crm_url defined earlier)
     try:
         # Generate fresh summary too — gives a clean lead email
         try:
