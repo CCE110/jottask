@@ -6342,6 +6342,166 @@ def admin_resend_reminders():
     })
 
 
+@app.route('/admin/tasks/<task_id>/create-opensolar', methods=['POST'])
+def admin_create_opensolar_for_task(task_id):
+    """One-shot recovery: create an OpenSolar project for an existing DSW
+    Solar task that was processed without one (or with bad address parts).
+
+    Steps performed server-side:
+      1. Resolve PipeReply cid (from `cid` in body or `CRM:` line in desc)
+      2. Optionally PATCH the PipeReply contact's structured address
+         (address1/city/state/postalCode) from body fields — fixes contacts
+         that have the whole address jammed into address1.
+      3. Call dsw_lead_poller.make_opensolar() with the resolved address.
+      4. Replace "OpenSolar: pending" in task description with the new URL.
+      5. Save the OpenSolar URL to PipeReply CRM via dsw.save_to_crm.
+      6. Resend the DSW lead email so Rob gets one with the OpenSolar
+         button included.
+
+    Body (all optional except for the auth, all default to current PipeReply
+    values when omitted):
+      {"cid": "...", "address": "...", "city": "...",
+       "state": "...", "postcode": "..."}
+
+    Auth: X-Internal-API-Key OR session.
+    """
+    import re, importlib.util as ilu, requests as rq
+
+    api_key = request.headers.get('X-Internal-API-Key', '')
+    expected = os.getenv('INTERNAL_API_KEY', 'jottask-internal-2026')
+    if api_key != expected and 'user_id' not in session:
+        return jsonify({'error': 'auth required'}), 401
+
+    body = request.get_json(silent=True) or {}
+
+    # Load task
+    try:
+        t_res = supabase.table('tasks').select('*').eq('id', task_id).single().execute()
+        t = t_res.data
+    except Exception:
+        t = None
+    if not t:
+        return jsonify({'error': 'task not found'}), 404
+    desc = t.get('description') or ''
+
+    # Resolve cid
+    cid = (body.get('cid') or '').strip()
+    if not cid:
+        m = re.search(r'/detail/([A-Za-z0-9]+)', desc)
+        if m:
+            cid = m.group(1)
+    if not cid:
+        return jsonify({'error': 'no PipeReply cid (none in desc, none in body)'}), 400
+
+    # PipeReply env
+    PR_TOKEN = os.getenv('PIPEREPLY_TOKEN')
+    PR_BASE  = 'https://services.leadconnectorhq.com'
+    PR_H = {'Authorization': f'Bearer {PR_TOKEN}', 'Content-Type': 'application/json',
+            'Version': '2021-07-28'}
+
+    # Optionally PATCH PipeReply address — only updates fields the body provided
+    addr_override = {k: (body.get(k) or '').strip() for k in ('address', 'city', 'state', 'postcode')}
+    if any(addr_override.values()):
+        patch = {}
+        if addr_override['address']:  patch['address1']   = addr_override['address']
+        if addr_override['city']:     patch['city']       = addr_override['city']
+        if addr_override['state']:    patch['state']      = addr_override['state']
+        if addr_override['postcode']: patch['postalCode'] = addr_override['postcode']
+        try:
+            rq.put(f'{PR_BASE}/contacts/{cid}', headers=PR_H, json=patch, timeout=10)
+        except Exception as e:
+            print(f'[create-opensolar] PR patch failed: {e}')
+
+    # Load dsw_lead_poller
+    try:
+        spec = ilu.spec_from_file_location('dsw_lead_poller',
+            os.path.join(os.path.dirname(os.path.abspath(__file__)), 'dsw_lead_poller.py'))
+        dsw = ilu.module_from_spec(spec); spec.loader.exec_module(dsw)
+    except Exception as e:
+        return jsonify({'error': f'could not load dsw_lead_poller: {e}'}), 500
+
+    # Pull fresh contact
+    full = dsw.get_full(cid) or {}
+    name = ' '.join(w.capitalize() for w in (full.get('contactName') or t.get('client_name') or 'Unknown').split())
+    phone = full.get('phone') or t.get('client_phone') or ''
+    email = full.get('email') or t.get('client_email') or ''
+    address = addr_override['address'] or full.get('address1') or ''
+    city = addr_override['city']   or full.get('city')       or ''
+    state = addr_override['state']  or full.get('state')      or ''
+    postcode = addr_override['postcode'] or full.get('postalCode') or ''
+    addr_full = ', '.join(p for p in (address, city, state, postcode) if p)
+
+    # Split firstName/lastName for OpenSolar contact
+    parts = name.split()
+    first_name = full.get('firstName') or (parts[0] if parts else 'Unknown')
+    last_name  = full.get('lastName')  or (' '.join(parts[1:]) if len(parts) > 1 else '')
+
+    # 1. Create OpenSolar project
+    try:
+        os_url, _project_id = dsw.make_opensolar(
+            name, phone, email, address, city, state, postcode,
+            first_name=first_name, last_name=last_name,
+        )
+    except Exception as e:
+        return jsonify({'error': f'make_opensolar failed: {e}'}), 500
+    if not os_url:
+        return jsonify({'error': 'make_opensolar returned no URL'}), 500
+
+    # 2. Update task description — replace "OpenSolar: pending" or any existing
+    # "OpenSolar: ..." line with the new URL. If neither pattern is present,
+    # insert after the CRM line.
+    new_desc = desc
+    if re.search(r'^OpenSolar:\s*\S', new_desc, re.MULTILINE):
+        new_desc = re.sub(r'^OpenSolar:\s*.+$', f'OpenSolar: {os_url}',
+                          new_desc, count=1, flags=re.MULTILINE)
+    elif re.search(r'^CRM:', new_desc, re.MULTILINE):
+        new_desc = re.sub(r'^(CRM:[^\n]*)', rf'\1\nOpenSolar: {os_url}',
+                          new_desc, count=1, flags=re.MULTILINE)
+    else:
+        new_desc = f'OpenSolar: {os_url}\n\n' + new_desc
+    supabase.table('tasks').update({'description': new_desc}).eq('id', task_id).execute()
+
+    # 3. Save OS URL to PipeReply CRM note (best-effort)
+    summary_for_crm = ''
+    try:
+        # Use existing helper if present
+        if hasattr(dsw, 'save_to_crm'):
+            dsw.save_to_crm(cid, os_url, summary_for_crm, overwrite=False)
+    except Exception as e:
+        print(f'[create-opensolar] save_to_crm failed: {e}')
+
+    # 4. Resend lead email with the new OpenSolar button
+    crm_url = f'https://app.pipereply.com/v2/location/0k6Ix1hW5QoHuUh2YSru/contacts/detail/{cid}'
+    try:
+        # Generate fresh summary too — gives a clean lead email
+        try:
+            src = dsw.source(full) or 'Referral'
+            summary, _ref = dsw.summarise(name, phone, addr_full, src,
+                                          full.get('notes', '') or '',
+                                          full.get('customFields', []) or [])
+            badge = dsw.source_badge(src, _ref)
+        except Exception:
+            summary, badge, src = '', '', 'Referral'
+        ok, err = dsw.send_email(
+            name, phone or 'N/A', addr_full, src, summary, crm_url, os_url,
+            task_id=task_id, lead_status=(t.get('lead_status') or 'new_lead'),
+            email=email, source_badge_text=badge,
+        )
+    except Exception as e:
+        ok, err = False, str(e)[:200]
+
+    return jsonify({
+        'ok':         True,
+        'task_id':    task_id,
+        'name':       name,
+        'os_url':     os_url,
+        'address':    addr_full,
+        'cid':        cid,
+        'email_sent': ok,
+        'email_err':  err,
+    })
+
+
 @app.route('/admin/tasks/reset-reminder-flags', methods=['POST'])
 def admin_tasks_reset_reminder_flags():
     """Targeted reset of reminder_sent_at=NULL for a specific list of task_ids.

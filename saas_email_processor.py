@@ -2749,6 +2749,32 @@ if __name__ == "__main__":
         print(f"  Reminders + daily summaries: every cycle")
     print(f"  Monitoring: heartbeat every cycle, cleanup daily")
 
+    # Stamp env-key prefixes to system_events on every worker boot so the
+    # web-side /admin/worker-env endpoint can confirm what env vars the
+    # WORKER actually loaded (separate Railway service from web — env
+    # may differ if a var was only updated on one service).
+    try:
+        from monitoring import log_event
+        _env_keys = ('ANTHROPIC_API_KEY', 'RESEND_API_KEY', 'SUPABASE_URL',
+                     'SUPABASE_KEY', 'SUPABASE_SERVICE_KEY',
+                     'SUPABASE_SERVICE_ROLE_KEY', 'INTERNAL_API_KEY',
+                     'PIPEREPLY_TOKEN', 'JOTTASK_EMAIL', 'IMAP_SERVER',
+                     'APP_URL', 'POLL_INTERVAL_SECONDS', 'SCHEDULER_DISABLED')
+        _env_snapshot = {}
+        for _k in _env_keys:
+            _v = os.getenv(_k, '')
+            _env_snapshot[_k] = {
+                'set':    bool(_v),
+                'length': len(_v),
+                'prefix': _v[:20] if _v else '',
+            }
+        log_event('worker_boot', f"worker booted (pid {os.getpid()})",
+                  status='info', category='system',
+                  metadata={'pid': os.getpid(), 'env': _env_snapshot})
+        print(f"  Env snapshot logged to system_events (key prefixes only)")
+    except Exception as _boot_err:
+        print(f"  ⚠️ Could not log worker_boot env snapshot: {_boot_err}")
+
     tick = 0
     consecutive_failures = 0
     last_cleanup_date = None
