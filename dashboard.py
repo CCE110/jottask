@@ -6358,25 +6358,22 @@ def admin_processed_emails_search():
         return jsonify({'error': 'subject or sender required'}), 400
     # Try the full-column select first; fall back to safer subsets if any
     # column is missing (older migrations sometimes haven't been applied).
+    # processed_at is the canonical ordering col on this table (created_at
+    # was deprecated). Stick to it everywhere.
     column_sets = [
-        'id, email_id, uid, sender_email, subject, outcome, outcome_detail, processed_at, created_at, connection_id, user_id',
-        'id, email_id, sender_email, subject, outcome, processed_at, created_at',
-        'id, email_id, created_at',
+        'id, email_id, uid, sender_email, subject, outcome, outcome_detail, processed_at, connection_id, user_id',
+        'id, email_id, sender_email, subject, outcome, processed_at',
         '*',
     ]
-    rows = None
     last_err = None
     for cols in column_sets:
         try:
             q = supabase.table('processed_emails').select(cols)
-            if subj and 'subject' in cols:
+            if subj:
                 q = q.ilike('subject', f'%{subj}%')
-            elif subj and cols == '*':
-                q = q.ilike('subject', f'%{subj}%')
-            if sender and 'sender_email' in cols:
+            if sender:
                 q = q.ilike('sender_email', f'%{sender}%')
-            order_col = 'processed_at' if 'processed_at' in cols else 'created_at'
-            q = q.order(order_col, desc=True).limit(50)
+            q = q.order('processed_at', desc=True).limit(50)
             rows = q.execute().data or []
             return jsonify({'count': len(rows), 'rows': rows, 'columns_used': cols})
         except Exception as e:
