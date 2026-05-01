@@ -6356,16 +6356,33 @@ def admin_processed_emails_search():
     sender = (request.args.get('sender') or '').strip()
     if not subj and not sender:
         return jsonify({'error': 'subject or sender required'}), 400
-    q = supabase.table('processed_emails')\
-        .select('id, email_id, uid, sender_email, subject, outcome, '
-                'outcome_detail, processed_at, connection_id, user_id')\
-        .order('processed_at', desc=True).limit(50)
-    if subj:
-        q = q.ilike('subject', f'%{subj}%')
-    if sender:
-        q = q.ilike('sender_email', f'%{sender}%')
-    rows = q.execute().data or []
-    return jsonify({'count': len(rows), 'rows': rows})
+    # Try the full-column select first; fall back to safer subsets if any
+    # column is missing (older migrations sometimes haven't been applied).
+    column_sets = [
+        'id, email_id, uid, sender_email, subject, outcome, outcome_detail, processed_at, created_at, connection_id, user_id',
+        'id, email_id, sender_email, subject, outcome, processed_at, created_at',
+        'id, email_id, created_at',
+        '*',
+    ]
+    rows = None
+    last_err = None
+    for cols in column_sets:
+        try:
+            q = supabase.table('processed_emails').select(cols)
+            if subj and 'subject' in cols:
+                q = q.ilike('subject', f'%{subj}%')
+            elif subj and cols == '*':
+                q = q.ilike('subject', f'%{subj}%')
+            if sender and 'sender_email' in cols:
+                q = q.ilike('sender_email', f'%{sender}%')
+            order_col = 'processed_at' if 'processed_at' in cols else 'created_at'
+            q = q.order(order_col, desc=True).limit(50)
+            rows = q.execute().data or []
+            return jsonify({'count': len(rows), 'rows': rows, 'columns_used': cols})
+        except Exception as e:
+            last_err = str(e)[:300]
+            continue
+    return jsonify({'error': 'all column sets failed', 'last_err': last_err}), 500
 
 
 @app.route('/admin/pipereply/contact/<cid>/patch', methods=['POST'])
