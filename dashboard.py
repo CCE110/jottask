@@ -6592,14 +6592,17 @@ def admin_create_opensolar_for_task(task_id):
         ok, err = False, str(e)[:200]
 
     return jsonify({
-        'ok':         True,
-        'task_id':    task_id,
-        'name':       name,
-        'os_url':     os_url,
-        'address':    addr_full,
-        'cid':        cid,
-        'email_sent': ok,
-        'email_err':  err,
+        'ok':                 True,
+        'task_id':            task_id,
+        'name':               name,
+        'os_url':             os_url,
+        'address':            addr_full,
+        'cid':                cid,
+        'email_sent':         ok,
+        'email_err':          err,
+        'description_rebuilt': bool(rebuild_full),
+        'pipereply_phone':    full.get('phone') or '',
+        'pipereply_email':    full.get('email') or '',
     })
 
 
