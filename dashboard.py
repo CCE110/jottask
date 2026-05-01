@@ -6342,6 +6342,61 @@ def admin_resend_reminders():
     })
 
 
+@app.route('/admin/processed-emails/search', methods=['GET'])
+def admin_processed_emails_search():
+    """Search processed_emails by subject substring or sender. Used to
+    investigate worker dedup issues — RLS blocks anon reads, so the only
+    path is via service-role on this endpoint.
+    """
+    api_key = request.headers.get('X-Internal-API-Key', '')
+    expected = os.getenv('INTERNAL_API_KEY', 'jottask-internal-2026')
+    if api_key != expected and 'user_id' not in session:
+        return jsonify({'error': 'auth required'}), 401
+    subj = (request.args.get('subject') or '').strip()
+    sender = (request.args.get('sender') or '').strip()
+    if not subj and not sender:
+        return jsonify({'error': 'subject or sender required'}), 400
+    q = supabase.table('processed_emails')\
+        .select('id, email_id, uid, sender_email, subject, outcome, '
+                'outcome_detail, processed_at, connection_id, user_id')\
+        .order('processed_at', desc=True).limit(50)
+    if subj:
+        q = q.ilike('subject', f'%{subj}%')
+    if sender:
+        q = q.ilike('sender_email', f'%{sender}%')
+    rows = q.execute().data or []
+    return jsonify({'count': len(rows), 'rows': rows})
+
+
+@app.route('/admin/pipereply/contact/<cid>/patch', methods=['POST'])
+def admin_pipereply_contact_patch(cid):
+    """Patch PipeReply contact fields and surface the actual API response so
+    we can see why writes silently fail (returns the response status + body).
+    Body: any subset of {firstName,lastName,phone,email,address1,city,state,postalCode}.
+    """
+    api_key = request.headers.get('X-Internal-API-Key', '')
+    expected = os.getenv('INTERNAL_API_KEY', 'jottask-internal-2026')
+    if api_key != expected and 'user_id' not in session:
+        return jsonify({'error': 'auth required'}), 401
+    body = request.get_json(silent=True) or {}
+    allowed = ('firstName','lastName','phone','email','address1','city',
+               'state','postalCode','companyName','tags')
+    patch = {k: body[k] for k in allowed if k in body}
+    if not patch:
+        return jsonify({'error': 'no patchable fields supplied'}), 400
+    PR_TOKEN = os.getenv('PIPEREPLY_TOKEN')
+    PR_BASE  = 'https://services.leadconnectorhq.com'
+    PR_H = {'Authorization': f'Bearer {PR_TOKEN}', 'Content-Type': 'application/json',
+            'Version': '2021-07-28'}
+    import requests as rq
+    r = rq.put(f'{PR_BASE}/contacts/{cid}', headers=PR_H, json=patch, timeout=15)
+    return jsonify({
+        'http_status': r.status_code,
+        'patch_sent':  patch,
+        'pipereply_response': r.text[:600],
+    })
+
+
 @app.route('/admin/tasks/lookup', methods=['GET'])
 def admin_tasks_lookup():
     """Lightweight task lookup: ?client_name=… or ?cid=… or ?title=…
