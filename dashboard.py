@@ -6419,6 +6419,95 @@ def admin_leads_process_from_cid():
     })
 
 
+@app.route('/admin/processed-emails/block-by-sender', methods=['POST'])
+def admin_processed_emails_block_by_sender():
+    """Stop a runaway IMAP loop: mark every email from a given sender as
+    processed in processed_emails so the worker's dedup check skips them
+    on the next tick. Connects to the inbox server-side via JOTTASK_EMAIL /
+    JOTTASK_EMAIL_PASSWORD env vars, walks the matching messages, and
+    inserts a sentinel row per (Message-ID, UID).
+
+    Body: {"sender_email": "mayne_90@hotmail.com"}.
+    Auth: X-Internal-API-Key OR session.
+    """
+    api_key = request.headers.get('X-Internal-API-Key', '')
+    expected = os.getenv('INTERNAL_API_KEY', 'jottask-internal-2026')
+    if api_key != expected and 'user_id' not in session:
+        return jsonify({'error': 'auth required'}), 401
+
+    body = request.get_json(silent=True) or {}
+    sender = (body.get('sender_email') or '').strip()
+    if not sender:
+        return jsonify({'error': 'sender_email required'}), 400
+
+    import imaplib, email
+    from email.header import decode_header
+
+    imap_user = os.getenv('JOTTASK_EMAIL')
+    imap_pass = os.getenv('JOTTASK_EMAIL_PASSWORD')
+    imap_host = os.getenv('IMAP_SERVER', 'mail.privateemail.com')
+    if not imap_user or not imap_pass:
+        return jsonify({'error': 'JOTTASK_EMAIL / JOTTASK_EMAIL_PASSWORD not set on this service'}), 500
+
+    try:
+        m = imaplib.IMAP4_SSL(imap_host, 993)
+        m.login(imap_user, imap_pass)
+        m.select('INBOX')
+        # Search FROM the sender
+        typ, data = m.uid('search', None, 'FROM', f'"{sender}"')
+        uids = data[0].split() if (data and data[0]) else []
+    except Exception as e:
+        return jsonify({'error': f'IMAP login/search failed: {e}'}), 500
+
+    blocked = []
+    errors = []
+    for uid in uids:
+        uid_str = uid.decode() if isinstance(uid, bytes) else str(uid)
+        try:
+            typ, msg_data = m.uid('fetch', uid, '(RFC822.HEADER)')
+            if typ != 'OK' or not msg_data or not msg_data[0]:
+                continue
+            msg = email.message_from_bytes(msg_data[0][1])
+            message_id = msg.get('Message-ID', f'imap-uid-{uid_str}')
+            raw_subj = msg.get('Subject', '')
+            subj = ''.join(p.decode(enc or 'utf-8') if isinstance(p, bytes) else p
+                           for p, enc in decode_header(raw_subj))
+            row = {
+                'email_id':       message_id,
+                'uid':            uid_str,
+                'sender_email':   sender.lower(),
+                'subject':        subj[:500],
+                'outcome':        'manually_blocked',
+                'outcome_detail': 'admin block-by-sender to stop runaway loop',
+                'processed_at':   datetime.now(pytz.UTC).isoformat(),
+            }
+            try:
+                supabase.table('processed_emails').insert(row).execute()
+                blocked.append({'uid': uid_str, 'message_id': message_id, 'subject': subj[:80]})
+            except Exception as ie:
+                msg_str = str(ie)
+                if '23505' in msg_str or 'duplicate' in msg_str.lower():
+                    blocked.append({'uid': uid_str, 'message_id': message_id, 'subject': subj[:80], 'already': True})
+                else:
+                    errors.append({'uid': uid_str, 'error': msg_str[:200]})
+        except Exception as fe:
+            errors.append({'uid': uid_str, 'error': str(fe)[:200]})
+
+    try:
+        m.close()
+        m.logout()
+    except Exception:
+        pass
+
+    return jsonify({
+        'ok':      True,
+        'sender':  sender,
+        'blocked': len(blocked),
+        'errors':  errors,
+        'rows':    blocked[:30],
+    })
+
+
 @app.route('/admin/processed-emails/search', methods=['GET'])
 def admin_processed_emails_search():
     """Search processed_emails by subject substring or sender. Used to
