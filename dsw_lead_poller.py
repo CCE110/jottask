@@ -946,13 +946,14 @@ def process(contact, task_id=None, lead_status=None, is_new_contact=True):
     t0 = time.time()
     cid = contact.get("id")
     full = get_full(cid)
-    # PipeReply's GET /contacts/<id> sometimes returns blank contactName even
-    # when firstName/lastName are populated, which falls through to "Unknown".
-    # Build from full first; only fall back to the seed contactName.
+    # Prefer contactName from full (PipeReply often puts the full name in
+    # contactName AND duplicates it into firstName + lastName both, so
+    # concatenating firstName+lastName would double it). Only fall back
+    # through firstName+lastName when contactName is blank.
     _full_name = (
-        ((full.get('firstName') or '') + ' ' + (full.get('lastName') or '')).strip()
-        or full.get('contactName')
+        full.get('contactName')
         or contact.get('contactName')
+        or ((full.get('firstName') or '') + ' ' + (full.get('lastName') or '')).strip()
         or 'Unknown'
     )
     name = " ".join(w.capitalize() for w in _full_name.split())
