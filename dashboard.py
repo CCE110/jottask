@@ -7116,6 +7116,78 @@ def admin_dsw_bulk_resend_stale():
     })
 
 
+@app.route('/admin/opensolar/search', methods=['GET'])
+def admin_opensolar_search():
+    """Search OpenSolar projects by name/email/address. Used when
+    make_opensolar() returns "Email already in use" but the embedded
+    search-by-name fallback returns no rows — typically because the
+    existing project is under a slightly different surname or the
+    OpenSolar /projects search query param isn't matching how that
+    contact was originally entered.
+
+    Query: ?q=Martyn+Hancock (required), ?limit=10.
+    Returns: [{id, url, title, address, contacts: [...]}, ...]
+    Auth: X-Internal-API-Key OR session.
+    """
+    api_key = request.headers.get('X-Internal-API-Key', '')
+    expected = os.getenv('INTERNAL_API_KEY', 'jottask-internal-2026')
+    if api_key != expected and 'user_id' not in session:
+        return jsonify({'error': 'auth required'}), 401
+
+    q = (request.args.get('q') or '').strip()
+    if not q:
+        return jsonify({'error': 'q required'}), 400
+    limit = int(request.args.get('limit', 10))
+
+    try:
+        from dsw_lead_poller import opensolar
+        import requests as _r
+        conn = opensolar()
+        if not conn or not conn.token:
+            return jsonify({'error': 'opensolar auth failed'}), 500
+        headers = {'Authorization': f'Bearer {conn.token}',
+                   'Content-Type':  'application/json'}
+        # Try several known query param names — OpenSolar has shifted these
+        # over time and we want to surface whichever matches.
+        results = []
+        for param in ('search', 'fieldset[contact_full_name]', 'q', 'query'):
+            r = _r.get(f'https://api.opensolar.com/api/orgs/{conn.org_id}/projects/',
+                       headers=headers, params={param: q, 'limit': limit}, timeout=15)
+            if not r.ok:
+                continue
+            try:
+                payload = r.json()
+            except Exception:
+                continue
+            rows = payload if isinstance(payload, list) else payload.get('data') or payload.get('results') or []
+            if rows:
+                for row in rows[:limit]:
+                    pid = row.get('id') or row.get('pk')
+                    if not pid:
+                        continue
+                    contacts = row.get('contacts_data') or row.get('contacts') or []
+                    contact_brief = []
+                    for c in contacts[:3]:
+                        contact_brief.append({
+                            'first_name': c.get('first_name'),
+                            'last_name':  c.get('last_name'),
+                            'email':      c.get('email'),
+                            'phone':      c.get('phone'),
+                        })
+                    results.append({
+                        'id':       pid,
+                        'url':      f'https://app.opensolar.com/#/projects/{pid}/info',
+                        'title':    row.get('title') or row.get('name'),
+                        'address':  row.get('address'),
+                        'contacts': contact_brief,
+                        'matched_param': param,
+                    })
+                break
+        return jsonify({'q': q, 'count': len(results), 'results': results})
+    except Exception as e:
+        return jsonify({'error': f'search failed: {e}'}), 500
+
+
 @app.route('/admin/email-action-tokens/recent', methods=['GET'])
 def admin_email_action_tokens_recent():
     """Inspect email_action_tokens created in the last N days to verify the

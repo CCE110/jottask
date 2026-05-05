@@ -716,7 +716,13 @@ def make_task(name, phone, summary, crm_url, os_url, email='', prev_notes_block=
         from task_manager import TaskManager
         tm = TaskManager()
         users = tm.supabase.table("users").select("id").eq("email","rob@cloudcleanenergy.com.au").execute()
-        if not users.data: return
+        if not users.data:
+            # Loud fail — silent None here means send_email later renders
+            # /task/None and zero action buttons (anon key + RLS hides users).
+            raise RuntimeError(
+                "make_task: users.select returned 0 rows for rob@cloudcleanenergy.com.au. "
+                "RLS is likely blocking — ensure SUPABASE_SERVICE_KEY is set in env."
+            )
         # Default due: now + 4 hours in AEST (Australia/Brisbane is UTC+10, no DST).
         # Ensures the task always lands inside today's daily-summary + reminder window.
         _aest = timezone(timedelta(hours=10))
@@ -896,8 +902,10 @@ def send_email(name, phone, addr, src, summary, crm_url, os_url, task_id=None, l
         f'{no_reply_btn}'
         '</div>'
         '<div style="background:'+header_bg+';padding:12px;border-radius:0 0 8px 8px;text-align:center">'
-        f'<a href="https://www.jottask.app/task/{task_id}" style="color:white;font-weight:bold;text-decoration:none">Open Jottask</a>'
-        '</div></div>'
+        + (f'<a href="https://www.jottask.app/task/{task_id}" style="color:white;font-weight:bold;text-decoration:none">Open Jottask</a>'
+           if task_id else
+           '<a href="https://www.jottask.app/" style="color:white;font-weight:bold;text-decoration:none">Open Jottask</a>')
+        +'</div></div>'
     )
     try:
         if subject:
@@ -1060,6 +1068,13 @@ def process(contact, task_id=None, lead_status=None, is_new_contact=True):
             supersede_task_id=(existing_task['id'] if existing_task else None),
             source_badge_text=source_badge_text,
         )
+        if not task_id:
+            # make_task() failed but didn't raise (legacy paths). Skip the
+            # email — sending without a task means the action buttons + Open
+            # Jottask link point nowhere, which we just hit with the SMS
+            # poller's anon-key run on Martyn Hancock + Craig Jolly.
+            print(f"❌ Aborting send_email for {name}: make_task returned no task_id")
+            return
     else:
         # Reminder resend: look up OpenSolar URL from existing CRM note
         os_url = get_os_url_from_crm(cid)
