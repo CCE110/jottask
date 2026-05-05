@@ -6419,6 +6419,35 @@ def admin_leads_process_from_cid():
     })
 
 
+@app.route('/admin/worker-env', methods=['GET'])
+def admin_worker_env():
+    """Return the most-recent worker_boot system_event so we can see what
+    env prefixes the WORKER process actually loaded — separate Railway
+    service from web, separate Variables tab. Critical for diagnosing
+    'is the try/except deployed' / 'is service-role key in use' questions
+    when worker writes are silently failing.
+    """
+    api_key = request.headers.get('X-Internal-API-Key', '')
+    expected = os.getenv('INTERNAL_API_KEY', 'jottask-internal-2026')
+    if api_key != expected and 'user_id' not in session:
+        return jsonify({'error': 'auth required'}), 401
+    r = supabase.table('system_events')\
+        .select('created_at, message, metadata')\
+        .eq('event_type', 'worker_boot')\
+        .order('created_at', desc=True).limit(5).execute()
+    return jsonify({
+        'count':  len(r.data or []),
+        'boots':  r.data or [],
+        'web_env_for_compare': {
+            'SUPABASE_SERVICE_KEY':       (os.getenv('SUPABASE_SERVICE_KEY','')[:20] or '(unset)'),
+            'SUPABASE_SERVICE_ROLE_KEY':  (os.getenv('SUPABASE_SERVICE_ROLE_KEY','')[:20] or '(unset)'),
+            'SUPABASE_KEY':               (os.getenv('SUPABASE_KEY','')[:20] or '(unset)'),
+            'PIPEREPLY_TOKEN':            (os.getenv('PIPEREPLY_TOKEN','')[:20] or '(unset)'),
+            'JOTTASK_EMAIL':              (os.getenv('JOTTASK_EMAIL','')[:30] or '(unset)'),
+        },
+    })
+
+
 @app.route('/admin/processed-emails/block-by-sender', methods=['POST'])
 def admin_processed_emails_block_by_sender():
     """Stop a runaway IMAP loop: mark every email from a given sender as
