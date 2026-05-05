@@ -7116,6 +7116,36 @@ def admin_dsw_bulk_resend_stale():
     })
 
 
+@app.route('/admin/pipereply/contact/<cid>/raw', methods=['GET'])
+def admin_pipereply_contact_raw(cid):
+    """Return the raw PipeReply GET /contacts/<cid> response so we can see
+    which name fields are actually populated. Diagnostic only — no PII
+    filtering, intended for debugging the get_full→Unknown bug.
+    Auth: X-Internal-API-Key OR session.
+    """
+    api_key = request.headers.get('X-Internal-API-Key', '')
+    expected = os.getenv('INTERNAL_API_KEY', 'jottask-internal-2026')
+    if api_key != expected and 'user_id' not in session:
+        return jsonify({'error': 'auth required'}), 401
+    try:
+        from dsw_lead_poller import get_full
+        full = get_full(cid) or {}
+        return jsonify({
+            'cid': cid,
+            'name_fields': {
+                'contactName': full.get('contactName'),
+                'firstName':   full.get('firstName'),
+                'lastName':    full.get('lastName'),
+                'firstNameLowerCase': full.get('firstNameLowerCase'),
+                'lastNameLowerCase':  full.get('lastNameLowerCase'),
+            },
+            'available_keys': sorted(list(full.keys())),
+            'truncated_full': {k: (str(v)[:120] if v else v) for k, v in full.items()},
+        })
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
 @app.route('/admin/opensolar/search', methods=['GET'])
 def admin_opensolar_search():
     """Search OpenSolar projects by name/email/address. Used when
