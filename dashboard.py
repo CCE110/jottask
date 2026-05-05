@@ -6585,6 +6585,57 @@ def admin_processed_emails_block_by_sender():
     })
 
 
+@app.route('/admin/processed-emails/block-by-ids', methods=['POST'])
+def admin_processed_emails_block_by_ids():
+    """Surgical block: insert sentinel rows for an arbitrary list of
+    Message-IDs and/or UIDs straight into processed_emails. Use this when
+    block-by-sender returns 0 (email already moved out of INBOX) but the
+    worker is still re-pulling the same message from Trash/another folder
+    or from a re-forward. The worker dedup check matches against either
+    email_id (Message-ID) or uid, so blocking either column stops the loop.
+
+    Body: {"ids": ["<msg-id-1>", "msg-id-2", ...], "label": "broadie-mayne-loop"}.
+    Auth: X-Internal-API-Key OR session.
+    """
+    api_key = request.headers.get('X-Internal-API-Key', '')
+    expected = os.getenv('INTERNAL_API_KEY', 'jottask-internal-2026')
+    if api_key != expected and 'user_id' not in session:
+        return jsonify({'error': 'auth required'}), 401
+
+    body  = request.get_json(silent=True) or {}
+    ids   = [s.strip() for s in (body.get('ids') or []) if isinstance(s, str) and s.strip()]
+    label = (body.get('label') or 'admin block-by-ids').strip()
+    if not ids:
+        return jsonify({'error': 'ids required'}), 400
+
+    inserted, already, errors = [], [], []
+    now_iso = datetime.now(pytz.UTC).isoformat()
+    for raw in ids:
+        row = {
+            'email_id':       raw,
+            'uid':            raw,
+            'outcome':        'manually_blocked',
+            'outcome_detail': label[:500],
+            'processed_at':   now_iso,
+        }
+        try:
+            supabase.table('processed_emails').insert(row).execute()
+            inserted.append(raw)
+        except Exception as e:
+            msg = str(e)
+            if '23505' in msg or 'duplicate' in msg.lower():
+                already.append(raw)
+            else:
+                errors.append({'id': raw, 'error': msg[:200]})
+
+    return jsonify({
+        'ok':       not errors,
+        'inserted': len(inserted),
+        'already':  len(already),
+        'errors':   errors,
+    })
+
+
 @app.route('/admin/processed-emails/search', methods=['GET'])
 def admin_processed_emails_search():
     """Search processed_emails by subject substring or sender. Used to
@@ -6979,6 +7030,152 @@ def admin_tasks_reset_reminder_flags():
             errors.append({'task_id': tid, 'error': str(e)[:200]})
     return jsonify({'ok': not errors, 'reset_count': len(reset),
                     'reset': reset, 'errors': errors})
+
+
+@app.route('/admin/dsw/bulk-resend-stale', methods=['POST'])
+def admin_dsw_bulk_resend_stale():
+    """Resend DSW lead reminder for every pending DSW Solar task whose last
+    reminder is older than `min_age_hours` (default 24) — or never sent.
+
+    Used when the scheduler's been silent (e.g. after the Broadie Mayne loop
+    forced a worker reboot and the 24h overdue ceiling pushed everything
+    onto tomorrow). Calls send_dsw_reminder_for_task() so PipeReply data
+    refreshes before send.
+
+    Body: {"min_age_hours": 24, "dry_run": false}.
+    Auth: X-Internal-API-Key OR session.
+    """
+    api_key = request.headers.get('X-Internal-API-Key', '')
+    expected = os.getenv('INTERNAL_API_KEY', 'jottask-internal-2026')
+    if api_key != expected and 'user_id' not in session:
+        return jsonify({'error': 'auth required'}), 401
+
+    body = request.get_json(silent=True) or {}
+    min_age_hours = int(body.get('min_age_hours', 24))
+    dry_run       = bool(body.get('dry_run', False))
+
+    now_utc = datetime.now(pytz.UTC)
+    cutoff  = now_utc - timedelta(hours=min_age_hours)
+
+    try:
+        result = supabase.table('tasks')\
+            .select('id, title, client_name, lead_status, reminder_sent_at, created_at, status, description')\
+            .eq('status', 'pending')\
+            .eq('category', 'DSW Solar')\
+            .order('created_at')\
+            .execute()
+    except Exception as e:
+        return jsonify({'error': f'tasks query failed: {e}'}), 500
+
+    candidates = []
+    for t in (result.data or []):
+        if (t.get('lead_status') or 'new_lead') != 'new_lead':
+            continue
+        rem_raw = t.get('reminder_sent_at')
+        if rem_raw:
+            try:
+                rem_at = datetime.fromisoformat(rem_raw.replace('Z', '+00:00'))
+            except Exception:
+                rem_at = None
+            if rem_at and rem_at >= cutoff:
+                continue
+        candidates.append(t)
+
+    if dry_run:
+        return jsonify({
+            'ok': True,
+            'dry_run': True,
+            'min_age_hours': min_age_hours,
+            'candidates': len(candidates),
+            'tasks': [{'id': t['id'], 'client_name': t.get('client_name'),
+                       'reminder_sent_at': t.get('reminder_sent_at')} for t in candidates[:50]],
+        })
+
+    from dsw_lead_poller import send_dsw_reminder_for_task
+    sent, failed = [], []
+    for t in candidates:
+        try:
+            ok, err = send_dsw_reminder_for_task(t, '24h')
+            if ok:
+                supabase.table('tasks').update({
+                    'reminder_sent_at': datetime.now(pytz.UTC).isoformat()
+                }).eq('id', t['id']).execute()
+                sent.append({'id': t['id'], 'client_name': t.get('client_name')})
+            else:
+                failed.append({'id': t['id'], 'client_name': t.get('client_name'), 'error': str(err)[:200]})
+        except Exception as e:
+            failed.append({'id': t['id'], 'client_name': t.get('client_name'), 'error': str(e)[:200]})
+
+    return jsonify({
+        'ok': not failed,
+        'min_age_hours': min_age_hours,
+        'sent_count': len(sent),
+        'failed_count': len(failed),
+        'sent': sent,
+        'failed': failed,
+    })
+
+
+@app.route('/admin/email-action-tokens/recent', methods=['GET'])
+def admin_email_action_tokens_recent():
+    """Inspect email_action_tokens created in the last N days to verify the
+    Complete / +1 Hour / +1 Day buttons in lead emails still resolve to a
+    live token row. If recent_count is 0 the buttons are dead-ends.
+
+    Query: ?days=7 (default 7).
+    Auth: X-Internal-API-Key OR session.
+    """
+    api_key = request.headers.get('X-Internal-API-Key', '')
+    expected = os.getenv('INTERNAL_API_KEY', 'jottask-internal-2026')
+    if api_key != expected and 'user_id' not in session:
+        return jsonify({'error': 'auth required'}), 401
+
+    days = int(request.args.get('days', 7))
+    cutoff = (datetime.now(pytz.UTC) - timedelta(days=days)).isoformat()
+    now_iso = datetime.now(pytz.UTC).isoformat()
+
+    try:
+        r = supabase.table('email_action_tokens')\
+            .select('id, task_id, action, expires_at, used_at, created_at')\
+            .gte('created_at', cutoff)\
+            .order('created_at', desc=True)\
+            .limit(200)\
+            .execute()
+    except Exception as e:
+        return jsonify({'error': f'query failed: {e}'}), 500
+
+    rows = r.data or []
+    valid = expired = used = 0
+    samples = []
+    for row in rows:
+        is_used    = bool(row.get('used_at'))
+        exp_raw    = row.get('expires_at') or ''
+        is_expired = bool(exp_raw and exp_raw < now_iso)
+        if is_used:
+            used += 1
+        elif is_expired:
+            expired += 1
+        else:
+            valid += 1
+        if len(samples) < 25:
+            samples.append({
+                'task_id':    row.get('task_id'),
+                'action':     row.get('action'),
+                'created_at': row.get('created_at'),
+                'expires_at': row.get('expires_at'),
+                'used_at':    row.get('used_at'),
+                'state':      'used' if is_used else ('expired' if is_expired else 'valid'),
+            })
+
+    return jsonify({
+        'ok': True,
+        'days': days,
+        'total_recent': len(rows),
+        'valid': valid,
+        'expired': expired,
+        'used': used,
+        'samples': samples,
+    })
 
 
 @app.route('/admin/reset-reminders', methods=['POST'])
