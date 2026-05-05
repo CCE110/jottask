@@ -6436,9 +6436,10 @@ def admin_processed_emails_block_by_sender():
         return jsonify({'error': 'auth required'}), 401
 
     body = request.get_json(silent=True) or {}
-    sender = (body.get('sender_email') or '').strip()
-    if not sender:
-        return jsonify({'error': 'sender_email required'}), 400
+    sender   = (body.get('sender_email') or '').strip()
+    subj_q   = (body.get('subject_contains') or '').strip()
+    if not sender and not subj_q:
+        return jsonify({'error': 'sender_email or subject_contains required'}), 400
 
     import imaplib, email
     from email.header import decode_header
@@ -6453,8 +6454,13 @@ def admin_processed_emails_block_by_sender():
         m = imaplib.IMAP4_SSL(imap_host, 993)
         m.login(imap_user, imap_pass)
         m.select('INBOX')
-        # Search FROM the sender
-        typ, data = m.uid('search', None, 'FROM', f'"{sender}"')
+        # Search by FROM and/or SUBJECT — IMAP combines multiple criteria as AND
+        criteria = []
+        if sender:
+            criteria += ['FROM', f'"{sender}"']
+        if subj_q:
+            criteria += ['SUBJECT', f'"{subj_q}"']
+        typ, data = m.uid('search', None, *criteria)
         uids = data[0].split() if (data and data[0]) else []
     except Exception as e:
         return jsonify({'error': f'IMAP login/search failed: {e}'}), 500
@@ -6472,10 +6478,11 @@ def admin_processed_emails_block_by_sender():
             raw_subj = msg.get('Subject', '')
             subj = ''.join(p.decode(enc or 'utf-8') if isinstance(p, bytes) else p
                            for p, enc in decode_header(raw_subj))
+            from_hdr = (msg.get('From', '') or '').lower()
             row = {
                 'email_id':       message_id,
                 'uid':            uid_str,
-                'sender_email':   sender.lower(),
+                'sender_email':   (sender or from_hdr or '').lower(),
                 'subject':        subj[:500],
                 'outcome':        'manually_blocked',
                 'outcome_detail': 'admin block-by-sender to stop runaway loop',
