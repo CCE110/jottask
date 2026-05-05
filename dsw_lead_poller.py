@@ -945,8 +945,17 @@ def process(contact, task_id=None, lead_status=None, is_new_contact=True):
     """
     t0 = time.time()
     cid = contact.get("id")
-    name = " ".join(w.capitalize() for w in (contact.get("contactName") or "Unknown").split())
     full = get_full(cid)
+    # PipeReply's GET /contacts/<id> sometimes returns blank contactName even
+    # when firstName/lastName are populated, which falls through to "Unknown".
+    # Build from full first; only fall back to the seed contactName.
+    _full_name = (
+        ((full.get('firstName') or '') + ' ' + (full.get('lastName') or '')).strip()
+        or full.get('contactName')
+        or contact.get('contactName')
+        or 'Unknown'
+    )
+    name = " ".join(w.capitalize() for w in _full_name.split())
     phone = full.get("phone") or contact.get("phone","N/A")
     email = full.get("email") or contact.get("email","")
     address = full.get("address1") or contact.get("address1","")
