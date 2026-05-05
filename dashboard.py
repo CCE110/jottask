@@ -6342,6 +6342,83 @@ def admin_resend_reminders():
     })
 
 
+@app.route('/admin/leads/process-from-cid', methods=['POST'])
+def admin_leads_process_from_cid():
+    """Process a fresh DSW lead from an existing PipeReply contact ID.
+
+    Body: {"cid": "<PipeReply contact id>", "is_new_contact": bool (default false)}.
+    Auth: X-Internal-API-Key OR session.
+
+    Runs dsw_lead_poller.process() server-side, which:
+      • get_full(cid) → fresh contact data
+      • summarise() → AI summary
+      • Saves OpenSolar URL + summary to PipeReply CRM note
+      • Creates an OpenSolar project (or reuses existing for that email)
+      • Creates a Mac contact via osascript
+      • Inserts a Jottask task (DSW Solar, due now+4h AEST)
+      • Sends the New Lead email to rob.l@directsolarwholesaler.com.au
+
+    Use when a PipeReply contact exists but a Jottask task is missing.
+    """
+    import importlib.util as ilu
+
+    api_key = request.headers.get('X-Internal-API-Key', '')
+    expected = os.getenv('INTERNAL_API_KEY', 'jottask-internal-2026')
+    if api_key != expected and 'user_id' not in session:
+        return jsonify({'error': 'auth required'}), 401
+
+    body = request.get_json(silent=True) or {}
+    cid = (body.get('cid') or '').strip()
+    if not cid:
+        return jsonify({'error': 'cid required'}), 400
+    is_new = bool(body.get('is_new_contact', False))
+
+    # Load dsw_lead_poller dynamically
+    try:
+        spec = ilu.spec_from_file_location('dsw_lead_poller',
+            os.path.join(os.path.dirname(os.path.abspath(__file__)), 'dsw_lead_poller.py'))
+        dsw = ilu.module_from_spec(spec); spec.loader.exec_module(dsw)
+    except Exception as e:
+        return jsonify({'error': f'could not load dsw_lead_poller: {e}'}), 500
+
+    # Capture stdout so caller sees the trail (which OpenSolar URL, task id, etc.)
+    import io, contextlib
+    buf = io.StringIO()
+    try:
+        with contextlib.redirect_stdout(buf):
+            # Pass minimal seed; process() will get_full(cid) for the rest.
+            full = dsw.get_full(cid) or {}
+            seed = {
+                'id':          cid,
+                'contactName': full.get('contactName') or '',
+                'phone':       full.get('phone') or '',
+                'email':       full.get('email') or '',
+                'address1':    full.get('address1') or '',
+            }
+            dsw.process(seed, task_id=None, lead_status=None, is_new_contact=is_new)
+    except Exception as e:
+        return jsonify({
+            'error':  f'process raised: {e}',
+            'stdout': buf.getvalue()[-1500:],
+        }), 500
+
+    log = buf.getvalue()
+    print(log)  # mirror to Railway logs
+
+    # Pull out the resulting task_id from the captured stdout
+    import re as _re
+    tid_m = _re.search(r'Task created:\s*\S+\s+id:\s+([0-9a-f-]{36})', log)
+    os_m  = _re.search(r'(https?://app\.opensolar\.com/[^\s]+)', log)
+
+    return jsonify({
+        'ok':         True,
+        'cid':        cid,
+        'task_id':    tid_m.group(1) if tid_m else None,
+        'os_url':     os_m.group(1)  if os_m  else None,
+        'stdout':     log[-2000:],
+    })
+
+
 @app.route('/admin/processed-emails/search', methods=['GET'])
 def admin_processed_emails_search():
     """Search processed_emails by subject substring or sender. Used to
