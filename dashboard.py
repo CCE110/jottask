@@ -6419,6 +6419,47 @@ def admin_leads_process_from_cid():
     })
 
 
+@app.route('/admin/probe/insert-processed-email', methods=['POST'])
+def admin_probe_insert_processed_email():
+    """Insert a test row into processed_emails using the same code path as
+    saas_email_processor._mark_email_processed (full schema, no fallback).
+    Returns the actual exception type+message so we can see why worker
+    writes have been failing silently since 2026-05-01.
+
+    Cleans up the test row after the insert (or on duplicate).
+    """
+    api_key = request.headers.get('X-Internal-API-Key', '')
+    expected = os.getenv('INTERNAL_API_KEY', 'jottask-internal-2026')
+    if api_key != expected and 'user_id' not in session:
+        return jsonify({'error': 'auth required'}), 401
+
+    import uuid
+    test_id = f'<probe-{uuid.uuid4()}@admin>'
+    row = {
+        'email_id':       test_id,
+        'uid':            f'probe-{uuid.uuid4().hex[:8]}',
+        'sender_email':   'admin-probe@jottask.local',
+        'subject':        'admin probe — delete me',
+        'outcome':        'no_action',
+        'outcome_detail': 'admin diagnostic; safe to delete',
+        'processed_at':   datetime.now(pytz.UTC).isoformat(),
+    }
+    result = {'attempted_insert': row, 'success': False}
+    try:
+        r = supabase.table('processed_emails').insert(row).execute()
+        result['success'] = True
+        result['returned_count'] = len(r.data or [])
+    except Exception as e:
+        result['exception_type'] = type(e).__name__
+        result['exception_msg']  = str(e)[:500]
+    # Cleanup
+    try:
+        supabase.table('processed_emails').delete().eq('email_id', test_id).execute()
+    except Exception:
+        pass
+    return jsonify(result)
+
+
 @app.route('/admin/worker-env', methods=['GET'])
 def admin_worker_env():
     """Return the most-recent worker_boot system_event so we can see what
