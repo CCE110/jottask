@@ -6723,7 +6723,20 @@ def admin_create_opensolar_for_task(task_id):
                               new_desc, count=1, flags=re.MULTILINE)
         else:
             new_desc = f'OpenSolar: {os_url}\n\n' + new_desc
-    supabase.table('tasks').update({'description': new_desc}).eq('id', task_id).execute()
+
+    # Build the task-level update. Always set description; if rebuild_full
+    # produced a better name than what's on the task (e.g. task currently
+    # has 'Unknown' because web's PipeReply token returned a stripped
+    # contact at original processing time), also fix client_name + title.
+    update_fields = {'description': new_desc}
+    if rebuild_full and name and name != 'Unknown':
+        cur_name = (t.get('client_name') or '').strip()
+        if not cur_name or cur_name.lower() in ('unknown', 'unknown lead'):
+            update_fields['client_name']  = name
+            update_fields['client_phone'] = phone or None
+            update_fields['client_email'] = (email or None)
+            update_fields['title']        = f'Call {name} - New DSW Lead'
+    supabase.table('tasks').update(update_fields).eq('id', task_id).execute()
 
     # 3. Save OS URL to PipeReply CRM note (best-effort)
     summary_for_crm = ''
