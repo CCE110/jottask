@@ -70,17 +70,26 @@ def _get_squad_for_user(user_id: str):
     return result.data[0] if result.data else None
 
 
-# ── Fruit Roster ──────────────────────────────────────────────────────────────
-# One player per game brings fruit. Rotation is alphabetical by player_name and
-# wraps after everyone has had a turn. Stored on squad_events.fruit_player_id
-# so swaps and history are first-class. Migration 028 adds the column.
+# ── Fruit + Shirt Rosters ─────────────────────────────────────────────────────
+# One player per game brings fruit (migration 028) and one player takes the
+# shirts home to wash (migration 032). Both rotate alphabetically by
+# player_name and wrap after everyone has had a turn. Stored as
+# squad_events.fruit_player_id / shirt_player_id so swaps and history are
+# first-class.
+#
+# At game-creation time, shirt is offset SHIRT_OFFSET indices from fruit so
+# the same kid never gets both jobs in the same week. Spec said "offset 5";
+# the team has 10 players so 5 puts shirt on the opposite end of the rotation.
+SHIRT_OFFSET = 5
+
 
 def _is_missing_column_error(exc) -> bool:
-    """True if this is a 'column does not exist' Postgres error — i.e. the
-    028 migration hasn't been applied yet. Lets us fail soft and keep
-    creating events without fruit duty until Rob runs the SQL."""
+    """True if this is a 'column does not exist' Postgres error — for the
+    fruit (028) or shirt (032) rosters — so we can fail soft and keep
+    creating events without those duties until Rob runs the SQL."""
     msg = str(exc).lower()
-    return 'fruit_player_id' in msg and ('does not exist' in msg or 'column' in msg)
+    is_missing = ('does not exist' in msg or 'column' in msg)
+    return is_missing and ('fruit_player_id' in msg or 'shirt_player_id' in msg)
 
 
 def _pick_next_fruit_player(squad_id: str, exclude_event_id: str = None):
@@ -124,17 +133,55 @@ def _pick_next_fruit_player(squad_id: str, exclude_event_id: str = None):
     return players[nxt]['id']
 
 
-def _safe_insert_event(payload: dict):
-    """Insert into squad_events. If the fruit_player_id column doesn't exist
-    yet (pre-migration), retry without that key so event creation still
-    succeeds.
+def _pick_shirt_player_for_fruit(squad_id: str, fruit_player_id: str):
+    """Pick the shirt player as (fruit_index + SHIRT_OFFSET) % len(players).
+
+    Falls back to alphabetical rotation from the last shirt assignment when
+    no fruit is set on the event yet (e.g. backfill on a game that's missing
+    fruit), so shirt duty still rotates fairly. Returns None when the squad
+    has no players or the migration isn't applied yet.
     """
+    pl = _db().table('squad_players').select('id, player_name')\
+        .eq('squad_id', squad_id).order('player_name').execute()
+    players = pl.data or []
+    if not players:
+        return None
+    ids = [p['id'] for p in players]
+
+    if fruit_player_id and fruit_player_id in ids:
+        return ids[(ids.index(fruit_player_id) + SHIRT_OFFSET) % len(ids)]
+
+    # No fruit on this event — rotate from last shirt assignment instead.
+    last_shirt_id = None
+    try:
+        r = _db().table('squad_events').select('shirt_player_id, created_at')\
+            .eq('squad_id', squad_id).not_.is_('shirt_player_id', 'null')\
+            .order('created_at', desc=True).limit(1).execute()
+        if r.data:
+            last_shirt_id = r.data[0].get('shirt_player_id')
+    except Exception as e:
+        if _is_missing_column_error(e):
+            return None
+        raise
+
+    if not last_shirt_id or last_shirt_id not in ids:
+        return players[0]['id']
+    return ids[(ids.index(last_shirt_id) + 1) % len(ids)]
+
+
+def _safe_insert_event(payload: dict):
+    """Insert into squad_events. If fruit_player_id or shirt_player_id
+    columns don't exist yet (pre-028 / pre-032), retry without those keys
+    so event creation still succeeds.
+    """
+    def _strip_roster_keys(p):
+        return {k: v for k, v in p.items() if k not in ('fruit_player_id', 'shirt_player_id')}
     try:
         return _db().table('squad_events').insert(payload).execute()
     except Exception as e:
-        if 'fruit_player_id' in payload and _is_missing_column_error(e):
-            payload = {k: v for k, v in payload.items() if k != 'fruit_player_id'}
-            return _db().table('squad_events').insert(payload).execute()
+        has_roster = ('fruit_player_id' in payload or 'shirt_player_id' in payload)
+        if has_roster and _is_missing_column_error(e):
+            return _db().table('squad_events').insert(_strip_roster_keys(payload)).execute()
         raise
 
 
@@ -227,18 +274,24 @@ def dashboard():
         for ev in upcoming_events:
             ev['poll'] = {'yes': 0, 'no': 0, 'pending': 0, 'players': []}
 
-    # Fruit roster: resolve fruit_player_id → player_name for each event.
-    # Pre-028 the column is absent and ev.get returns None — no-op.
-    fruit_ids = [ev.get('fruit_player_id') for ev in upcoming_events if ev.get('fruit_player_id')]
-    fruit_ids += [ev.get('fruit_player_id') for ev in past_events if ev.get('fruit_player_id')]
-    fruit_name_by_id = {}
-    if fruit_ids:
+    # Fruit + shirt rosters: batch-resolve player_id → player_name for both
+    # rosters in a single squad_players query. Pre-028/032 the columns are
+    # absent and ev.get returns None — no-op.
+    roster_ids = set()
+    for ev in upcoming_events + past_events:
+        for k in ('fruit_player_id', 'shirt_player_id'):
+            if ev.get(k):
+                roster_ids.add(ev[k])
+    name_by_id = {}
+    if roster_ids:
         fp = _db().table('squad_players').select('id, player_name')\
-            .in_('id', list(set(fruit_ids))).execute()
-        fruit_name_by_id = {p['id']: p['player_name'] for p in (fp.data or [])}
+            .in_('id', list(roster_ids)).execute()
+        name_by_id = {p['id']: p['player_name'] for p in (fp.data or [])}
     for ev in upcoming_events + past_events:
         fpid = ev.get('fruit_player_id')
-        ev['fruit_player_name'] = fruit_name_by_id.get(fpid) if fpid else None
+        spid = ev.get('shirt_player_id')
+        ev['fruit_player_name'] = name_by_id.get(fpid) if fpid else None
+        ev['shirt_player_name'] = name_by_id.get(spid) if spid else None
 
     # Pending inbox count
     inbox_q = _db().table('squad_email_inbox').select('id', count='exact').eq('status', 'pending')
@@ -431,9 +484,11 @@ def approve_inbox_item(item_id):
                 'source_inbox_id': item_id,
                 'created_at':      datetime.now(pytz.UTC).isoformat(),
             }
-            # Auto-assign fruit duty for games (not training/other)
+            # Auto-assign fruit + shirt duty for games (not training/other)
             if event_type == 'game':
                 payload['fruit_player_id'] = _pick_next_fruit_player(squad_id)
+                payload['shirt_player_id'] = _pick_shirt_player_for_fruit(
+                    squad_id, payload.get('fruit_player_id'))
             _safe_insert_event(payload)
             actions_executed.append(
                 f"Created event: {fixture['date']} vs {fixture.get('opponent', 'TBD')}"
@@ -519,6 +574,8 @@ def paste_inbox():
             }
             if event_type == 'game':
                 payload['fruit_player_id'] = _pick_next_fruit_player(squad_id)
+                payload['shirt_player_id'] = _pick_shirt_player_for_fruit(
+                    squad_id, payload.get('fruit_player_id'))
             _safe_insert_event(payload)
             saved.append(fixture['date'])
         # Still log to inbox (status=approved) so there's an audit trail
@@ -575,7 +632,7 @@ def update_event(event_id):
     data = request.get_json(silent=True) or {}
     update = {}
     for field in ('event_date', 'event_time', 'opponent', 'venue', 'is_home',
-                  'event_type', 'notes', 'round', 'fruit_player_id'):
+                  'event_type', 'notes', 'round', 'fruit_player_id', 'shirt_player_id'):
         if field in data:
             update[field] = data[field] or None
 
@@ -585,9 +642,11 @@ def update_event(event_id):
     try:
         _db().table('squad_events').update(update).eq('id', event_id).execute()
     except Exception as e:
-        # Pre-028 retry without fruit_player_id rather than 500
-        if 'fruit_player_id' in update and _is_missing_column_error(e):
+        # Pre-028 / pre-032 retry without roster keys rather than 500
+        has_roster = ('fruit_player_id' in update or 'shirt_player_id' in update)
+        if has_roster and _is_missing_column_error(e):
             update.pop('fruit_player_id', None)
+            update.pop('shirt_player_id', None)
             if update:
                 _db().table('squad_events').update(update).eq('id', event_id).execute()
         else:
@@ -775,6 +834,69 @@ def backfill_fruit_duty():
             'opponent':   ev.get('opponent') or 'TBD',
             'player_id':  pid,
             'player_name': name_by_id[pid],
+        })
+
+    return jsonify({'ok': True, 'assigned': len(assigned), 'assignments': assigned})
+
+
+@squad_bp.route('/squad/shirt/backfill', methods=['POST'])
+@login_required
+def backfill_shirt_duty():
+    """Walk every upcoming game (today onward) in this squad that doesn't yet
+    have a shirt_player_id and assign one. Prefers offset-from-fruit so
+    shirt and fruit can't collide; if a game has no fruit yet either, falls
+    back to alphabetical rotation from the last shirt assignment.
+
+    Skips training and other event types — shirt duty is for games only.
+    Returns JSON with an audit trail.
+    """
+    user_id = session.get('user_id')
+    squad = _get_squad_for_user(user_id)
+    if not squad:
+        return jsonify({'error': 'No squad'}), 404
+    sid = squad['id']
+
+    players = _db().table('squad_players').select('id, player_name')\
+        .eq('squad_id', sid).order('player_name').execute().data or []
+    if not players:
+        return jsonify({'error': 'No players in squad — add players via /squad/team first', 'assigned': 0}), 400
+    ids = [p['id'] for p in players]
+    name_by_id = {p['id']: p['player_name'] for p in players}
+
+    # Anchor for the no-fruit fallback path: most recent shirt assignment by
+    # event_date+time so the rotation picks up where it left off.
+    anchor = _db().table('squad_events').select('shirt_player_id, event_date, event_time')\
+        .eq('squad_id', sid).not_.is_('shirt_player_id', 'null')\
+        .order('event_date', desc=True).order('event_time', desc=True).limit(1).execute().data
+    cursor = ids.index(anchor[0]['shirt_player_id']) if (anchor and anchor[0].get('shirt_player_id') in ids) else -1
+
+    today = datetime.now(AEST).date().isoformat()
+    upcoming = _db().table('squad_events')\
+        .select('id, event_date, opponent, fruit_player_id, shirt_player_id')\
+        .eq('squad_id', sid).eq('event_type', 'game').eq('is_cancelled', False)\
+        .gte('event_date', today).order('event_date').order('event_time').execute().data or []
+
+    assigned = []
+    for ev in upcoming:
+        if ev.get('shirt_player_id') and ev['shirt_player_id'] in ids:
+            cursor = ids.index(ev['shirt_player_id'])
+            continue
+
+        fpid = ev.get('fruit_player_id')
+        if fpid and fpid in ids:
+            pid = ids[(ids.index(fpid) + SHIRT_OFFSET) % len(ids)]
+        else:
+            cursor = (cursor + 1) % len(ids)
+            pid = ids[cursor]
+
+        _db().table('squad_events').update({'shirt_player_id': pid}).eq('id', ev['id']).execute()
+        assigned.append({
+            'event_id':    ev['id'],
+            'event_date':  ev['event_date'],
+            'opponent':    ev.get('opponent') or 'TBD',
+            'player_id':   pid,
+            'player_name': name_by_id[pid],
+            'derived_from': 'fruit_offset' if (fpid and fpid in ids) else 'alphabetical_rotation',
         })
 
     return jsonify({'ok': True, 'assigned': len(assigned), 'assignments': assigned})

@@ -876,13 +876,17 @@ def send_squad_tuesday_whatsapp():
         if not events:
             continue
 
-        # Resolve fruit player names in one batch
-        fruit_ids = [e.get('fruit_player_id') for e in events if e.get('fruit_player_id')]
+        # Resolve fruit + shirt player names in one batch (migration 028 + 032)
+        roster_ids = set()
+        for e in events:
+            for k in ('fruit_player_id', 'shirt_player_id'):
+                if e.get(k):
+                    roster_ids.add(e[k])
         name_by_id = {}
-        if fruit_ids:
+        if roster_ids:
             try:
                 fp = sb.table('squad_players').select('id, player_name')\
-                    .in_('id', list(set(fruit_ids))).execute()
+                    .in_('id', list(roster_ids)).execute()
                 name_by_id = {p['id']: p['player_name'] for p in (fp.data or [])}
             except Exception:
                 pass
@@ -918,6 +922,11 @@ def send_squad_tuesday_whatsapp():
                     f"\n🍊 Fruit duty: {fruit_name} family\n" if fruit_name
                     else "\n🍊 Fruit duty: (not assigned)\n"
                 )
+                shirt_name = name_by_id.get(ev.get('shirt_player_id'))
+                shirt_line = (
+                    f"👕 Shirts: {shirt_name} family — please wash and return shirts after the game\n"
+                    if shirt_name else "👕 Shirts: (not assigned)\n"
+                )
 
                 whatsapp = (
                     f"⚽ {squad_name} Game This Saturday!\n\n"
@@ -925,6 +934,7 @@ def send_squad_tuesday_whatsapp():
                     f"🆚 vs {opponent} ({home_or_away})\n"
                     f"📍 {venue_clean}{field_part}\n"
                     f"{fruit_line}"
+                    f"{shirt_line}"
                     f"\nGood luck {squad_name}! 🟢⚫"
                 )
 
