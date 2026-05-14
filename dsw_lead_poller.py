@@ -936,6 +936,73 @@ def send_email(name, phone, addr, src, summary, crm_url, os_url, task_id=None, l
         print("Email error:", e)
         return False, str(e)
 
+def _find_recent_pending_dsw_task(client_name, hours=2):
+    """Look up a pending DSW Solar task for this client created within the
+    last `hours` window. Returns the most recent match, or None.
+
+    Used as a duplicate-fire guard at the top of process(): if a second
+    SMS / forwarded-email / admin retrigger arrives shortly after the first,
+    we don't want to spawn a second OpenSolar project, a second task, and a
+    second lead email. Falls back silently to None on any error so the
+    caller stays on the create path rather than crashing.
+    """
+    if not client_name or client_name.lower() == 'unknown':
+        return None
+    try:
+        from task_manager import TaskManager
+        from datetime import timezone as _tz
+        cutoff = (datetime.now(_tz.utc) - timedelta(hours=hours)).isoformat()
+        tm = TaskManager()
+        r = tm.supabase.table('tasks')\
+            .select('id, title, client_name, status, lead_status, due_date, due_time, '
+                    'description, created_at, reminder_sent_at, user_id')\
+            .eq('status', 'pending').eq('category', 'DSW Solar')\
+            .ilike('client_name', client_name)\
+            .gte('created_at', cutoff)\
+            .order('created_at', desc=True).limit(1).execute()
+        return (r.data or [None])[0]
+    except Exception as e:
+        print(f"[dedup] lookup failed for {client_name!r}: {e}")
+        return None
+
+
+def _resend_lead_email_for_recent(task, contact, full, cid, name,
+                                  phone, email, addr, src, summary,
+                                  source_badge_text, crm_url):
+    """Short-circuit path for the dedup guard in process(): the lead is
+    fresh (recent pending task already exists), so re-send the existing
+    task's lead email without spawning a new OpenSolar project or task.
+
+    Prefers the OpenSolar URL embedded in the existing task description;
+    falls back to the PipeReply CRM note if absent. No new CRM note is
+    written and the old task's reminder_sent_at is updated so the
+    scheduler doesn't compound with another reminder.
+    """
+    desc = task.get('description') or ''
+    os_m = re.search(r'^OpenSolar:\s*(https?://\S+)', desc, re.MULTILINE)
+    os_url = os_m.group(1) if os_m else (get_os_url_from_crm(cid) or '')
+
+    lead_status = task.get('lead_status') or 'new_lead'
+    task_id = task['id']
+
+    ok, err = send_email(
+        name, phone, addr, src, summary, crm_url, os_url,
+        task_id=task_id, lead_status=lead_status,
+        email=email, source_badge_text=source_badge_text,
+    )
+    if ok:
+        try:
+            from task_manager import TaskManager
+            from datetime import timezone as _tz
+            TaskManager().supabase.table('tasks').update({
+                'reminder_sent_at': datetime.now(_tz.utc).isoformat()
+            }).eq('id', task_id).execute()
+        except Exception as _e:
+            print(f"[dedup] could not stamp reminder_sent_at on {task_id[:8]}: {_e}")
+    print(f"[dedup] resent existing lead email for {name} → task {task_id[:8]} (ok={ok})")
+    return ok, err
+
+
 def process(contact, task_id=None, lead_status=None, is_new_contact=True):
     """Process a DSW lead contact.
 
@@ -957,6 +1024,45 @@ def process(contact, task_id=None, lead_status=None, is_new_contact=True):
         or 'Unknown'
     )
     name = " ".join(w.capitalize() for w in _full_name.split())
+
+    # ── Duplicate-fire guard ─────────────────────────────────────────────
+    # If a pending DSW Solar task already exists for this client and was
+    # created in the last 2 hours, the most recent prior process() call has
+    # already done the heavy work. Spawning a second OpenSolar project +
+    # task + email (the "triple-send" bug) is wasted work and clutters the
+    # CRM. Skip to resending the existing task's lead email instead.
+    #
+    # Only short-circuits the new-lead path. Callers that pass task_id
+    # explicitly (reminder resends, admin retriggers) bypass this guard.
+    if not task_id:
+        _recent = _find_recent_pending_dsw_task(name, hours=2)
+        if _recent:
+            print(f"[dedup] {name}: pending DSW task {_recent['id'][:8]} created "
+                  f"{(_recent.get('created_at') or '')[:19]} (<2h ago) — short-circuiting")
+            _phone = full.get("phone") or contact.get("phone", "N/A")
+            _email = full.get("email") or contact.get("email", "")
+            _addr  = join_address_parts(
+                full.get("address1") or contact.get("address1", ""),
+                full.get("city")     or contact.get("city", ""),
+                full.get("state")    or contact.get("state", ""),
+                full.get("postalCode") or contact.get("postalCode", ""),
+            )
+            _crm_url = CRM_BASE + "/detail/" + cid
+            _src = source(full)
+            _crm_notes_text = get_crm_notes_bodies(cid)
+            _summary, _ref = summarise(name, _phone, _addr, _src,
+                                       full.get("notes", "") or "",
+                                       full.get("customFields", []) or [])
+            if not _ref and _src.lower().startswith('referral'):
+                _ref = get_referred_by_from_crm(cid)
+            _badge = source_badge(_src, _ref)
+            if _crm_notes_text:
+                _summary = f"{_summary}\n\nCRM NOTES:\n{_crm_notes_text}"
+            _resend_lead_email_for_recent(_recent, contact, full, cid, name,
+                                          _phone, _email, _addr, _src,
+                                          _summary, _badge, _crm_url)
+            print("Done in", round(time.time() - t0, 1), "s:", name, "(dedup short-circuit)")
+            return
     phone = full.get("phone") or contact.get("phone","N/A")
     email = full.get("email") or contact.get("email","")
     address = full.get("address1") or contact.get("address1","")
