@@ -6998,6 +6998,47 @@ def admin_create_opensolar_for_task(task_id):
     })
 
 
+@app.route('/admin/tasks/<task_id>/patch', methods=['POST'])
+def admin_tasks_patch(task_id):
+    """Apply a small allowlisted set of field updates to a task. Used to
+    fix up tasks created via /admin/leads/process-from-cid where the
+    default flow stamps lead_status='new_lead', due=now+4h, etc. and the
+    caller needs different values (e.g. an appointment lead that's
+    actually site_visit_booked at a specific time).
+
+    Body fields (all optional, all nullable):
+      lead_status, due_date, due_time, priority, status, title,
+      client_name, reminder_sent_at
+
+    reminder_sent_at accepts 'now' as shorthand for the current UTC iso.
+    Auth: X-Internal-API-Key OR session.
+    """
+    api_key = request.headers.get('X-Internal-API-Key', '')
+    expected = os.getenv('INTERNAL_API_KEY', 'jottask-internal-2026')
+    if api_key != expected and 'user_id' not in session:
+        return jsonify({'error': 'auth required'}), 401
+
+    body = request.get_json(silent=True) or {}
+    allowed = ('lead_status', 'due_date', 'due_time', 'priority', 'status',
+               'title', 'client_name', 'reminder_sent_at')
+    update = {k: body[k] for k in allowed if k in body}
+    if not update:
+        return jsonify({'error': 'no allowed fields in body',
+                        'allowed': list(allowed)}), 400
+
+    if update.get('reminder_sent_at') == 'now':
+        update['reminder_sent_at'] = datetime.now(pytz.UTC).isoformat()
+
+    try:
+        r = supabase.table('tasks').update(update).eq('id', task_id).execute()
+        if not (r.data or []):
+            return jsonify({'error': 'task not found', 'task_id': task_id}), 404
+        return jsonify({'ok': True, 'task_id': task_id, 'applied': update,
+                        'row': (r.data or [None])[0]})
+    except Exception as e:
+        return jsonify({'error': str(e)[:300]}), 500
+
+
 @app.route('/admin/tasks/reset-reminder-flags', methods=['POST'])
 def admin_tasks_reset_reminder_flags():
     """Targeted reset of reminder_sent_at=NULL for a specific list of task_ids.
