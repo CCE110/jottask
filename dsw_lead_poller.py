@@ -975,8 +975,15 @@ def send_email(name, phone, addr, src, summary, crm_url, os_url, task_id=None, l
                 lead_prefix = f"REMINDER ({reminder_tag})"
             else:
                 lead_prefix = 'New Lead'
-            email_subject = (f"{lead_prefix}: {name} - {badge_text} | {brief_note}"
-                             if brief_note else f"{lead_prefix}: {name} - {badge_text}")
+            # Append a short task-id suffix so two leads for the same customer
+            # (different properties) can't collide on mail-client threading.
+            # Without this, Gmail / Outlook collapse messages with very
+            # similar Subject + From + nearby timestamps — which is why
+            # Ali Masoodi - 32 Legacy Cres's email "didn't come through":
+            # it threaded under Tapsall's and never surfaced as a new mail.
+            short = f' [#{task_id.split("-")[0][:6]}]' if task_id else ''
+            email_subject = (f"{lead_prefix}: {name} - {badge_text} | {brief_note}{short}"
+                             if brief_note else f"{lead_prefix}: {name} - {badge_text}{short}")
         from email_utils import send_email as _send_email
         ok, err = _send_email(NOTIFY, email_subject, html, category='dsw_lead', task_id=task_id)
         if ok:
