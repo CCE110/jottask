@@ -1003,12 +1003,24 @@ def _resend_lead_email_for_recent(task, contact, full, cid, name,
     return ok, err
 
 
-def process(contact, task_id=None, lead_status=None, is_new_contact=True):
+def process(contact, task_id=None, lead_status=None, is_new_contact=True,
+            force_new=False, address_override=None):
     """Process a DSW lead contact.
 
     is_new_contact=True  → freshly created Pipereply contact; overwrite CRM note
     is_new_contact=False → existing contact being reused; add a new CRM note to
                            preserve history rather than overwriting the old one
+    force_new=True       → bypass the duplicate-fire dedup guard. Use when
+                           legitimately creating a second lead for the same
+                           contact (e.g. one customer with multiple properties,
+                           each needing its own OpenSolar project + Jottask
+                           task).
+    address_override     → dict like {'address1','city','state','postalCode'}
+                           used in place of PipeReply's stored address fields.
+                           Required for force_new scenarios where the second
+                           property has a different address from the contact's
+                           primary, otherwise the new OpenSolar project would
+                           geocode at the primary address.
     """
     t0 = time.time()
     cid = contact.get("id")
@@ -1025,6 +1037,17 @@ def process(contact, task_id=None, lead_status=None, is_new_contact=True):
     )
     name = " ".join(w.capitalize() for w in _full_name.split())
 
+    # Apply address_override here so all downstream code (dedup short-circuit
+    # address fallback, OpenSolar payload, task description) sees the right
+    # address. The override mutates `full` in-place — get_full was just called
+    # so we own the dict.
+    if address_override and isinstance(address_override, dict):
+        for k in ('address1', 'city', 'state', 'postalCode'):
+            if address_override.get(k):
+                full[k] = address_override[k]
+        print(f"[override] address: {full.get('address1')}, {full.get('city')} "
+              f"{full.get('state')} {full.get('postalCode')}")
+
     # ── Duplicate-fire guard ─────────────────────────────────────────────
     # If a pending DSW Solar task already exists for this client and was
     # created in the last 2 hours, the most recent prior process() call has
@@ -1034,7 +1057,9 @@ def process(contact, task_id=None, lead_status=None, is_new_contact=True):
     #
     # Only short-circuits the new-lead path. Callers that pass task_id
     # explicitly (reminder resends, admin retriggers) bypass this guard.
-    if not task_id:
+    # force_new=True also bypasses — used for the second-property-same-
+    # customer scenario.
+    if not task_id and not force_new:
         _recent = _find_recent_pending_dsw_task(name, hours=2)
         if _recent:
             print(f"[dedup] {name}: pending DSW task {_recent['id'][:8]} created "

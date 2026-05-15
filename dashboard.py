@@ -6372,6 +6372,10 @@ def admin_leads_process_from_cid():
     if not cid:
         return jsonify({'error': 'cid required'}), 400
     is_new = bool(body.get('is_new_contact', False))
+    force_new = bool(body.get('force_new', False))
+    address_override = body.get('address_override') or None
+    if address_override and not isinstance(address_override, dict):
+        return jsonify({'error': 'address_override must be an object'}), 400
 
     # Load dsw_lead_poller dynamically
     try:
@@ -6395,7 +6399,9 @@ def admin_leads_process_from_cid():
                 'email':       full.get('email') or '',
                 'address1':    full.get('address1') or '',
             }
-            dsw.process(seed, task_id=None, lead_status=None, is_new_contact=is_new)
+            dsw.process(seed, task_id=None, lead_status=None,
+                        is_new_contact=is_new, force_new=force_new,
+                        address_override=address_override)
     except Exception as e:
         return jsonify({
             'error':  f'process raised: {e}',
