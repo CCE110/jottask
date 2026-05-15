@@ -774,7 +774,19 @@ def make_task(name, phone, summary, crm_url, os_url, email='', prev_notes_block=
         desc = "Phone: "+phone+"\n"+email_line+source_line+"CRM: "+crm_url+"\nOpenSolar: "+(os_url or "pending")+"\n\n"+summary
         if prev_notes_block:
             desc += "\n\n--- PREVIOUS NOTES ---\n" + prev_notes_block
-        result = tm.supabase.table("tasks").insert({"user_id":users.data[0]["id"],"title":"Call "+name+" - New DSW Lead","description":desc,"due_date":due,"due_time":due_time,"priority":"high","status":"pending","category":"DSW Solar","client_name":name}).execute()
+        result = tm.supabase.table("tasks").insert({
+            "user_id":      users.data[0]["id"],
+            "title":        "Call "+name+" - New DSW Lead",
+            "description":  desc,
+            "due_date":     due,
+            "due_time":     due_time,
+            "priority":     "high",
+            "status":       "pending",
+            "category":     "DSW Solar",
+            "client_name":  name,
+            "client_phone": phone or None,
+            "client_email": email or None,
+        }).execute()
         tid = result.data[0]["id"] if result.data else None
         print("Task created:", name, "id:", tid)
 
@@ -976,7 +988,18 @@ def send_email(name, phone, addr, src, summary, crm_url, os_url, task_id=None, l
         print("Email error:", e)
         return False, str(e)
 
-def _find_recent_pending_dsw_task(client_name, hours=2):
+def _normalize_phone_for_dedup(p):
+    """Strip everything but digits and drop a leading 61 (AU country code)
+    so '0468876196' and '+61468876196' compare equal."""
+    if not p:
+        return ''
+    digits = re.sub(r'\D', '', str(p))
+    if digits.startswith('61') and len(digits) == 11:
+        digits = '0' + digits[2:]
+    return digits
+
+
+def _find_recent_pending_dsw_task(client_name, hours=2, phone=None):
     """Look up a pending DSW Solar task for this client created within the
     last `hours` window. Returns the most recent match, or None.
 
@@ -985,24 +1008,44 @@ def _find_recent_pending_dsw_task(client_name, hours=2):
     we don't want to spawn a second OpenSolar project, a second task, and a
     second lead email. Falls back silently to None on any error so the
     caller stays on the create path rather than crashing.
+
+    Matches on client_name (case-insensitive) OR client_phone (normalised).
+    Phone matching catches the case where the same contact gets renamed
+    between fires (e.g. 'Ali Masoodi' → 'Ali Masoodi - 6 Tapsall Pl') so
+    the second send still gets short-circuited.
     """
-    if not client_name or client_name.lower() == 'unknown':
+    if (not client_name or client_name.lower() == 'unknown') and not phone:
         return None
     try:
         from task_manager import TaskManager
         from datetime import timezone as _tz
         cutoff = (datetime.now(_tz.utc) - timedelta(hours=hours)).isoformat()
         tm = TaskManager()
-        r = tm.supabase.table('tasks')\
-            .select('id, title, client_name, status, lead_status, due_date, due_time, '
+        q = tm.supabase.table('tasks')\
+            .select('id, title, client_name, client_phone, status, lead_status, due_date, due_time, '
                     'description, created_at, reminder_sent_at, user_id')\
             .eq('status', 'pending').eq('category', 'DSW Solar')\
-            .ilike('client_name', client_name)\
             .gte('created_at', cutoff)\
-            .order('created_at', desc=True).limit(1).execute()
+            .order('created_at', desc=True).limit(20)
+        # Build the OR filter: client_name ILIKE OR client_phone matches any
+        # of the normalised phone permutations (raw, +61, 0-prefixed)
+        clauses = []
+        if client_name and client_name.lower() != 'unknown':
+            clauses.append(f'client_name.ilike.{client_name}')
+        norm = _normalize_phone_for_dedup(phone)
+        if norm:
+            # Cover the common stored variants
+            variants = {norm, '+61' + norm[1:] if norm.startswith('0') else norm,
+                        norm[1:] if norm.startswith('0') else norm}
+            for v in variants:
+                if v:
+                    clauses.append(f'client_phone.eq.{v}')
+        if not clauses:
+            return None
+        r = q.or_(','.join(clauses)).execute()
         return (r.data or [None])[0]
     except Exception as e:
-        print(f"[dedup] lookup failed for {client_name!r}: {e}")
+        print(f"[dedup] lookup failed for {client_name!r}/{phone!r}: {e}")
         return None
 
 
@@ -1100,7 +1143,8 @@ def process(contact, task_id=None, lead_status=None, is_new_contact=True,
     # force_new=True also bypasses — used for the second-property-same-
     # customer scenario.
     if not task_id and not force_new:
-        _recent = _find_recent_pending_dsw_task(name, hours=2)
+        _dedup_phone = full.get("phone") or contact.get("phone", "")
+        _recent = _find_recent_pending_dsw_task(name, hours=2, phone=_dedup_phone)
         if _recent:
             print(f"[dedup] {name}: pending DSW task {_recent['id'][:8]} created "
                   f"{(_recent.get('created_at') or '')[:19]} (<2h ago) — short-circuiting")
