@@ -1140,21 +1140,30 @@ def process(contact, task_id=None, lead_status=None, is_new_contact=True,
         # New lead: check for an existing pending DSW Solar task for this client.
         # If one exists, scrape its MY NOTES + task_notes so they carry forward,
         # reuse its OpenSolar URL (if any), and mark the old task superseded.
+        #
+        # When force_new=True the caller has explicitly said "this is a separate
+        # lead — leave any existing task for this client alone." Skip the whole
+        # migrate path or we'd silently cancel the original (this happened on
+        # Ali Masoodi's two-property batch — Legacy Crescent got cancelled when
+        # Tapsall was added).
         existing_task = None
         prev_notes_block = ''
         reused_os_url = None
-        try:
-            from task_manager import TaskManager
-            _tm = TaskManager()
-            _users = _tm.supabase.table("users").select("id").eq("email","rob@cloudcleanenergy.com.au").execute()
-            _uid = _users.data[0]["id"] if _users.data else None
-            if _uid:
-                existing_task = _tm.find_existing_task_by_client(client_name=name, user_id=_uid)
-                # Only migrate from pending DSW Solar tasks — ignore other categories
-                if existing_task and (existing_task.get('category') != 'DSW Solar' or existing_task.get('status') != 'pending'):
-                    existing_task = None
-        except Exception as e:
-            print(f"[Migrate] lookup failed: {e}")
+        if force_new:
+            print(f"[force_new] skipping find_existing_task_by_client migrate path")
+        else:
+            try:
+                from task_manager import TaskManager
+                _tm = TaskManager()
+                _users = _tm.supabase.table("users").select("id").eq("email","rob@cloudcleanenergy.com.au").execute()
+                _uid = _users.data[0]["id"] if _users.data else None
+                if _uid:
+                    existing_task = _tm.find_existing_task_by_client(client_name=name, user_id=_uid)
+                    # Only migrate from pending DSW Solar tasks — ignore other categories
+                    if existing_task and (existing_task.get('category') != 'DSW Solar' or existing_task.get('status') != 'pending'):
+                        existing_task = None
+            except Exception as e:
+                print(f"[Migrate] lookup failed: {e}")
 
         if existing_task:
             old_tid = existing_task['id']
