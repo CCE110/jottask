@@ -524,9 +524,49 @@ def make_opensolar(name, phone, email, address, city, state, postcode,
             url = f"https://app.opensolar.com/#/projects/{pid}/info"
             print("OpenSolar:", url)
             return pid, url
-        # Handle duplicate email — search for existing project by name
+        # Handle duplicate email — OpenSolar refuses a second project for an
+        # existing contact email. Primary fallback: look up the contact via
+        # GET /api/orgs/<org>/contacts/?email=<email> and pull the first
+        # project ID off its `projects` field. This works reliably because
+        # OpenSolar's contacts endpoint filters by exact email match
+        # (unlike the projects ?search= param which ignores the query).
+        # Legacy name-search retained as last-ditch fallback.
         if r.status_code == 400 and "already in use" in r.text:
-            print(f"[OpenSolar] Email in use, searching for existing project: {name}")
+            if email:
+                print(f"[OpenSolar] Email in use, looking up existing contact: {email}")
+                try:
+                    cr = req.get(f"https://api.opensolar.com/api/orgs/{conn.org_id}/contacts/",
+                                 headers=th, params={"email": email}, timeout=15)
+                    if cr.ok:
+                        payload = cr.json()
+                        rows = payload if isinstance(payload, list) else (
+                            payload.get("data") or payload.get("results") or []
+                        )
+                        matches = [row for row in rows
+                                   if (row.get("email") or "").lower() == email.lower()]
+                        for m in matches:
+                            projects = m.get("projects") or []
+                            if projects:
+                                # projects entries look like
+                                # https://api.opensolar.com/api/orgs/14523/projects/9872706/
+                                pid_str = projects[0].rstrip("/").split("/")[-1]
+                                if pid_str.isdigit():
+                                    pid = int(pid_str)
+                                    url = f"https://app.opensolar.com/#/projects/{pid}/info"
+                                    print(f"[OpenSolar] Linked existing project for "
+                                          f"{email} → {url}")
+                                    return pid, url
+                        print(f"[OpenSolar] Contact found for {email} but no projects "
+                              f"linked — falling back to name search")
+                    else:
+                        print(f"[OpenSolar] contacts lookup HTTP {cr.status_code}")
+                except Exception as ce:
+                    print(f"[OpenSolar] contacts lookup error: {ce}")
+
+            # Last-resort: name search. The projects ?search= param doesn't
+            # filter reliably, but on the off chance a result matches we'll
+            # take it before giving up.
+            print(f"[OpenSolar] Falling back to name search: {name}")
             sr = req.get(f"https://api.opensolar.com/api/orgs/{conn.org_id}/projects/",
                          headers=th, params={"search": name, "limit": 5}, timeout=15)
             if sr.ok:
@@ -534,7 +574,7 @@ def make_opensolar(name, phone, email, address, city, state, postcode,
                 if results:
                     pid = results[0].get("id", "")
                     url = f"https://app.opensolar.com/#/projects/{pid}/info"
-                    print(f"[OpenSolar] Found existing project: {url}")
+                    print(f"[OpenSolar] Found existing project (name search): {url}")
                     return pid, url
         print(f"OpenSolar error: {r.status_code} {r.text[:200]}")
         return None, None
