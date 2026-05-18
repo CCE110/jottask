@@ -254,6 +254,8 @@ def find_or_create_pipereply_contact(name, phone, email='', address='', src='ref
                     return cid, False
 
     # ── 4. Create new contact ─────────────────────────────────────────────
+    # PipeReply rejects blank email with a 422 "email must be an email",
+    # so omit empty optional fields entirely rather than sending ''.
     parts = (name or '').strip().split()
     first = parts[0] if parts else name or 'Unknown'
     last  = ' '.join(parts[1:]) if len(parts) > 1 else ''
@@ -261,12 +263,12 @@ def find_or_create_pipereply_contact(name, phone, email='', address='', src='ref
         'locationId': LOCATION_ID,
         'firstName':  first,
         'lastName':   last,
-        'phone':      phone or '',
-        'email':      email or '',
-        'address1':   address or '',
         'tags':       [src if src else 'referral'],
         'source':     src.replace('_', ' ').title() if src else 'Referral',
     }
+    if phone:   payload['phone']    = phone
+    if email:   payload['email']    = email
+    if address: payload['address1'] = address
     r = req.post(f'{BASE}/contacts/', headers=H, json=payload, timeout=10)
     if r.ok:
         data = r.json()
