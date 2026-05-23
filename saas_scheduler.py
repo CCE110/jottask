@@ -952,8 +952,11 @@ def send_squad_tuesday_whatsapp():
                     f'</div>'
                 )
 
+                # Personal Gmail, not the CCE address — the CCE→DSW rewrite in
+                # email_utils would otherwise route squad emails to Rob's work
+                # inbox, which is wrong for kids' soccer.
                 ok, err = send_email(
-                    'rob@cloudcleanenergy.com.au',
+                    'roblowe007@gmail.com',
                     f'⚽ {squad_name} Saturday — WhatsApp copy ({date_str})',
                     html, category='squad_tuesday',
                 )
