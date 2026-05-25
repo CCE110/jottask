@@ -87,14 +87,23 @@ def find_pipereply_contact(name):
 def extract_name(sms_text):
     """Extract lead name from SolarQuotes SMS"""
     import re
-    # Name part: capital letter followed by letters/apostrophe. Accepts mixed
-    # case ("Johnson", "O'Neill", "McDonald") AND ALL-CAPS ("JOHNSON", "CHAN")
-    # — DSW Energy sometimes sends names shouting.
-    NAME_PART = r"[A-Z][A-Za-z']+(?:[A-Z][A-Za-z']+)?"
+    # Name part: capital letter followed by letters/apostrophe, with optional
+    # hyphenated suffix ("Canoa-Rojas") or mixed-case suffix ("McDonald").
+    # Accepts mixed case AND ALL-CAPS ("JOHNSON") — DSW Energy sometimes
+    # sends names shouting.
+    NAME_PART = r"[A-Z][A-Za-z']+(?:-[A-Z][A-Za-z']+)?(?:[A-Z][A-Za-z']+)?"
     NAME_FULL = rf'{NAME_PART}(?:\s+{NAME_PART})+'
     # DSW Energy format: "Hi Rob, Peter Smith has just been assigned to you."
     # Optional job reference (e.g. "Q2021980") may appear between name and "has just been".
     m = re.search(rf'Hi Rob,\s+({NAME_FULL})(?:\s+[A-Z]\d{{5,}})?\s+has just been assigned', sms_text)
+    if m:
+        return m.group(1)
+    # DSW appointment-reminder format:
+    #   "Reminder: Upcoming Appointment with Peter Smith in 5 minutes."
+    #   "Upcoming Appointment with Peter Smith"
+    # The "with ... in" / "with ... <end>" anchor is reliable; one pattern
+    # covers both because NAME_FULL stops at lowercase "in".
+    m = re.search(rf'Appointment with\s+({NAME_FULL})', sms_text)
     if m:
         return m.group(1)
     # Fallback: any two+ capitalised words (with optional apostrophe),
