@@ -6,8 +6,8 @@ Two-way SMS for Jottask:
   saas_email_processor when Rob emails an "SMS: <number>" command.
 - normalize_au_mobile(): coerce 04xx / +614xx / 614xx into E.164 (+614xxxxxxxx).
 
-Inbound SMS is handled by the /webhooks/mobilemessage/sms-inbound endpoint in
-dashboard.py, which forwards each received message on to Rob as an email.
+Inbound SMS is handled by the https://www.jottask.app/webhooks/mobilemessage/sms-inbound
+endpoint in dashboard.py, which forwards each received message on to Rob as an email.
 
 API reference: https://www.mobilemessage.com.au/api-documentation
   POST https://api.mobilemessage.com.au/v1/messages
