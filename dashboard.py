@@ -7921,14 +7921,14 @@ def debug_reminders():
     return f'<html><body style="font-family:monospace;padding:20px;">{"<br>".join(lines)}</body></html>'
 
 
-@app.route('/webhooks/clicksend/sms-inbound', methods=['POST'])
-def clicksend_sms_inbound():
-    """Receive an inbound SMS from ClickSend and forward it to Rob as email.
+@app.route('/webhooks/mobilemessage/sms-inbound', methods=['POST'])
+def mobilemessage_sms_inbound():
+    """Receive an inbound SMS from Mobile Message and forward it to Rob as email.
 
-    ClickSend posts inbound SMS as JSON or form-encoded data depending on the
-    configured rule, so we accept both and read the sender + body from the
-    field names ClickSend commonly uses. No auth — this is a public webhook
-    receiver (like /action); the client IP is logged for audit.
+    The gateway posts inbound SMS as JSON or form-encoded data, so we accept
+    both and read the sender + body from the field names providers commonly
+    use. No auth — this is a public webhook receiver (like /action); the
+    client IP is logged for audit.
     """
     import html as _html
 
@@ -7941,11 +7941,11 @@ def clicksend_sms_inbound():
                 return str(v)
         return ''
 
-    sender = _pick('from', 'originalsenderid', 'sender', 'mobile', 'msisdn')
-    message = _pick('body', 'message', 'sms', 'text', 'original_body')
+    sender = _pick('from', 'sender', 'mobile', 'msisdn', 'originalsenderid')
+    message = _pick('message', 'content', 'body', 'sms', 'text')
 
     client_ip = request.headers.get('X-Forwarded-For', request.remote_addr)
-    print(f"📩 CLICKSEND INBOUND SMS from={sender!r} len={len(message)} | IP={client_ip}")
+    print(f"📩 INBOUND SMS from={sender!r} len={len(message)} | IP={client_ip}")
 
     if not message and not sender:
         return jsonify({'error': 'no SMS payload'}), 400

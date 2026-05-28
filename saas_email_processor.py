@@ -678,7 +678,7 @@ class AIEmailProcessor:
             sender = email_body['From']
             content = self.extract_email_content(email_body)
 
-            # --- ClickSend SMS send: "SMS: <number>" command from Rob ---
+            # --- SMS send: "SMS: <number>" command from Rob ---
             sms_result = self._maybe_send_sms(subject, content, sender)
             if sms_result:
                 return sms_result
@@ -788,13 +788,13 @@ class AIEmailProcessor:
             return ('error', f'Error: {str(e)[:480]}')
 
     # =========================================================================
-    # CLICKSEND SMS — outbound send via email command
+    # SMS — outbound send via email command (Mobile Message gateway)
     # =========================================================================
 
     def _maybe_send_sms(self, subject, content, sender_raw):
         """If this email is an 'SMS: <number>' command, send the body as an SMS
-        via ClickSend and return an outcome tuple. Returns None when this isn't
-        an SMS command, so normal email processing continues.
+        via Mobile Message and return an outcome tuple. Returns None when this
+        isn't an SMS command, so normal email processing continues.
 
         Only rob@cloudcleanenergy.com.au may trigger SMS sends — commands from
         any other sender are ignored.
@@ -808,7 +808,7 @@ class AIEmailProcessor:
             print(f"  [SMS] Ignoring SMS command from unauthorized sender: {sender_email!r}")
             return ('ignored', 'SMS command from unauthorized sender')
 
-        from clicksend_sms import send_sms, normalize_au_mobile
+        from mobilemessage_sms import send_sms, normalize_au_mobile
 
         raw_number = m.group(1).strip()
         number = normalize_au_mobile(raw_number)
