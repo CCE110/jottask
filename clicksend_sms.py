@@ -17,6 +17,11 @@ import requests
 
 CLICKSEND_SEND_URL = 'https://rest.clicksend.com/v3/sms/send'
 
+# ClickSend's shared Australian number with carrier approval. Hardcoded as the
+# SMS sender ID (not env-configurable) so every outbound SMS uses the approved
+# number.
+CLICKSEND_FROM_NUMBER = '+61461384806'
+
 
 def normalize_au_mobile(raw):
     """Normalize an Australian mobile number to E.164 (+614xxxxxxxx).
@@ -60,6 +65,7 @@ def send_sms(to_number, message):
         'messages': [
             {
                 'source': 'jottask',
+                'from': CLICKSEND_FROM_NUMBER,
                 'to': to,
                 'body': message,
             }
