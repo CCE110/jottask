@@ -678,6 +678,11 @@ class AIEmailProcessor:
             sender = email_body['From']
             content = self.extract_email_content(email_body)
 
+            # --- ClickSend SMS send: "SMS: <number>" command from Rob ---
+            sms_result = self._maybe_send_sms(subject, content, sender)
+            if sms_result:
+                return sms_result
+
             # --- OpenSolar "Customer Accepted" detection (before AI analysis) ---
             # Lazy import: if install_order.py is broken, only this path fails
             try:
@@ -781,6 +786,47 @@ class AIEmailProcessor:
         except Exception as e:
             print(f"Error processing email: {e}")
             return ('error', f'Error: {str(e)[:480]}')
+
+    # =========================================================================
+    # CLICKSEND SMS — outbound send via email command
+    # =========================================================================
+
+    def _maybe_send_sms(self, subject, content, sender_raw):
+        """If this email is an 'SMS: <number>' command, send the body as an SMS
+        via ClickSend and return an outcome tuple. Returns None when this isn't
+        an SMS command, so normal email processing continues.
+
+        Only rob@cloudcleanenergy.com.au may trigger SMS sends — commands from
+        any other sender are ignored.
+        """
+        m = re.match(r'^\s*SMS:\s*(\+?\d[\d\s\-]{6,})', subject or '', flags=re.IGNORECASE)
+        if not m:
+            return None
+
+        sender_email = self._get_sender_email_address(sender_raw)
+        if sender_email != 'rob@cloudcleanenergy.com.au':
+            print(f"  [SMS] Ignoring SMS command from unauthorized sender: {sender_email!r}")
+            return ('ignored', 'SMS command from unauthorized sender')
+
+        from clicksend_sms import send_sms, normalize_au_mobile
+
+        raw_number = m.group(1).strip()
+        number = normalize_au_mobile(raw_number)
+        if not number:
+            print(f"  [SMS] Invalid phone number in subject: {raw_number!r}")
+            return ('error', f'Invalid SMS number: {raw_number}')
+
+        body = (content or '').strip()
+        if not body:
+            print(f"  [SMS] Empty message body — nothing to send to {number}")
+            return ('no_action', 'SMS command had empty body')
+
+        success, detail = send_sms(number, body)
+        if success:
+            print(f"  [SMS] Sent to {number}: {body[:60]}")
+            return ('sms_sent', f'SMS to {number}: {body[:120]}')
+        print(f"  [SMS] Send failed to {number}: {detail}")
+        return ('error', f'SMS send failed: {detail}')
 
     # =========================================================================
     # PLAUD DETECTION

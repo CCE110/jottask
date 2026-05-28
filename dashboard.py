@@ -7921,6 +7921,62 @@ def debug_reminders():
     return f'<html><body style="font-family:monospace;padding:20px;">{"<br>".join(lines)}</body></html>'
 
 
+@app.route('/webhooks/clicksend/sms-inbound', methods=['POST'])
+def clicksend_sms_inbound():
+    """Receive an inbound SMS from ClickSend and forward it to Rob as email.
+
+    ClickSend posts inbound SMS as JSON or form-encoded data depending on the
+    configured rule, so we accept both and read the sender + body from the
+    field names ClickSend commonly uses. No auth — this is a public webhook
+    receiver (like /action); the client IP is logged for audit.
+    """
+    import html as _html
+
+    data = request.get_json(silent=True) or request.form.to_dict() or {}
+
+    def _pick(*keys):
+        for k in keys:
+            v = data.get(k)
+            if v:
+                return str(v)
+        return ''
+
+    sender = _pick('from', 'originalsenderid', 'sender', 'mobile', 'msisdn')
+    message = _pick('body', 'message', 'sms', 'text', 'original_body')
+
+    client_ip = request.headers.get('X-Forwarded-For', request.remote_addr)
+    print(f"📩 CLICKSEND INBOUND SMS from={sender!r} len={len(message)} | IP={client_ip}")
+
+    if not message and not sender:
+        return jsonify({'error': 'no SMS payload'}), 400
+
+    preview = (message[:50] + '…') if len(message) > 50 else message
+    subject = f"SMS from {sender or 'unknown'}: {preview}"
+
+    reply_hint = ''
+    if sender:
+        reply_hint = (
+            f'<p style="color:#6b7280;font-size:13px;">Reply by emailing Jottask '
+            f'with subject <code>SMS: {_html.escape(sender)}</code></p>'
+        )
+    html_body = f"""
+    <div style="font-family:-apple-system,sans-serif;max-width:600px;">
+        <h2 style="color:#6366F1;">📱 New SMS</h2>
+        <p><strong>From:</strong> {_html.escape(sender) or 'unknown'}</p>
+        <div style="background:#f3f4f6;border-radius:8px;padding:16px;white-space:pre-wrap;">{_html.escape(message) or '(no message body)'}</div>
+        {reply_hint}
+    </div>
+    """
+
+    try:
+        send_email('rob@cloudcleanenergy.com.au', subject, html_body, category='system')
+    except Exception as e:
+        print(f"  [SMS INBOUND] Failed to forward: {e}")
+        return jsonify({'error': 'forward failed'}), 500
+
+    return jsonify({'status': 'ok'}), 200
+
+
 if __name__ == '__main__':
     port = int(os.getenv('PORT', 5000))
     app.run(host='0.0.0.0', port=port, debug=True)
