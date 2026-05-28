@@ -7969,7 +7969,8 @@ def clicksend_sms_inbound():
     """
 
     try:
-        send_email('rob@cloudcleanenergy.com.au', subject, html_body, category='system')
+        send_email('rob@cloudcleanenergy.com.au', subject, html_body,
+                   category='system', bypass_rewrite=True)
     except Exception as e:
         print(f"  [SMS INBOUND] Failed to forward: {e}")
         return jsonify({'error': 'forward failed'}), 500

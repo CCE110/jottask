@@ -26,7 +26,8 @@ def _rewrite_recipient(to_email):
     return _RECIPIENT_REWRITES.get(to_email.strip().lower(), to_email)
 
 
-def send_email(to_email, subject, html_body, category=None, user_id=None, task_id=None):
+def send_email(to_email, subject, html_body, category=None, user_id=None, task_id=None,
+               bypass_rewrite=False):
     """
     Send an email via Resend API with retry logic.
     Returns: (success: bool, error: str or None)
@@ -35,8 +36,12 @@ def send_email(to_email, subject, html_body, category=None, user_id=None, task_i
       category: 'reminder', 'summary', 'confirmation', 'approval', 'system'
       user_id: which user this email is for
       task_id: which task this email relates to
+      bypass_rewrite: if True, skip the CCE→DSW recipient rewrite and deliver
+        to to_email as-is (used for SMS notifications, which must land on Rob's
+        CCE inbox, not the DSW work inbox)
     """
-    to_email = _rewrite_recipient(to_email)
+    if not bypass_rewrite:
+        to_email = _rewrite_recipient(to_email)
 
     # Read API key at call time (not import time) so env vars are always fresh
     api_key = os.getenv('RESEND_API_KEY')
