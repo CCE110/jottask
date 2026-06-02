@@ -279,22 +279,108 @@ def find_or_create_pipereply_contact(name, phone, email='', address='', src='ref
     return None, False
 
 
-def _mac_contact_exists(name):
-    """Return True if a contact named '{first} {last} DSW' already exists in Mac Contacts."""
-    parts = (name or '').strip().split()
-    first = parts[0] if parts else ''
-    last  = (' '.join(parts[1:]) + ' DSW').strip() if len(parts) > 1 else 'DSW'
-    full  = f'{first} {last}'.strip().replace('"', '').replace("'", '')
-    script = f'tell application "Contacts"\nreturn (count of (people whose name is "{full}")) > 0\nend tell'
+def _list_mac_contacts():
+    """Dump every Mac Contacts entry as a list of dicts: {first, last, phones}.
+
+    Enumerating in AppleScript and matching in Python avoids the 'whose name
+    is/contains ...' filter, which substring-matched 'Tian DSW' against
+    'Esther Christian DSW'. Phones are normalised through _normalize_phone()
+    so '+61413537679' and '0413537679' compare equal.
+    """
+    script = (
+        'set out to ""\n'
+        'tell application "Contacts"\n'
+        '    repeat with p in every person\n'
+        '        set fn to ""\n'
+        '        set ln to ""\n'
+        '        try\n'
+        '            set fn to first name of p as string\n'
+        '        end try\n'
+        '        try\n'
+        '            set ln to last name of p as string\n'
+        '        end try\n'
+        '        set phs to ""\n'
+        '        try\n'
+        '            repeat with ph in phones of p\n'
+        '                set phs to phs & (value of ph as string) & "|"\n'
+        '            end repeat\n'
+        '        end try\n'
+        '        set out to out & fn & tab & ln & tab & phs & linefeed\n'
+        '    end repeat\n'
+        'end tell\n'
+        'return out\n'
+    )
     try:
-        r = subprocess.run(['osascript', '-e', script], capture_output=True, text=True, timeout=10)
-        exists = r.stdout.strip().lower() == 'true'
-        if exists:
-            print(f'[iCloud] Contact already exists — skipping: {full}')
-        return exists
+        r = subprocess.run(['osascript', '-e', script],
+                           capture_output=True, text=True, timeout=30)
     except Exception as e:
-        print(f'[iCloud] Existence check error: {e}')
+        print(f'[iCloud] enumerate error: {e}')
+        return []
+    out = []
+    for line in (r.stdout or '').splitlines():
+        cols = line.split('\t')
+        if len(cols) < 3:
+            continue
+        phones = [_normalize_phone(p) for p in cols[2].split('|') if p.strip()]
+        phones = [p for p in phones if p]
+        out.append({'first': cols[0].strip(), 'last': cols[1].strip(), 'phones': phones})
+    return out
+
+
+def _mac_contact_exists(name, phone=''):
+    """Return True if a Mac Contacts entry already exists for this lead.
+
+    Lookup order:
+      1. Exact normalised phone match — strongest signal.
+      2. Exact case-insensitive first + (last + ' DSW') match.
+
+    If the name matches but the existing contact carries a *different* phone,
+    log a warning and return False — that's almost certainly a different
+    person who happens to share a name (e.g. two 'John Smith DSW' entries),
+    and we'd rather create a fresh contact than silently treat them as one
+    and risk attaching the new lead's phone to the wrong record.
+
+    Substring/contains matching is never used.
+    """
+    target_phone = _normalize_phone(phone or '')
+    parts = (name or '').strip().split()
+    target_first = (parts[0] if parts else '').lower()
+    target_last  = ((' '.join(parts[1:]) + ' DSW').strip()
+                    if len(parts) > 1 else 'DSW').lower()
+
+    contacts = _list_mac_contacts()
+    if not contacts:
+        # osascript failure or empty book — be conservative and let the
+        # caller try to create (PUT is idempotent on UID).
         return False
+
+    if target_phone:
+        for c in contacts:
+            if target_phone in c['phones']:
+                print(f"[iCloud] Contact exists (phone match {target_phone}): "
+                      f"{c['first']} {c['last']}")
+                return True
+
+    if target_first:
+        for c in contacts:
+            if c['first'].lower() != target_first:
+                continue
+            if c['last'].lower() != target_last:
+                continue
+            # Exact name match. Phone-safety check:
+            if not target_phone or not c['phones'] or target_phone in c['phones']:
+                print(f"[iCloud] Contact exists (name match): "
+                      f"{c['first']} {c['last']}")
+                return True
+            print(
+                f"[iCloud] WARNING: name match for {name!r} "
+                f"({c['first']} {c['last']}) but existing phone(s) {c['phones']} "
+                f"don't include lead phone {target_phone}. Treating as a "
+                f"different person — proceeding to create a new contact."
+            )
+            return False
+
+    return False
 
 
 def source(c):
@@ -631,7 +717,7 @@ def icloud_contact(name, phone, email='', address='', city='', state='', postcod
     Checks whether a contact named '{name} DSW' already exists (via Mac Contacts) before
     creating. Discovers partition + DSID dynamically so it works even if Apple moves the account.
     """
-    if _mac_contact_exists(name):
+    if _mac_contact_exists(name, phone=phone):
         return True  # Already exists — treat as success, skip creation
     import uuid, re as _re, requests as _req, xml.etree.ElementTree as ET
     from requests.auth import HTTPBasicAuth
@@ -720,7 +806,7 @@ def icloud_contact(name, phone, email='', address='', city='', state='', postcod
 
 def mac_contact(name, phone, src=''):
     """Fallback: create a contact in the local Mac Contacts app via osascript."""
-    if _mac_contact_exists(name):
+    if _mac_contact_exists(name, phone=phone):
         return  # Already exists — skip
     parts = name.strip().split()
     first = parts[0] if parts else 'Unknown'
