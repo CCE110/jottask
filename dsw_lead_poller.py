@@ -170,6 +170,28 @@ def _normalize_phone(p):
     return d
 
 
+def _to_e164_au(p):
+    """Coerce an AU mobile to E.164 (+614XXXXXXXX) for outbound queries.
+
+    PipeReply stores phones as '+614XXXXXXXX' and its `query=` parameter does
+    prefix-style matching against the stored value — searching with '04xxx...'
+    against '+614xxx...' returns zero results. Use this when building search
+    queries; use _normalize_phone for in-Python equality checks (it strips +
+    and returns '04...').
+    """
+    import re as _re
+    if not p:
+        return ''
+    d = _re.sub(r'\D', '', str(p))
+    if d.startswith('61') and len(d) == 11:
+        return '+' + d
+    if d.startswith('0') and len(d) == 10:
+        return '+61' + d[1:]
+    if len(d) == 9 and d[0] == '4':
+        return '+61' + d
+    return ''
+
+
 def _fuzzy_name_match(a, b, threshold=0.80):
     """Return True if two name strings match with >= threshold similarity."""
     from difflib import SequenceMatcher
@@ -191,25 +213,48 @@ def find_or_create_pipereply_contact(name, phone, email='', address='', src='ref
     norm_email = (email or '').strip().lower()
 
     # ── 1. Phone-first dedup ──────────────────────────────────────────────
+    # PipeReply stores phones as +614XXXXXXXX and its `query=` does prefix
+    # matching against the stored value. Querying with '04xxx...' against a
+    # '+614xxx...' record returns zero hits, which previously meant the dedup
+    # short-circuit missed (MYTIEN Do / 'Tian' lead, 2026-06-02) and PipeReply's
+    # server-side dedup fired with a 400 instead. Try E.164 first (the form
+    # PipeReply actually stores), fall back to the 0... form for any legacy
+    # contacts stored that way, and post-filter every result through
+    # _normalize_phone so the comparison works regardless of stored format.
     if norm_phone:
-        r = req.get(f'{BASE}/contacts/', headers=H,
-                    params={'locationId': LOCATION_ID, 'query': norm_phone, 'limit': 10},
-                    timeout=10)
-        if r.ok:
+        queries = []
+        e164 = _to_e164_au(phone)
+        if e164:
+            queries.append(e164)
+        if norm_phone not in queries:
+            queries.append(norm_phone)
+
+        seen_cids = set()
+        for q in queries:
+            r = req.get(f'{BASE}/contacts/', headers=H,
+                        params={'locationId': LOCATION_ID, 'query': q, 'limit': 10},
+                        timeout=10)
+            if not r.ok:
+                continue
             for c in r.json().get('contacts', []):
-                if _normalize_phone(c.get('phone', '')) == norm_phone:
-                    cid = c['id']
-                    existing_name = c.get('contactName', name)
-                    print(f'[Pipereply] Reused existing contact (phone match): {existing_name} ({cid[:8]})')
-                    # Patch in any missing fields
-                    patch = {}
-                    if email and not c.get('email'):
-                        patch['email'] = email
-                    if address and not c.get('address1'):
-                        patch['address1'] = address
-                    if patch:
-                        req.put(f'{BASE}/contacts/{cid}', headers=H, json=patch, timeout=10)
-                    return cid, False
+                cid = c.get('id')
+                if not cid or cid in seen_cids:
+                    continue
+                seen_cids.add(cid)
+                if _normalize_phone(c.get('phone', '')) != norm_phone:
+                    continue
+                existing_name = c.get('contactName', name)
+                print(f'[Pipereply] Reused existing contact (phone match via {q!r}): '
+                      f'{existing_name} ({cid[:8]})')
+                # Patch in any missing fields
+                patch = {}
+                if email and not c.get('email'):
+                    patch['email'] = email
+                if address and not c.get('address1'):
+                    patch['address1'] = address
+                if patch:
+                    req.put(f'{BASE}/contacts/{cid}', headers=H, json=patch, timeout=10)
+                return cid, False
 
     # ── 2. Email dedup ────────────────────────────────────────────────────
     if norm_email:
