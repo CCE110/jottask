@@ -430,7 +430,7 @@ def _mac_contact_exists(name, phone=''):
 
 def source(c):
     tags = " ".join([t.lower() for t in (c.get("tags") or [])])
-    for s, k in [("SolarQuotes","solar_quotes"),("Bid My Solar","bid_my_solar"),("Bid My Solar","bidmysolar"),("SEM","sem"),("Facebook","facebook"),("Website","website"),("Referral","referral")]:
+    for s, k in [("SolarQuotes","solar_quotes"),("Bid My Solar","bid_my_solar"),("Bid My Solar","bidmysolar"),("SEM","sem"),("Oxley FC","oxley_fc"),("Facebook","facebook"),("Website","website"),("Referral","referral")]:
         if k in tags: return s
     return c.get("source", "Unknown")
 
@@ -446,6 +446,8 @@ def source_badge(src_name, referred_by=''):
         if referred_by:
             return f'👤 Referral from: {referred_by}'
         return '👤 Referral'
+    if 'oxley' in sn or sn == 'oxley fc':
+        return '⚽ Oxley United FC'
     if not src_name or sn == 'unknown':
         return '📋 Unknown'
     return f'📋 {src_name}'

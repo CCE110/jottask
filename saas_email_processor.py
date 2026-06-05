@@ -719,6 +719,10 @@ class AIEmailProcessor:
             # DSW Energy appointment confirmation (sender @dswenergy.com.au or subject match)
             if handle_dsw_appointment(subject, content, sender_email_addr):
                 return ("task_created", f"DSW appointment: {subject[:80]}")
+            # Oxley United FC sponsorship lead — checked BEFORE handle_dsw_forward,
+            # which is a broad catch-all that would otherwise swallow these emails.
+            if handle_oxley_fc_lead(subject, content, sender_email_addr):
+                return ("task_created", f"Oxley FC lead: {subject[:80]}")
             # Forwarded/unstructured lead from rob.l — FW:/Fwd: or body has AU phone
             if handle_dsw_forward(subject, content, sender_email_addr):
                 return ("task_created", f"DSW forward lead: {subject[:80]}")
@@ -1996,6 +2000,200 @@ def edit_action():
 
     return 'Action not found', 404
 """
+
+
+def handle_oxley_fc_lead(subject, body_text, sender_email):
+    """Handle a forwarded Oxley United FC sponsorship lead.
+
+    Triggers when one of Rob's DSW addresses forwards an enquiry that came in
+    via the Oxley FC channel:
+      - the forwarded body contains 'info@directsolarwholesaler.com.au'
+        (the DSW info team typically routes FC QR-code enquiries through that
+        inbox before Rob forwards them on), OR
+      - the subject contains 'oxley', 'football', a word-boundary 'fc', or
+        'qr code' (case-insensitive).
+
+    Uses Claude Haiku to extract name/phone/email/address/notes from whatever
+    the info team forwarded, then routes through the standard DSW pipeline
+    via dsw_lead_poller.process() with src='oxley_fc' so the PipeReply tag
+    and source badge both render as 'Oxley FC' / '⚽ Oxley United FC'.
+
+    Returns True if the lead was processed (or attempted and PipeReply was
+    populated), False if it didn't match the triggers and the caller should
+    fall through to the next handler.
+    """
+    import re, os, importlib.util as ilu
+    from datetime import datetime, timedelta
+    from anthropic import Anthropic
+
+    if not _is_dsw_sender(sender_email):
+        return False
+
+    subject_lower = (subject or '').lower()
+    body_lower = (body_text or '').lower()
+
+    # Subject triggers
+    subj_oxley = 'oxley' in subject_lower
+    subj_football = 'football' in subject_lower
+    subj_fc = bool(re.search(r'\bfc\b', subject_lower))
+    subj_qr = 'qr code' in subject_lower
+    subj_hit = subj_oxley or subj_football or subj_fc or subj_qr
+
+    # Body trigger — the DSW info team's address appears in the forwarded
+    # 'From:' line of the quoted email body.
+    body_hit = 'info@directsolarwholesaler.com.au' in body_lower
+
+    if not (subj_hit or body_hit):
+        return False
+
+    reasons = []
+    if subj_oxley:    reasons.append("subject 'oxley'")
+    if subj_football: reasons.append("subject 'football'")
+    if subj_fc:       reasons.append("subject 'fc'")
+    if subj_qr:       reasons.append("subject 'qr code'")
+    if body_hit:      reasons.append("body has info@dsw forwarded sender")
+    print(f"[OXLEY FC] Triggered by: {', '.join(reasons)}. Subject: '{subject}'")
+
+    # Strip Rob's signature so Claude doesn't extract Rob as the customer.
+    _SIG_PATTERNS = [
+        r'^Best Regards\b', r'^Rob Lowe\b', r'^M:\s', r'^E:\s', r'^W:\s',
+        r'^(QLD|SA|VIC|NSW)\s*:', r'^--\s*$',
+    ]
+    body_lines = (body_text or '').splitlines()
+    sig_cut = len(body_lines)
+    for _i, _line in enumerate(body_lines):
+        _s = _line.strip()
+        if any(re.match(p, _s, re.IGNORECASE) for p in _SIG_PATTERNS):
+            sig_cut = _i
+            break
+    clean_body = '\n'.join(body_lines[:sig_cut]).strip()
+
+    claude = Anthropic(api_key=os.getenv('ANTHROPIC_API_KEY'))
+    extraction_prompt = f"""Extract customer contact details from this forwarded Oxley United FC sponsorship enquiry. Return JSON only.
+
+The email reached Rob via the DSW info team (info@directsolarwholesaler.com.au). The Oxley FC sponsorship runs a QR code; people scan it and submit an enquiry. The actual customer is mentioned inside the body — ignore Rob and the DSW info team as candidates.
+
+Subject: {subject}
+Body:
+{clean_body[:3000]}
+
+Return exactly this JSON:
+{{
+  "name": "customer full name or null",
+  "phone": "AU mobile/landline digits only (e.g. 0412345678) or null",
+  "email": "customer email or null",
+  "address": "full street address with suburb/state/postcode if given, else suburb if mentioned, else null",
+  "notes": "system size, panel/inverter/battery preferences, urgency, bill amount, anything else relevant to the quote, or null"
+}}
+
+Rules:
+- Never invent data. Return null for fields not present.
+- Customer name is NOT Rob Lowe, NOT 'DSW Info', NOT 'Oxley United FC' — that's the source, not the lead.
+- AU phones start with 04 (mobile) or 02/03/07/08 (landline), 10 digits total."""
+
+    try:
+        resp = claude.messages.create(
+            model='claude-haiku-4-5-20251001',
+            max_tokens=400,
+            messages=[{'role': 'user', 'content': extraction_prompt}],
+        )
+        raw = resp.content[0].text.strip()
+        raw = re.sub(r'^```(?:json)?\s*', '', raw, flags=re.MULTILINE)
+        raw = re.sub(r'\s*```$', '', raw, flags=re.MULTILINE)
+        import json as _json
+        extracted = _json.loads(raw)
+    except Exception as e:
+        print(f"[OXLEY FC] Claude extraction failed: {e}")
+        return False
+
+    name = (extracted.get('name') or '').strip()
+    phone = (extracted.get('phone') or '').strip()
+    email_addr = (extracted.get('email') or '').strip()
+    address = (extracted.get('address') or '').strip()
+    notes = (extracted.get('notes') or '').strip()
+
+    # Drop Rob's name if Claude returned it.
+    if name.lower() in ('rob lowe', 'rob', 'dsw info', 'oxley united fc',
+                        'oxley fc'):
+        print(f"[OXLEY FC] Rejecting source-side name '{name}'")
+        name = ''
+
+    if not name and not phone and not email_addr:
+        print("[OXLEY FC] SKIP — no customer name/phone/email extracted")
+        return False
+    if not name:
+        # Derive a fallback from email local-part or phone tail.
+        if email_addr:
+            name = email_addr.split('@')[0].replace('.', ' ').replace('_', ' ').title()
+        elif phone:
+            name = f'Lead {phone[-4:]}'
+        else:
+            name = 'Oxley FC Lead'
+        print(f"[OXLEY FC] Derived fallback customer name: {name!r}")
+
+    print(f"[OXLEY FC] Extracted: name={name!r} phone={phone or '—'!r} "
+          f"email={email_addr or '—'!r} address={(address[:40] or '—')!r}")
+
+    # Load the DSW lead poller.
+    try:
+        _spec = ilu.spec_from_file_location(
+            'dsw_lead_poller',
+            os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                         'dsw_lead_poller.py'),
+        )
+        dsw = ilu.module_from_spec(_spec)
+        _spec.loader.exec_module(dsw)
+    except Exception as e:
+        print(f"[OXLEY FC] Could not load dsw_lead_poller: {e}")
+        return False
+
+    # Find or create the PipeReply contact with the oxley_fc source tag.
+    cid, is_new_contact = dsw.find_or_create_pipereply_contact(
+        name=name, phone=phone, email=email_addr,
+        address=address, src='oxley_fc',
+    )
+    if not cid:
+        print("[OXLEY FC] No PipeReply contact ID — aborting")
+        return False
+
+    # Drop a CRM note recording what the info team forwarded so Rob can see
+    # the raw context on the PipeReply contact page.
+    try:
+        import requests as _rq2
+        _h2 = {'Authorization': f'Bearer {os.getenv("PIPEREPLY_TOKEN")}',
+               'Content-Type': 'application/json', 'Version': '2021-07-28'}
+        note_lines = [
+            f'Source: Oxley United FC sponsorship QR code — {datetime.now().strftime("%d %b %Y")}',
+            'Forwarded via: DSW Energy Info team (info@directsolarwholesaler.com.au)',
+        ]
+        if phone:      note_lines.append(f'Phone: {phone}')
+        if email_addr: note_lines.append(f'Email: {email_addr}')
+        if address:    note_lines.append(f'Address: {address}')
+        if notes:      note_lines.append(f'\nNotes:\n{notes}')
+        _rq2.post(
+            f'https://services.leadconnectorhq.com/contacts/{cid}/notes',
+            headers=_h2, json={'body': '\n'.join(note_lines)}, timeout=10,
+        )
+    except Exception as e:
+        print(f"[OXLEY FC] CRM intake note failed (non-fatal): {e}")
+
+    # Route through the standard DSW pipeline: OpenSolar + Mac contact + Jottask
+    # task + lead email. process() reads tags from PipeReply to pick the source,
+    # which is now mapped to 'Oxley FC' via dsw_lead_poller.source().
+    try:
+        minimal_contact = {
+            'id': cid, 'contactName': name, 'phone': phone,
+            'email': email_addr, 'address1': address,
+            'tags': ['oxley_fc'],
+        }
+        dsw.process(minimal_contact, task_id=None, lead_status=None,
+                    is_new_contact=is_new_contact)
+    except Exception as e:
+        print(f"[OXLEY FC] dsw.process error: {e}")
+        # PipeReply contact + intake note are already saved, so return True.
+        return True
+
+    return True
 
 
 def handle_dsw_forward(subject, body_text, sender_email):
