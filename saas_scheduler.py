@@ -10,6 +10,34 @@ import pytz
 from supabase import create_client, Client
 from email_utils import send_email
 
+# Railway DSW poll: fires every DSW_POLL_INTERVAL_SEC (default 600 = 10 min).
+# _LAST_DSW_POLL_TS=0 means the first scheduler tick after deploy triggers
+# an immediate poll (now - 0 >> 600), then the cadence settles into a
+# 10-minute cycle. See dsw_railway_poll.py for the implementation.
+DSW_POLL_INTERVAL_SEC = int(os.getenv('DSW_POLL_INTERVAL_SEC', '600'))
+DSW_POLL_LOOKBACK_MIN = int(os.getenv('DSW_POLL_LOOKBACK_MIN', '30'))
+_LAST_DSW_POLL_TS = 0.0
+
+
+def _maybe_run_dsw_poll():
+    """Call dsw_railway_poll.poll_dsw_pipereply() every DSW_POLL_INTERVAL_SEC
+    seconds. Never raises — the recurring scheduler loop must stay alive even
+    if the poll module/imports/network fail."""
+    global _LAST_DSW_POLL_TS
+    now_ts = time.time()
+    if now_ts - _LAST_DSW_POLL_TS < DSW_POLL_INTERVAL_SEC:
+        return
+    _LAST_DSW_POLL_TS = now_ts
+    try:
+        from dsw_railway_poll import poll_dsw_pipereply
+        poll_dsw_pipereply(lookback_minutes=DSW_POLL_LOOKBACK_MIN)
+    except Exception as e:
+        # Loud but non-fatal — the rest of the scheduler tick must keep
+        # working (reminders, daily summaries) even if the DSW poll blows up.
+        import traceback
+        traceback.print_exc()
+        print(f"⚠️  DSW Railway poll error (non-fatal): {e}")
+
 # Lazy Supabase init — avoids crash if env vars aren't loaded at import time
 _supabase = None
 
@@ -997,6 +1025,11 @@ def run_scheduler():
                 poll_squad_inbox()
             except Exception as squad_err:
                 print(f"⚠️  Squad poller error (non-fatal): {squad_err}")
+
+            # Railway-side DSW PipeReply poll — fires every 10 min, replaces
+            # the Mac-cron dsw_sms_poller path (which depended on Rob's mini
+            # being awake + SMS notifications arriving).
+            _maybe_run_dsw_poll()
 
             # Check daily summaries
             users = get_users_needing_summary()
