@@ -3119,6 +3119,17 @@ if __name__ == "__main__":
             log_error('squad_tuesday', e, category='squad')
 
         try:
+            # 2g. DSW PipeReply appointment poll — 30-min throttled.
+            # Pulls only Rob's contacts (assignedTo filter) and writes
+            # appointment-aware tasks. Fail-closed wrapper, never raises.
+            from dsw_appt_poll import _maybe_run_appt_poll
+            _maybe_run_appt_poll()
+        except Exception as e:
+            print(f"Error in appointment poll: {e}")
+            log_error('appt_poll', e, category='appt_poll')
+            tick_errors += 1
+
+        try:
             # 3. Check and send daily summaries
             users = get_users_needing_summary()
             if users:

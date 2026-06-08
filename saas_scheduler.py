@@ -4,11 +4,18 @@ Daily summary emails, task reminders, and scheduled tasks
 """
 
 import os
+import re
 import time
 from datetime import datetime, timedelta
 import pytz
 from supabase import create_client, Client
 from email_utils import send_email
+
+# Used by send_daily_summary to extract the TRUE appointment time from an
+# appointment-aware task title like '📞 Call Andrew Tan — appt 2:30pm Mon 8 Jun'.
+# Tasks set up by dsw_appt_poll.py carry the real appt time in the title because
+# due_time is offset back to T-60 for the reminder window.
+_APPT_TIME_RE = re.compile(r'appt\s+(\d{1,2}:\d{2}\s*[ap]m)', re.IGNORECASE)
 
 # Railway DSW poll: fires every DSW_POLL_INTERVAL_SEC (default 600 = 10 min).
 # _LAST_DSW_POLL_TS=0 means the first scheduler tick after deploy triggers
@@ -254,6 +261,13 @@ def generate_summary_email_html(user_name, user_timezone, tasks_summary, project
                 due_time = (task.get('due_time') or '')[:5]
                 meta_bits = [f"Due: {task.get('due_date') or 'N/A'}"]
                 if due_time: meta_bits.append(due_time)
+                # Appointment-aware tasks encode the TRUE appt time in the
+                # title (e.g. '… — appt 2:30pm Mon 8 Jun') because due_time
+                # carries a T-60 offset for the reminder system. Surface the
+                # real appt time here so the digest line is unambiguous.
+                appt_m = _APPT_TIME_RE.search(task.get('title') or '')
+                if appt_m:
+                    meta_bits.append(f"Appt: {appt_m.group(1)}")
                 if task.get('client_name'): meta_bits.append(task['client_name'])
                 html += (
                     f'<div style="padding:10px 12px;background:{bg_color};'
