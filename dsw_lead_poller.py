@@ -488,6 +488,111 @@ def get_crm_notes_bodies(cid):
         return ''
 
 
+# Marker embedded after each CRM-note body so a subsequent run can dedup that
+# note precisely by id even if PipeReply slightly tweaks its body text.
+_CRM_NOTE_ID_RE = re.compile(r'<!--\s*crm-note:\s*([^\s>]+)\s*-->')
+
+
+def get_crm_notes_with_ids(cid):
+    """Like get_crm_notes_bodies but returns [(note_id, body), …] so callers
+    can dedup per-note instead of treating the whole pull as opaque text.
+    Returns [] on any error (caller treats as 'nothing to append')."""
+    try:
+        r = req.get(f"{BASE}/contacts/{cid}/notes", headers=H, timeout=10)
+        if not r.ok:
+            return []
+        notes = r.json().get('notes') or []
+        notes.sort(key=lambda n: n.get('createdAt') or n.get('dateAdded') or '',
+                   reverse=True)
+        out = []
+        for n in notes:
+            nid = (n.get('id') or '').strip()
+            body = filter_junk_lines((n.get('body') or '').strip())
+            if body:
+                out.append((nid, body))
+        return out
+    except Exception as e:
+        print(f'[CRM notes] fetch failed for {cid}: {e}')
+        return []
+
+
+def _existing_crm_keys(summary, task_id=None):
+    """Return (ids:set, body_hashes:set) of CRM notes already represented in
+    `summary` (or in source='email' task_notes for `task_id`).
+
+    HARD RULE: never reads MY NOTES content and never consults task_notes
+    with source='manual' or source='system'. Only CRM-routed surfaces are
+    inspected.
+
+    Dedup keys, in order of precision:
+      1. '<!-- crm-note: <id> -->' marker  (precise — survives body edits)
+      2. header-stripped body equality against any 'CRM NOTES:' section
+      3. header-stripped body equality against task_notes(source='email')
+    """
+    ids = set(_CRM_NOTE_ID_RE.findall(summary or ''))
+    bodies = set()
+    # Strip embedded markers before hashing so a marker-tagged note still
+    # matches a fresh untagged fetch by body.
+    text = _CRM_NOTE_ID_RE.sub('', summary or '')
+    # Scan every 'CRM NOTES:' section's body; split on blank lines so each
+    # note within a multi-note block is hashed individually.
+    for m in re.finditer(
+            r'(?m)^CRM NOTES:\s*\n([\s\S]*?)'
+            r'(?=\n\n[A-Z][A-Z ]*:?\s*\n|\n\n---|\Z)', text):
+        for chunk in re.split(r'\n\s*\n', m.group(1)):
+            norm = re.sub(r'\s+', ' ', chunk).strip().lower()
+            if norm:
+                bodies.add(norm)
+    if task_id:
+        try:
+            from task_manager import TaskManager
+            r = TaskManager().supabase.table('task_notes')\
+                .select('content').eq('task_id', task_id)\
+                .eq('source', 'email').execute()
+            for row in (r.data or []):
+                norm = re.sub(r'\s+', ' ', (row.get('content') or ''))\
+                       .strip().lower()
+                if norm:
+                    bodies.add(norm)
+        except Exception:
+            pass
+    return ids, bodies
+
+
+def append_crm_notes_idempotent(summary, cid, task_id=None):
+    """Append a 'CRM NOTES:' section containing ONLY PipeReply notes not
+    already represented in `summary` (or in source='email' task_notes for
+    `task_id`). Each appended note carries an HTML-comment marker so a
+    subsequent run dedups it precisely by id.
+
+    Returns `summary` unchanged when nothing is new — that's the
+    idempotency guarantee. NEVER touches MY NOTES content; only writes to
+    a freshly-appended 'CRM NOTES:' block.
+    """
+    notes = get_crm_notes_with_ids(cid)
+    if not notes:
+        return summary
+    existing_ids, existing_bodies = _existing_crm_keys(summary, task_id=task_id)
+    fresh = []
+    for nid, body in notes:
+        if nid and nid in existing_ids:
+            continue
+        norm = re.sub(r'\s+', ' ', body).strip().lower()
+        if norm in existing_bodies:
+            continue
+        fresh.append((nid, body))
+    if not fresh:
+        return summary
+    lines = ['CRM NOTES:']
+    for i, (nid, body) in enumerate(fresh):
+        if i > 0:
+            lines.append('')
+        lines.append(body)
+        if nid:
+            lines.append(f'<!-- crm-note: {nid} -->')
+    return (summary or '').rstrip() + '\n\n' + '\n'.join(lines)
+
+
 _AU_STATES = r'(?:QLD|NSW|VIC|SA|WA|NT|ACT|TAS)'
 _ADDR_RE = re.compile(
     r'(\d+[A-Za-z]?(?:[-/]\d+[A-Za-z]?)?\s+[^,\n]+?)'  # 75 Lisk Street
@@ -925,6 +1030,20 @@ def make_task(name, phone, summary, crm_url, os_url, email='', prev_notes_block=
         tid = result.data[0]["id"] if result.data else None
         print("Task created:", name, "id:", tid)
 
+        # Run the dashboard's tag-scan patterns on this task's description so
+        # v2g / three_phase / single_phase land at create time instead of
+        # only when the operator hits /admin/leads-tag/retroscan. Same patterns
+        # the retroscan uses — no battery / ev_charger, those stay checkbox-only.
+        if tid:
+            try:
+                from lead_tags import apply_scan_tags
+                applied = apply_scan_tags(tm.supabase, tid, desc)
+                if applied:
+                    print(f"[lead_tags] {tid[:8]} auto-tagged: {applied}")
+            except Exception as e:
+                # Tagging is best-effort — never let it block task creation.
+                print(f"[lead_tags] scan failed for {tid[:8]}: {e}")
+
         # Cancel the superseded task and drop a supersede note on it
         if tid and supersede_task_id:
             try:
@@ -1300,15 +1419,19 @@ def process(contact, task_id=None, lead_status=None, is_new_contact=True,
             )
             _crm_url = CRM_BASE + "/detail/" + cid
             _src = source(full)
-            _crm_notes_text = get_crm_notes_bodies(cid)
             _summary, _ref = summarise(name, _phone, _addr, _src,
                                        full.get("notes", "") or "",
                                        full.get("customFields", []) or [])
             if not _ref and _src.lower().startswith('referral'):
                 _ref = get_referred_by_from_crm(cid)
             _badge = source_badge(_src, _ref)
-            if _crm_notes_text:
-                _summary = f"{_summary}\n\nCRM NOTES:\n{_crm_notes_text}"
+            # Idempotent — only PipeReply notes not already present in
+            # _summary or in source='email' task_notes for the recent task
+            # get appended. Re-runs against an unchanged PipeReply set
+            # are NOOPs. NEVER touches MY NOTES content.
+            _summary = append_crm_notes_idempotent(
+                _summary, cid,
+                task_id=(_recent.get('id') if _recent else None))
             _resend_lead_email_for_recent(_recent, contact, full, cid, name,
                                           _phone, _email, _addr, _src,
                                           _summary, _badge, _crm_url)
@@ -1359,8 +1482,11 @@ def process(contact, task_id=None, lead_status=None, is_new_contact=True,
     print(f"[Source] {name}: {source_badge_text}")
 
     # Append raw CRM notes so they show up in the email + task description.
-    if crm_notes_text:
-        summary = f"{summary}\n\nCRM NOTES:\n{crm_notes_text}"
+    # Idempotent — re-runs against an unchanged PipeReply set are NOOPs.
+    # crm_notes_text retained above for the address-fallback + referral
+    # scrape; this append uses the new id-aware helper instead so each
+    # CRM note is marker-tagged and dedup-able on subsequent runs.
+    summary = append_crm_notes_idempotent(summary, cid)
 
     if not is_reminder:
         # New lead: check for an existing pending DSW Solar task for this client.
@@ -1521,8 +1647,10 @@ def send_dsw_reminder_for_task(task, reminder_tag):
                     referred_by = get_referred_by_from_crm(cid)
                 source_badge_text = source_badge(src, referred_by)
 
-                if crm_notes_text:
-                    summary = f"{summary}\n\nCRM NOTES:\n{crm_notes_text}"
+                # Idempotent — second resend against an unchanged PipeReply
+                # set is a NOOP. `task_id` is already in scope.
+                summary = append_crm_notes_idempotent(
+                    summary, cid, task_id=task_id)
 
                 fresh = True
                 print(f"[DSW reminder] Fresh PipeReply data for {name} ({cid[:8]})")
