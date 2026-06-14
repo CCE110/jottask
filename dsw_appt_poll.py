@@ -14,20 +14,36 @@ Scope (two layers + fail-closed):
      Missing contactId → skip. Unparseable startTime → skip. Every skip is
      logged to system_events for visibility (skipped in dry-run mode).
 
-Action (per kept appointment):
-  - Linked task exists (matched first by cid in description, then by
-    find_existing_task_by_client on the contact's name):
-      · same due_date+due_time → NOOP
-      · different → UPDATE due_date/due_time, set lead_status='intro_call',
-        reset reminder_sent_at to None so a fresh reminder fires, append a
-        task_note recording the reschedule with old → new
-  - No linked task exists → CREATE (mirrors handle_dsw_appointment's
-    else-branch: title 'Call <name> - DSW Appointment', category 'DSW Solar',
-    lead_status 'intro_call', priority 'high', description carries the
-    PipeReply CRM link).
+Decision model (single replaceable APPT-POLL block in description):
+  The task description carries a delimited block (<!-- APPT-POLL --> … <!--
+  /APPT-POLL -->) that records (event_id, appt_time_aest, linked_at,
+  last_confirmed_at). It is the single source of truth for "what did the
+  poll already know about this task?". Material change is defined as ONE OF:
+    (a) LINK       — no block exists on this task yet (first link).
+    (b) RESCHEDULE — block exists but event_id OR appt_time has changed.
+  In every other case the per-appointment write is a strict NOOP:
+  no task_note, no reminder_sent_at reset, no lead_status rewrite, no
+  description rewrite, nothing.
+
+Side effects per material action:
+  - LINK        — set title to appointment-aware form, set lead_status to
+                  'intro_call', write proposed due_date/due_time, reset
+                  reminder_sent_at=None, embed the block.
+  - RESCHEDULE  — update due_date/due_time, reset reminder_sent_at=None,
+                  replace the block. Update title ONLY if it still matches
+                  the auto-generated pattern (preserve operator edits).
+                  Do NOT touch lead_status — operator may have progressed
+                  past intro_call.
+  - CREATE      — no linked task exists; build a new DSW Solar task with the
+                  block embedded.
+
+Audit trail: the block is the audit trail. task_notes are NEVER written by
+this poller. Human notes in the description (MY NOTES / CRM NOTES) are
+preserved verbatim — only content INSIDE the APPT-POLL delimiters is
+rewritten.
 
 Dry-run mode (default): no writes anywhere — no task insert/update, no
-system_events log, no task_note insert. Returns a plan.
+system_events log, no description rewrite. Returns a plan.
 """
 
 import os
@@ -68,6 +84,75 @@ def _parse_aest(dt_str):
         return AEST.localize(naive)
     except Exception:
         return None
+
+
+# ── APPT-POLL block in task description (idempotency marker) ────────────────
+# The block carries the single source of truth for "what does the poll already
+# know about this task?". Replace in place, never append. Never touch content
+# outside the delimiters.
+
+APPT_BLOCK_START = '<!-- APPT-POLL -->'
+APPT_BLOCK_END   = '<!-- /APPT-POLL -->'
+_APPT_BLOCK_RE = re.compile(
+    r'<!--\s*APPT-POLL\s*-->.*?<!--\s*/APPT-POLL\s*-->',
+    re.DOTALL | re.IGNORECASE,
+)
+
+# Auto-generated appointment title pattern. Used on RESCHEDULE to decide
+# whether the title is "ours" (safe to overwrite with the new time) or has
+# been edited by the operator (preserve as-is).
+_AUTO_TITLE_RE = re.compile(
+    r'^📞 Call .+ — appt \d{1,2}:\d{2}[ap]m\s+\w+\s+\d+\s+\w+$',
+    re.IGNORECASE,
+)
+
+
+def _parse_appt_block(description):
+    """Parse the APPT-POLL block out of a description, or None if absent.
+    Returns dict with keys: event_id, appt_time_aest, linked_at,
+    last_confirmed_at, appt_time_display (all strings, missing keys absent)."""
+    if not description:
+        return None
+    m = _APPT_BLOCK_RE.search(description)
+    if not m:
+        return None
+    body = m.group(0)
+    inner = re.search(r'<!--\s*APPT-POLL\s*-->(.*?)<!--\s*/APPT-POLL\s*-->',
+                      body, re.DOTALL | re.IGNORECASE)
+    if not inner:
+        return None
+    out = {}
+    for line in inner.group(1).splitlines():
+        line = line.strip()
+        if not line or ':' not in line:
+            continue
+        k, v = line.split(':', 1)
+        out[k.strip().lower()] = v.strip()
+    return out
+
+
+def _format_appt_block(event_id, appt_time_aest_iso, appt_time_display,
+                      linked_at_iso, last_confirmed_at_iso):
+    """Render a fresh APPT-POLL block."""
+    return (
+        f"{APPT_BLOCK_START}\n"
+        f"event_id: {event_id}\n"
+        f"appt_time_aest: {appt_time_aest_iso}\n"
+        f"appt_time_display: {appt_time_display}\n"
+        f"linked_at: {linked_at_iso}\n"
+        f"last_confirmed_at: {last_confirmed_at_iso}\n"
+        f"{APPT_BLOCK_END}"
+    )
+
+
+def _embed_or_replace_block(description, new_block):
+    """Replace the existing block in place, or append after a blank line.
+    Never touches content outside the delimiters."""
+    description = description or ''
+    if _APPT_BLOCK_RE.search(description):
+        return _APPT_BLOCK_RE.sub(new_block, description, count=1)
+    sep = '' if description.endswith('\n\n') else ('\n' if description.endswith('\n') else '\n\n')
+    return description + sep + new_block + '\n'
 
 
 def _list_rob_contacts(loc_id, max_pages=MAX_PAGES):
@@ -246,53 +331,76 @@ def poll_appointments(dry_run=True):
                 skips[f'status_{status.lower()}'] += 1
                 continue
 
-            # ── Decide CREATE / UPDATE / NOOP ───────────────────────────
-            # Compute the proposed DUE values (after T-60 lead offset) here so
-            # NOOP detection compares like-for-like against what we'd write.
-            # Without this, every poll would think the time differs (task.due_time
-            # = 13:30 vs appt startTime = 14:30) and would re-fire an UPDATE +
-            # task_note every tick. Idempotency lives here.
+            # ── Decide LINK / RESCHEDULE / NOOP / CREATE ────────────────
+            # The APPT-POLL block in the task description is the single
+            # source of truth for "what does the poll already know?".
+            # Material change is ONLY first link or startTime moved — no
+            # other field comparison feeds the NOOP gate, so operator edits
+            # to title / lead_status / due_time can't churn this poll.
             linked = _find_linked_task(sb, cid, cname, user_id)
             offset_dt = start_aest - timedelta(minutes=DEFAULT_LEAD_OFFSET_MIN)
             proposed_due_date = offset_dt.strftime('%Y-%m-%d')
             proposed_due_time = offset_dt.strftime('%H:%M:00')
             proposed_title = _format_appt_title(cname, start_aest)
+            real_appt_iso = start_aest.strftime('%Y-%m-%dT%H:%M:%S')
+            event_id_now = ev.get('id') or ''
 
             row = {
                 'contact_name': cname,
                 'contact_id': cid,
-                'event_id': ev.get('id'),
+                'event_id': event_id_now,
                 'event_title': ev.get('title') or '',
                 'appointment_status': status,
                 'calendar_id': ev.get('calendarId'),
                 'assignedUserId': event_assigned,
                 'start_aest_display': start_aest.strftime('%a %d %b, %I:%M %p AEST'),
-                'real_appt_date':     start_aest.strftime('%Y-%m-%d'),
-                'real_appt_time':     start_aest.strftime('%H:%M:00'),
-                'proposed_due_date':  proposed_due_date,  # T-60 offset
-                'proposed_due_time':  proposed_due_time,
-                'proposed_title':     proposed_title,
+                'real_appt_iso':     real_appt_iso,
+                'real_appt_date':    start_aest.strftime('%Y-%m-%d'),
+                'real_appt_time':    start_aest.strftime('%H:%M:00'),
+                'proposed_due_date': proposed_due_date,    # T-60 offset
+                'proposed_due_time': proposed_due_time,
+                'proposed_title':    proposed_title,
+                'current_block':     None,
+                'noop_reason':       '',
             }
 
             if linked:
-                row['linked_task_id'] = linked['id']
-                row['current_due_date']    = linked.get('due_date')
-                row['current_due_time']    = linked.get('due_time')
-                row['current_lead_status'] = linked.get('lead_status')
-                row['current_title']       = linked.get('title')
-                same_date   = str(linked.get('due_date')) == proposed_due_date
-                same_time   = str(linked.get('due_time')) == proposed_due_time
-                same_status = (linked.get('lead_status') or '') == 'intro_call'
-                same_title  = (linked.get('title') or '') == proposed_title
-                if same_date and same_time and same_status and same_title:
-                    row['action'] = 'NOOP'
+                row['linked_task_id']       = linked['id']
+                row['current_due_date']     = linked.get('due_date')
+                row['current_due_time']     = linked.get('due_time')
+                row['current_lead_status']  = linked.get('lead_status')
+                row['current_title']        = linked.get('title')
+                row['current_description']  = linked.get('description')
+
+                block = _parse_appt_block(linked.get('description'))
+                row['current_block'] = block
+                if not block:
+                    # (a) first time linking this appointment to this task
+                    row['action'] = 'LINK'
                 else:
-                    row['action'] = 'UPDATE'
+                    b_event = (block.get('event_id') or '').strip()
+                    b_appt  = (block.get('appt_time_aest') or '').strip()
+                    if b_event == event_id_now and b_appt == real_appt_iso:
+                        # No material change since the block was written.
+                        row['action'] = 'NOOP'
+                        row['noop_reason'] = ('block matches current event_id + '
+                                              'appt_time_aest')
+                    else:
+                        # (b) event id and/or startTime moved (reschedule).
+                        row['action'] = 'RESCHEDULE'
+                        row['block_diff'] = {
+                            'event_id_was':       b_event,
+                            'event_id_now':       event_id_now,
+                            'appt_time_aest_was': b_appt,
+                            'appt_time_aest_now': real_appt_iso,
+                        }
             else:
                 row['linked_task_id'] = None
                 row['current_due_date'] = None
                 row['current_due_time'] = None
                 row['current_lead_status'] = None
+                row['current_title'] = None
+                row['current_description'] = None
                 row['action'] = 'CREATE'
 
             actions.append(row)
@@ -336,46 +444,72 @@ def _compute_due_offset(appt_dt_aest, offset_min=DEFAULT_LEAD_OFFSET_MIN):
 
 
 def _execute_plan(supabase, plan, lead_offset_min=DEFAULT_LEAD_OFFSET_MIN):
-    """Apply UPDATE / CREATE actions to Supabase. Uses the pre-computed proposed
-    values from poll_appointments() so NOOP detection there matches reality
-    here (idempotency)."""
-    from task_manager import TaskManager
-    tm = TaskManager()
+    """Apply LINK / RESCHEDULE / CREATE actions to Supabase. NOOP rows are
+    skipped — no writes anywhere. The APPT-POLL block in the description is
+    the only audit trail; task_notes are NEVER written by this poller."""
     results = []
     for r in plan['actions']:
         action = r['action']
         if action == 'NOOP':
             continue
-        new_date  = r['proposed_due_date']      # already T-60 offset
-        new_time  = r['proposed_due_time']      # already T-60 offset
-        new_title = r['proposed_title']         # already includes true appt time
+        new_date  = r['proposed_due_date']
+        new_time  = r['proposed_due_time']
+        new_title = r['proposed_title']
+        now_iso   = datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
 
-        if action == 'UPDATE':
+        # Preserve linked_at across rescheduling — only the first LINK sets it.
+        current_block = r.get('current_block') or {}
+        linked_at = current_block.get('linked_at') or now_iso
+
+        new_block = _format_appt_block(
+            event_id=r['event_id'],
+            appt_time_aest_iso=r['real_appt_iso'],
+            appt_time_display=r['start_aest_display'],
+            linked_at_iso=linked_at,
+            last_confirmed_at_iso=now_iso,
+        )
+
+        if action == 'LINK':
+            # First time — set title, lead_status, due, reset reminder,
+            # embed the block in the description.
             tid = r['linked_task_id']
-            old_due = f"{r.get('current_due_date')} {r.get('current_due_time')}"
+            new_desc = _embed_or_replace_block(r.get('current_description'), new_block)
             update_fields = {
                 'due_date': new_date,
                 'due_time': new_time,
                 'title': new_title,
                 'lead_status': 'intro_call',
                 'reminder_sent_at': None,
+                'description': new_desc,
             }
             supabase.table('tasks').update(update_fields).eq('id', tid).execute()
-            note = (
-                f"Appointment poll: linked to PipeReply event {r['event_id']}.\n"
-                f"  Actual appointment: {r['start_aest_display']}\n"
-                f"  Old due (Jottask): {old_due}\n"
-                f"  New due (Jottask, T-{lead_offset_min}min lead offset): "
-                f"{new_date} {new_time}\n"
-                f"  lead_status: → intro_call, reminder_sent_at reset"
-            )
-            try:
-                tm.add_note(task_id=tid, content=note, source='appt_poll')
-            except Exception as e:
-                print(f"  [appt_poll] add_note failed for {tid[:8]}: {e}")
             results.append({
-                'action': 'UPDATE', 'task_id': tid,
+                'action': 'LINK', 'task_id': tid,
                 'new_title': new_title, 'new_due_date': new_date,
+                'new_due_time': new_time,
+            })
+
+        elif action == 'RESCHEDULE':
+            # Real reschedule — update time, reset reminder, replace block.
+            # Title updates ONLY if it still matches the auto-generated form
+            # (preserve operator edits). lead_status is NOT touched (operator
+            # may have progressed past intro_call).
+            tid = r['linked_task_id']
+            new_desc = _embed_or_replace_block(r.get('current_description'), new_block)
+            update_fields = {
+                'due_date': new_date,
+                'due_time': new_time,
+                'reminder_sent_at': None,
+                'description': new_desc,
+            }
+            current_title = r.get('current_title') or ''
+            if _AUTO_TITLE_RE.match(current_title):
+                update_fields['title'] = new_title
+            supabase.table('tasks').update(update_fields).eq('id', tid).execute()
+            results.append({
+                'action': 'RESCHEDULE', 'task_id': tid,
+                'title_changed': 'title' in update_fields,
+                'new_due_date': new_date,
                 'new_due_time': new_time,
             })
 
@@ -386,17 +520,19 @@ def _execute_plan(supabase, plan, lead_offset_min=DEFAULT_LEAD_OFFSET_MIN):
             if not user_id:
                 print(f"  [appt_poll] CREATE skipped — no user_id for operator")
                 continue
+            description = (
+                f"Phone: {r.get('phone') or 'N/A'}\n"
+                f"CRM: {CRM_BASE}/detail/{r['contact_id']}\n"
+                f"OpenSolar: pending\n\n"
+                f"Appointment confirmed via PipeReply event {r['event_id']} — "
+                f"{r['start_aest_display']}.\n"
+                f"Jottask due_at offset to T-{lead_offset_min}min for prep window.\n\n"
+                f"{new_block}\n"
+            )
             task_data = {
                 'user_id': user_id,
                 'title': new_title,
-                'description': (
-                    f"Phone: {r.get('phone') or 'N/A'}\n"
-                    f"CRM: {CRM_BASE}/detail/{r['contact_id']}\n"
-                    f"OpenSolar: pending\n\n"
-                    f"Appointment confirmed via PipeReply event {r['event_id']} — "
-                    f"{r['start_aest_display']}.\n"
-                    f"Jottask due_at offset to T-{lead_offset_min}min for prep window."
-                ),
+                'description': description,
                 'due_date': new_date,
                 'due_time': new_time,
                 'priority': 'high',
@@ -509,14 +645,16 @@ def _maybe_run_appt_poll():
         sb = create_client(os.getenv('SUPABASE_URL'), get_admin_key())
         results = _execute_plan(sb, plan)
 
-        n_update = sum(1 for r in results if r.get('action') == 'UPDATE')
-        n_create = sum(1 for r in results if r.get('action') == 'CREATE')
+        n_link       = sum(1 for r in results if r.get('action') == 'LINK')
+        n_reschedule = sum(1 for r in results if r.get('action') == 'RESCHEDULE')
+        n_create     = sum(1 for r in results if r.get('action') == 'CREATE')
         n_actions = len(plan.get('actions') or [])
         n_noop = sum(1 for r in plan.get('actions') or [] if r.get('action') == 'NOOP')
         msg = (f"appt_poll: contacts={plan.get('contacts_seen')} "
                f"appts={plan.get('appointments_seen')} "
                f"actions={n_actions} "
-               f"updates={n_update} creates={n_create} noops={n_noop} "
+               f"links={n_link} reschedules={n_reschedule} "
+               f"creates={n_create} noops={n_noop} "
                f"skips={plan.get('skip_counts')}")
         print(f"[appt_poll] {msg}")
         try:
@@ -525,7 +663,8 @@ def _maybe_run_appt_poll():
                       metadata={
                           'contacts_seen': plan.get('contacts_seen'),
                           'appointments_seen': plan.get('appointments_seen'),
-                          'updates': n_update,
+                          'links': n_link,
+                          'reschedules': n_reschedule,
                           'creates': n_create,
                           'noops': n_noop,
                           'skip_counts': plan.get('skip_counts'),
