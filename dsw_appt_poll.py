@@ -224,10 +224,13 @@ def _find_linked_task(supabase, cid, contact_name, user_id):
             return r.data[0]
     if contact_name:
         from task_manager import TaskManager
-        tm = TaskManager()
-        tm.supabase = supabase  # share the connection
-        cand = tm.find_existing_task_by_client(client_name=contact_name,
-                                               user_id=user_id)
+        # TaskManager lazy-inits its own Supabase client via the @property
+        # at task_manager.py:22 — it has no @setter, so assigning tm.supabase
+        # raises AttributeError (which crashed the poll on Sarah Lee's run,
+        # 2026-06-29T00:41:24Z). Just instantiate and call; the lazy property
+        # picks up SUPABASE_URL + the service-role key on first table access.
+        cand = TaskManager().find_existing_task_by_client(client_name=contact_name,
+                                                          user_id=user_id)
         if (cand and cand.get('category') == 'DSW Solar'
                 and cand.get('status') == 'pending'):
             return cand
@@ -631,13 +634,21 @@ def _maybe_run_appt_poll():
     now_ts = _time.time()
     if now_ts - _LAST_APPT_POLL_TS < APPT_POLL_INTERVAL_SEC:
         return
-    _LAST_APPT_POLL_TS = now_ts
+    # NOTE: don't advance _LAST_APPT_POLL_TS here. A thrown run must not
+    # consume the 30-min window — that's how Sarah Lee's 11:00 AEST
+    # appointment got permanently locked out: the AttributeError at
+    # _find_linked_task burned the throttle, the next eligible window
+    # was past start_aest, and start_aest <= now_aest filtered her out
+    # forever. The stamp moves to the success path below.
     try:
         # dry_run=False — let skip events reach system_events for visibility.
         # The function itself doesn't write tasks; _execute_plan does that.
         plan = poll_appointments(dry_run=False)
         if not plan.get('ok'):
             print(f"[appt_poll] plan failed: {plan.get('reason')}")
+            # Plan-level failure (env missing / config) is not transient —
+            # burn the throttle so we don't retry every tick.
+            _LAST_APPT_POLL_TS = now_ts
             return
 
         from supabase import create_client
@@ -671,10 +682,32 @@ def _maybe_run_appt_poll():
                       })
         except Exception as e:
             print(f"[appt_poll] system_events log failed: {e}")
+        # Success — advance the throttle.
+        _LAST_APPT_POLL_TS = now_ts
     except Exception as e:
         import traceback
+        tb = traceback.format_exc()
         traceback.print_exc()
         print(f"⚠️ appt_poll error (non-fatal): {e}")
+        # Surface the failure in system_events so we don't have to grep
+        # Railway logs to notice. Failures previously wrote nothing —
+        # that's how the Sarah Lee AttributeError went undetected until
+        # the missing appointment email surfaced it.
+        try:
+            from monitoring import log_event
+            log_event(
+                'appt_poll',
+                f"appt_poll failed: {type(e).__name__}: {str(e)[:300]}",
+                status='error',
+                category='appt_poll',
+                error_detail=tb,
+            )
+        except Exception as log_err:
+            print(f"[appt_poll] error system_event log failed: {log_err}")
+        # Deliberately don't advance _LAST_APPT_POLL_TS — let the next
+        # tick retry. If the bug is persistent, we'll retry every ~60s
+        # and emit an error system_event each time. Better to be loud
+        # than silent.
 
 
 if __name__ == '__main__':
