@@ -4598,10 +4598,32 @@ def _render_lead_detail(task_id):
     else:
         cust_raw, notes_raw = desc, ''
 
-    # Strip Phone/Email/CRM/OpenSolar/Source/Sub-note header lines from customer requirements,
+    # Strip appt-poll machinery before header-stripping. Both leak into
+    # Customer Requirements otherwise: the <!-- APPT-POLL --> block is an
+    # internal audit marker for dsw_appt_poll's LINK/RESCHEDULE/NOOP
+    # decision (event_id/appt_time_aest/linked_at fields inside are plain
+    # text, so _filter_lead_junk doesn't catch them — only the <!-- -->
+    # delimiters), and the "Appointment confirmed via PipeReply event…"
+    # preamble duplicates the appt-time header already shown at the top
+    # of the page. Handles both the appt-poll CREATE stub's preamble
+    # ("Appointment confirmed via PipeReply event <id> — <when>.")
+    # and the enrich hook's ("Appointment: <type> at <when>.").
+    _APPT_BLOCK_STRIP_RE = re.compile(
+        r'<!--\s*APPT-POLL\s*-->.*?<!--\s*/APPT-POLL\s*-->\s*',
+        re.DOTALL | re.IGNORECASE,
+    )
+    _APPT_PREAMBLE_RE = re.compile(
+        r'^Appointment(?:\s+confirmed\s+via\s+PipeReply\s+event\s+\S+)?[^\n]*\n'
+        r'(?:Jottask\s+due_at\s+offset\s+to\s+T-\d+min\s+for\s+prep[^\n]*\n?)?',
+        re.MULTILINE | re.IGNORECASE,
+    )
+    cust_clean = _APPT_BLOCK_STRIP_RE.sub('', cust_raw)
+    cust_clean = _APPT_PREAMBLE_RE.sub('', cust_clean)
+
+    # Strip Phone/Email/Address/CRM/OpenSolar/Source/Sub-note header lines from customer requirements,
     # then strip SolarQuotes API junk fields (Id:, Supplierid:, Claimed:, etc.)
-    cust_lines = [ln for ln in cust_raw.splitlines()
-                  if not ln.startswith(('Phone:', 'Email:', 'CRM:', 'OpenSolar:', 'Source:', 'Sub-note:'))]
+    cust_lines = [ln for ln in cust_clean.splitlines()
+                  if not ln.startswith(('Phone:', 'Email:', 'Address:', 'CRM:', 'OpenSolar:', 'Source:', 'Sub-note:'))]
     cust_text = _filter_lead_junk('\n'.join(cust_lines).strip())
     # Users sometimes paste HTML (copied from emails) into MY NOTES — strip
     # tags before render so the notes panel shows plain text.
