@@ -711,6 +711,71 @@ def join_address_parts(*parts):
     return ', '.join(out)
 
 
+# ── OpenSolar geocode helpers (Redbank fix) ─────────────────────────────────
+# History: pre-refactor commit 799706e appended ", Australia" to the address
+# string; that fix worked around OpenSolar's geocoder failing on a bare
+# "39 Lyndale Rd, Pullenvale, Queensland, 4069" input. The refactor to
+# join_address_parts silently dropped the suffix, and OpenSolar's geocoder
+# has since become pickier — it now needs `country` as a hyperlink,
+# `state` as the short form (QLD not Queensland), and `zip`/`locality` as
+# separate fields. Even then the create response often returns lat/lon
+# null; we fall back to Nominatim + PATCH lat/lon. Every project must
+# land with coordinates or Rob won't know where the site is.
+_STATE_SHORT_AU = {
+    'queensland': 'QLD', 'new south wales': 'NSW', 'victoria': 'VIC',
+    'south australia': 'SA', 'western australia': 'WA', 'tasmania': 'TAS',
+    'northern territory': 'NT', 'australian capital territory': 'ACT',
+}
+# OpenSolar country hyperlink for Australia. Discovered empirically:
+# api/countries/14/ is Australia in the DSW org. If you migrate orgs,
+# re-verify (fetch a known-good project and read `country`).
+_OS_AU_COUNTRY_URL = "https://api.opensolar.com/api/countries/14/"
+
+
+def _state_short_au(s):
+    """Normalise Australian state to short form (QLD, NSW, …).
+    Already-short values pass through unchanged."""
+    s = (s or '').strip()
+    if not s:
+        return ''
+    low = s.lower()
+    if low in _STATE_SHORT_AU:
+        return _STATE_SHORT_AU[low]
+    if len(s) <= 3:
+        return s.upper()
+    return s
+
+
+def _geocode_au(street, city, state, postcode):
+    """Geocode an Australian address via Nominatim. Returns (lat, lon) or
+    (None, None). Sanity-bounded to AU: lat ∈ (-45, -9), lon ∈ (112, 155).
+    Callers should treat (None, None) as "leave OS to try its own geocoder"."""
+    parts = [p for p in (street, city, _state_short_au(state), postcode, 'Australia') if p]
+    if not parts:
+        return None, None
+    q = ', '.join(parts)
+    try:
+        r = req.get(
+            'https://nominatim.openstreetmap.org/search',
+            params={'q': q, 'format': 'json', 'limit': 1},
+            headers={'User-Agent': 'jottask-dsw/1.0 admin@ductpress.ai'},
+            timeout=10,
+        )
+        if not (r.ok and r.json()):
+            print(f"[geocode] Nominatim: no result for {q!r}")
+            return None, None
+        j = r.json()[0]
+        lat, lon = float(j['lat']), float(j['lon'])
+        if not (-45 < lat < -9 and 112 < lon < 155):
+            print(f"[geocode] {lat},{lon} out of AU bounds for {q!r}")
+            return None, None
+        print(f"[geocode] Nominatim: {q!r} → {lat},{lon}")
+        return lat, lon
+    except Exception as e:
+        print(f"[geocode] Nominatim failed for {q!r}: {e}")
+        return None, None
+
+
 def make_opensolar(name, phone, email, address, city, state, postcode,
                    first_name=None, last_name=None):
     try:
@@ -731,18 +796,22 @@ def make_opensolar(name, phone, email, address, city, state, postcode,
         first = (first_name or (parts[0] if parts else 'Unknown')).strip()
         last  = (last_name  or (' '.join(parts[1:]) if len(parts) > 1 else '')).strip()
 
-        # Build full address string — OpenSolar geocodes from this. Use
-        # join_address_parts so a suburb baked into address1 doesn't appear
-        # twice when city is also set.
+        # Structured address for OpenSolar. `address` gets street-only when we
+        # can split it; city/state/zip carry the rest as separate fields so
+        # the geocoder has an unambiguous input. See _geocode_au comments.
         clean_addr = _expand_street_abbrevs(address or '')
-        full_addr = join_address_parts(clean_addr, city, state, postcode)
+        state_short = _state_short_au(state)
+        full_addr_display = join_address_parts(clean_addr, city, state, postcode)
 
-        print(f"[OpenSolar] Address components: street='{address}' city='{city}' state='{state}' postcode='{postcode}'")
-        print(f"[OpenSolar] Full address string: '{full_addr}'")
+        print(f"[OpenSolar] Address components: street='{address}' city='{city}' state='{state}→{state_short}' postcode='{postcode}'")
         print(f"[OpenSolar] Contact: first='{first}' last='{last}' phone='{phone}' email='{email}'")
 
         payload = {
-            "address": full_addr,
+            "address":  clean_addr or full_addr_display,
+            "country":  _OS_AU_COUNTRY_URL,
+            "state":    state_short,
+            "zip":      postcode or "",
+            "locality": city or "",
             "is_residential": True,
             # contacts_new is the correct OpenSolar API field (not contacts_data)
             "contacts_new": [
@@ -760,8 +829,29 @@ def make_opensolar(name, phone, email, address, city, state, postcode,
         r = req.post(f"https://api.opensolar.com/api/orgs/{conn.org_id}/projects/",
                      headers=th, json=payload, timeout=20)
         if r.ok:
-            pid = r.json().get("id", "")
+            j = r.json()
+            pid = j.get("id", "")
             url = f"https://app.opensolar.com/#/projects/{pid}/info"
+            # Redbank guardrail — never let a project land with null geocode.
+            # OpenSolar's own geocoder is unreliable on AU addresses even
+            # with country/state/zip explicit; PATCH lat/lon from Nominatim
+            # when the create response is null.
+            if pid and (j.get('lat') is None or j.get('lon') is None):
+                lat, lon = _geocode_au(clean_addr, city, state, postcode)
+                if lat is not None:
+                    try:
+                        pr = req.patch(
+                            f"https://api.opensolar.com/api/orgs/{conn.org_id}/projects/{pid}/",
+                            headers=th, json={'lat': lat, 'lon': lon}, timeout=15,
+                        )
+                        if pr.ok:
+                            print(f"[OpenSolar] Geocode PATCH ✓ lat={lat} lon={lon}")
+                        else:
+                            print(f"[OpenSolar] Geocode PATCH failed {pr.status_code}: {pr.text[:200]}")
+                    except Exception as pe:
+                        print(f"[OpenSolar] Geocode PATCH exception: {pe}")
+                else:
+                    print(f"[OpenSolar] WARNING: project {pid} created but geocode unavailable")
             print("OpenSolar:", url)
             return pid, url
         # Handle duplicate email — OpenSolar refuses a second project for an

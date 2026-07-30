@@ -552,7 +552,292 @@ def _execute_plan(supabase, plan, lead_offset_min=DEFAULT_LEAD_OFFSET_MIN):
                 'new_due_time': new_time,
             })
 
+            # ── Auto-enrich the fresh stub ─────────────────────────────────
+            # Delegates to dsw_lead_poller for OS create, CRM notes scrape,
+            # AI summary, iCloud contact, and the lead email. Fail-closed:
+            # ANY enrichment error is logged and swallowed so the stub
+            # remains in the DB as the safety net. Next appt-poll tick or
+            # a manual re-run of _enrich_appt_lead heals what's missing.
+            if tid:
+                try:
+                    _enrich_appt_lead(
+                        supabase, tid, r['contact_id'],
+                        appt_when_display=r['start_aest_display'],
+                        appt_type='Intro Call',
+                    )
+                except Exception as _enrich_err:
+                    print(f"  [appt_poll] enrich failed for {tid[:8]}: "
+                          f"{type(_enrich_err).__name__}: {_enrich_err}")
+                    try:
+                        from monitoring import log_event
+                        log_event(
+                            'appt_poll',
+                            f'CREATE enrich failed for {tid[:8]}: '
+                            f'{type(_enrich_err).__name__}: {str(_enrich_err)[:200]}',
+                            status='warning', category='appt_poll',
+                            metadata={'task_id': tid,
+                                      'contact_id': r['contact_id'],
+                                      'action': 'enrich_failed'},
+                        )
+                    except Exception:
+                        pass
+
     return results
+
+
+# ── Auto-enrichment for appt-poll-created stubs ─────────────────────────────
+# Called from _execute_plan's CREATE branch. Idempotent — safe to re-run on
+# an already-enriched task (make_opensolar returns existing project via the
+# email-in-use fallback, icloud_contact PUT is a same-vCard NOOP, and the
+# description write goes through safe_update_description which refuses
+# demotions). Also safe to call manually as a recovery for older stubs:
+#
+#     from dsw_appt_poll import _enrich_appt_lead
+#     _enrich_appt_lead(sb, '<task_id>', '<pipereply_cid>',
+#                       appt_when_display='Thu 30 Jul, 10:00 AM AEST',
+#                       appt_type='Intro Call')
+#
+# Scope: refuses to run on contacts whose PipeReply assignedTo != ROB_UID.
+
+def _enrich_appt_lead(supabase, task_id, contact_id, appt_when_display, appt_type,
+                      dry_run=False):
+    """Fill in the fields a bare appt-poll CREATE stub is missing.
+
+    Returns a dict describing what happened (or would happen in dry_run).
+    Keys: task_id, contact_id, actions (list of str), skipped (list of
+    str), os_url, would_send_email, error (if any).
+    """
+    import re as _re
+    plan = {
+        'task_id': task_id, 'contact_id': contact_id,
+        'actions': [], 'skipped': [], 'os_url': None,
+        'would_send_email': False, 'dry_run': dry_run, 'error': None,
+    }
+
+    try:
+        import dsw_lead_poller as dsw
+    except Exception as e:
+        plan['error'] = f'dsw_lead_poller import failed: {e}'
+        return plan
+
+    # 1. Pull the full PipeReply contact
+    contact = dsw.get_full(contact_id) or {}
+    if not contact:
+        plan['error'] = f'PipeReply GET /contacts/{contact_id} returned empty'
+        return plan
+
+    # SCOPE GUARD — never enrich a contact that isn't Rob's, even if the
+    # event landed on his calendar. Belt-and-braces above the appt-poll's
+    # assignedUserId event filter.
+    if contact.get('assignedTo') != ROB_UID:
+        plan['skipped'].append(f"assignedTo={contact.get('assignedTo')} != ROB_UID; refusing to enrich")
+        return plan
+
+    name  = (contact.get('contactName')
+             or f"{contact.get('firstName','')} {contact.get('lastName','')}".strip()
+             or 'Unknown')
+    phone = contact.get('phone') or ''
+    email = contact.get('email') or ''
+    address = contact.get('address1') or ''
+    city  = contact.get('city') or ''
+    state = contact.get('state') or ''
+    postcode = contact.get('postalCode') or ''
+    crm_url = f"{CRM_BASE}/detail/{contact_id}"
+
+    # 2. Pull current task description; short-circuit if it's already
+    #    enriched (OpenSolar: https://... present, no "pending"). This is
+    #    the primary idempotency check — a second run against the same
+    #    task should be a full NOOP.
+    cur = supabase.table('tasks').select('description, client_name, client_email, client_phone').eq('id', task_id).single().execute()
+    old_desc = (cur.data or {}).get('description') or ''
+    already_enriched = (
+        _re.search(r'^OpenSolar:\s*https?://', old_desc, _re.MULTILINE) is not None
+        and _re.search(r'^OpenSolar:\s*pending\s*$', old_desc, _re.MULTILINE) is None
+    )
+    if already_enriched:
+        plan['skipped'].append('description already enriched — full NOOP')
+        # Extract existing OS URL for the return value
+        m = _re.search(r'^OpenSolar:\s*(https?://\S+)', old_desc, _re.MULTILINE)
+        plan['os_url'] = m.group(1) if m else None
+        return plan
+
+    # 3. AI summary from CRM notes + custom fields
+    try:
+        summary_result = dsw.summarise(
+            name, phone,
+            dsw.join_address_parts(address, city, state, postcode),
+            dsw.source(contact) or 'Call Point',
+            contact.get('notes', '') or '',
+            contact.get('customFields', []) or [],
+        )
+        # summarise returns (summary, referred_by)
+        if isinstance(summary_result, tuple):
+            summary, referred_by = summary_result
+        else:
+            summary, referred_by = str(summary_result or ''), ''
+        plan['actions'].append(f'summary built ({len(summary)} chars)')
+    except Exception as e:
+        summary, referred_by = '', ''
+        plan['skipped'].append(f'summarise failed: {e}')
+
+    src = dsw.source(contact) or 'Call Point'
+    src_badge = dsw.source_badge(src, referred_by)
+
+    # 4. OpenSolar project — dry_run reports intent only. In non-dry mode
+    #    make_opensolar handles the email-in-use fallback so a repeat run
+    #    returns the existing project rather than duplicating.
+    if dry_run:
+        plan['actions'].append(
+            f"would call make_opensolar(name={name!r}, phone={phone!r}, "
+            f"email={email!r}, address={address!r}, city={city!r}, "
+            f"state={state!r}, postcode={postcode!r})"
+        )
+        plan['os_url'] = f'DRY-RUN://would-create-project-for-{contact_id}'
+        os_url = plan['os_url']
+    else:
+        try:
+            _pid, os_url = dsw.make_opensolar(
+                name, phone, email, address, city, state, postcode,
+                first_name=contact.get('firstName'),
+                last_name=contact.get('lastName'),
+            )
+            plan['os_url'] = os_url
+            if os_url:
+                plan['actions'].append(f'OS project ready: {os_url}')
+            else:
+                plan['skipped'].append('make_opensolar returned no URL — description will keep OpenSolar: pending')
+        except Exception as e:
+            os_url = None
+            plan['skipped'].append(f'make_opensolar exception: {e}')
+
+    # 5. CRM writeback — save OS URL + summary as a fresh note (append,
+    #    don't overwrite; other notes on the contact are valuable history)
+    if os_url and not dry_run:
+        try:
+            dsw.save_to_crm(contact_id, os_url, summary, overwrite=False)
+            plan['actions'].append('CRM note appended')
+        except Exception as e:
+            plan['skipped'].append(f'save_to_crm failed: {e}')
+    elif os_url and dry_run:
+        plan['actions'].append(f'would append CRM note with OS URL {os_url}')
+
+    # 6. iCloud / Mac contact — PUT is idempotent (same vCard = 200 OK)
+    if not dry_run:
+        try:
+            ok = dsw.icloud_contact(
+                name, phone, email=email, address=address,
+                city=city, state=state, postcode=postcode, src=src,
+            )
+            if ok:
+                plan['actions'].append('iCloud contact upserted')
+            else:
+                dsw.mac_contact(name, phone, src=src)
+                plan['actions'].append('mac_contact fallback')
+        except Exception as e:
+            plan['skipped'].append(f'contact upsert failed: {e}')
+    else:
+        plan['actions'].append(f'would iCloud/Mac upsert {name} ({phone})')
+
+    # 7. Build the enriched description — preserve the APPT-POLL block
+    #    verbatim from the current desc. This is the single source of
+    #    appt truth; losing it would make the next appt-poll tick treat
+    #    the task as unlinked and CREATE another stub.
+    apt_m = _APPT_BLOCK_RE.search(old_desc)
+    appt_block = apt_m.group(0) if apt_m else ''
+    if not appt_block:
+        plan['skipped'].append('WARN: no APPT-POLL block in old desc — enrichment will proceed without one')
+
+    email_line   = f"Email: {email}\n" if email else ''
+    src_line     = f"Source: {src_badge}\n" if src_badge else ''
+    address_full = dsw.join_address_parts(address, city, state, postcode)
+    address_line = f"Address: {address_full}\n" if address_full else ''
+    new_desc = (
+        f"Phone: {phone or 'N/A'}\n{email_line}{address_line}{src_line}"
+        f"CRM: {crm_url}\n"
+        f"OpenSolar: {os_url or 'pending'}\n"
+        f"\n{summary.strip()}\n"
+        f"\nAppointment: {appt_type} at {appt_when_display}. "
+        f"Jottask due_at offset to T-{DEFAULT_LEAD_OFFSET_MIN}min for prep.\n"
+        f"\n{appt_block}\n"
+    )
+
+    # 8. Route the write through the guard. In dry_run we just show the
+    #    resulting text.
+    if dry_run:
+        plan['new_desc'] = new_desc
+        plan['actions'].append(f'would write description ({len(new_desc)} chars, was {len(old_desc)})')
+    else:
+        try:
+            from task_manager import safe_update_description
+            wrote = safe_update_description(
+                supabase, task_id, new_desc,
+                source='appt_poll.enrich', force=False,
+            )
+            if wrote:
+                plan['actions'].append(f'description written ({len(new_desc)} chars, was {len(old_desc)})')
+                supabase.table('tasks').update({
+                    'client_email': email or None,
+                    'client_phone': phone or None,
+                }).eq('id', task_id).execute()
+                plan['actions'].append(f'client_email/phone columns backfilled')
+            else:
+                plan['skipped'].append('desc_guard refused the update (see system_events)')
+        except Exception as e:
+            plan['skipped'].append(f'description write failed: {e}')
+
+    # 9. Lead tags scan — best-effort
+    if not dry_run:
+        try:
+            from lead_tags import apply_scan_tags
+            apply_scan_tags(supabase, task_id, new_desc)
+            plan['actions'].append('lead_tags scanned')
+        except Exception as e:
+            plan['skipped'].append(f'lead_tags scan failed: {e}')
+    else:
+        plan['actions'].append('would apply_scan_tags')
+
+    # 10. Lead email — gated on "did we already send an enrich email for
+    #     this task in the last 24h" so a repeat run doesn't spam Rob.
+    from datetime import datetime as _dt, timedelta as _td, timezone as _tz
+    if not dry_run:
+        cutoff = (_dt.now(_tz.utc) - _td(hours=24)).isoformat()
+        recent = supabase.table('system_events').select('id')\
+            .eq('metadata->>task_id', task_id)\
+            .eq('metadata->>action', 'enrich_email')\
+            .gte('created_at', cutoff).execute()
+        if recent.data:
+            plan['skipped'].append(f'lead email skipped: already sent within 24h ({len(recent.data)} events)')
+        else:
+            try:
+                dsw.send_email(
+                    name, phone or 'N/A', address_full, src, summary,
+                    crm_url, os_url,
+                    task_id=task_id, lead_status='intro_call',
+                    email=email, source_badge_text=src_badge,
+                    appointment={'when': appt_when_display,
+                                 'type': appt_type,
+                                 'phone': phone or ''},
+                )
+                plan['actions'].append('lead email sent')
+                plan['would_send_email'] = True
+                # Stamp for the 24h dedup check on future runs
+                try:
+                    from monitoring import log_event
+                    log_event(
+                        'appt_poll',
+                        f'enrich email sent for {task_id[:8]} → {name}',
+                        status='success', category='appt_poll',
+                        metadata={'task_id': task_id, 'action': 'enrich_email'},
+                    )
+                except Exception:
+                    pass
+            except Exception as e:
+                plan['skipped'].append(f'send_email failed: {e}')
+    else:
+        plan['would_send_email'] = True
+        plan['actions'].append(f'would send email to Rob (subject New Lead: {name} - INTRO CALL)')
+
+    return plan
 
 
 def _print_plan(plan):

@@ -160,13 +160,10 @@ LEAD_TAG_META = {
 }
 LEAD_TAG_KEYS = list(LEAD_TAG_META.keys())
 
-# Patterns used by the retrospective scan (only v2g + three_phase + single_phase
-# get auto-tagged from existing notes; battery + ev_charger are checkbox-only)
-LEAD_TAG_SCAN_PATTERNS = {
-    'v2g':          [r'\bv2g\b', r'vehicle[\s\-]?to[\s\-]?grid'],
-    'three_phase':  [r'\bthree[\s\-]?phase\b', r'\b3[\s\-]?phase\b'],
-    'single_phase': [r'\bsingle[\s\-]?phase\b', r'\b1[\s\-]?phase\b'],
-}
+# Patterns used by the retrospective scan AND by dsw_lead_poller.make_task at
+# create time. Single source of truth in lead_tags.py — battery + ev_charger
+# remain checkbox-only by design.
+from lead_tags import LEAD_TAG_SCAN_PATTERNS
 
 
 def _fetch_task_tags(task_id):
@@ -5509,6 +5506,30 @@ def lead_save_notes(task_id):
             sub_m = re.search(r'^Sub-note:\s*(.+)$', new_desc, re.MULTILINE)
             sub_note = sub_m.group(1).strip() if sub_m else ''
 
+            # ── OS URL fallback chain ─────────────────────────────────────
+            # Adam Strahle bug (27 Jul 08:02): this refresh trusted only
+            # get_os_url_from_crm(). When the CRM note didn't have the URL
+            # (because manual recovery skipped save_to_crm), os_url was
+            # empty and the desc got demoted to "OpenSolar: pending",
+            # nuking Rob's manual enrichment. Fix: prefer the URL already
+            # in the OLD description; fall back to CRM lookup.
+            _old_desc = t.get('description') or ''
+            _old_os_m = re.search(r'^OpenSolar:\s*(https?://\S+)', _old_desc, re.MULTILINE)
+            if not os_url and _old_os_m:
+                os_url = _old_os_m.group(1)
+                print(f"[refresh] OS URL from old desc: {os_url}")
+
+            # ── Preserve the APPT-POLL block ──────────────────────────────
+            # The block is the appt-poll's audit trail. Losing it makes the
+            # next appt-poll tick think the task is unlinked and CREATE a
+            # duplicate stub. Round-trip verbatim.
+            _appt_re = re.compile(
+                r'<!--\s*APPT-POLL\s*-->.*?<!--\s*/APPT-POLL\s*-->',
+                re.DOTALL | re.IGNORECASE,
+            )
+            _appt_m = _appt_re.search(_old_desc)
+            _appt_block = _appt_m.group(0) if _appt_m else ''
+
             # Rebuild the customer-requirements block in the same shape as
             # dsw_lead_poller.make_task — Phone/Email/Source/CRM/OpenSolar
             # headers, Sub-note (if present), blank line, summary, CRM notes.
@@ -5527,10 +5548,20 @@ def lead_save_notes(task_id):
                 rebuilt_cust += "\n\nCRM NOTES:\n" + crm_notes_text
 
             full_desc = rebuilt_cust.rstrip()
+            if _appt_block:
+                full_desc += '\n\n' + _appt_block
             if notes_text:
                 full_desc += '\n\n' + NOTES_SEP + '\n' + notes_text
 
-            supabase.table('tasks').update({'description': full_desc}).eq('id', task_id).execute()
+            # Route through the guard. Refusal (which is loud in
+            # system_events) means we KEEP the pre-refresh description.
+            from task_manager import safe_update_description
+            _wrote = safe_update_description(
+                supabase, task_id, full_desc,
+                source='dashboard.refresh_from_crm', force=False,
+            )
+            if not _wrote:
+                print(f"[refresh] desc_guard blocked description update for {task_id[:8]} — keeping old desc")
 
             # Compute the rendered cust_text the same way lead_detail does
             cust_lines = [ln for ln in rebuilt_cust.splitlines()

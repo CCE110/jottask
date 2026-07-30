@@ -806,6 +806,94 @@ class TaskManager:
             return False
 
 
+# ── description write guard ─────────────────────────────────────────────────
+# Every code path that writes tasks.description SHOULD route through this
+# helper. It refuses writes that would:
+#   (a) demote an OpenSolar link back to "pending"
+#   (b) drop the <!-- APPT-POLL --> block from a task that has one
+#   (c) drop the CRM: link from a task that has one
+#   (d) shorten an enriched description to a stub (<250 chars is a stub)
+# On refusal, logs a system_event and returns False. The offending writer is
+# NOT retried automatically — the caller must decide (typically: log + skip).
+#
+# Bypass with force=True only for explicit operator-initiated wipes (e.g.
+# admin "reset task" endpoint). Never force from an automated code path.
+#
+# History: added 2026-07-30 after Adam Strahle's enriched description was
+# reverted to "OpenSolar: pending" at 08:02 UTC by dashboard.py:5530's
+# refresh-from-CRM flow, six hours after manual recovery.
+import re as _guard_re
+
+_APPT_POLL_MARK = _guard_re.compile(
+    r'<!--\s*APPT-POLL\s*-->.*?<!--\s*/APPT-POLL\s*-->',
+    _guard_re.DOTALL | _guard_re.IGNORECASE,
+)
+_OS_URL_LINE   = _guard_re.compile(r'^OpenSolar:\s*(https?://\S+)', _guard_re.MULTILINE)
+_OS_PEND_LINE  = _guard_re.compile(r'^OpenSolar:\s*pending\s*$',    _guard_re.MULTILINE)
+_CRM_URL_LINE  = _guard_re.compile(r'^CRM:\s*(https?://\S+)',       _guard_re.MULTILINE)
+
+
+def safe_update_description(sb, task_id, new_desc, source='?', force=False):
+    """Guarded description writer.
+
+    Returns True iff the update was written. On refusal, emits a
+    system_event (category='desc_guard', status='warning') with the reason
+    so a repeat offender is visible in the digest, and returns False.
+
+    `source` should be a short label naming the caller (e.g.
+    'appt_poll.enrich', 'dashboard.save_notes', 'dashboard.refresh_from_crm').
+    Used to attribute refusals in the audit trail.
+    """
+    try:
+        cur = sb.table('tasks').select('description').eq('id', task_id).single().execute()
+        old = (cur.data or {}).get('description') or ''
+    except Exception as e:
+        print(f"[desc_guard] read failed for {task_id[:8]}: {e} — allowing write")
+        old = ''
+
+    if force:
+        sb.table('tasks').update({'description': new_desc}).eq('id', task_id).execute()
+        return True
+
+    reasons = []
+    old_os  = _OS_URL_LINE.search(old)
+    new_os  = _OS_URL_LINE.search(new_desc)
+    new_pend = _OS_PEND_LINE.search(new_desc)
+    if old_os and (new_pend or not new_os):
+        reasons.append(f"would demote OS link {old_os.group(1)} → {'pending' if new_pend else 'missing'}")
+
+    if _APPT_POLL_MARK.search(old) and not _APPT_POLL_MARK.search(new_desc):
+        reasons.append("would drop <!-- APPT-POLL --> block")
+
+    old_crm = _CRM_URL_LINE.search(old)
+    new_crm = _CRM_URL_LINE.search(new_desc)
+    if old_crm and not new_crm:
+        reasons.append(f"would drop CRM link {old_crm.group(1)}")
+
+    # Stub-shrink guard: enriched descs are >250 chars. Refuse if we'd land
+    # a very short desc over a substantial one.
+    if len(old) > 400 and len(new_desc) < 250:
+        reasons.append(f"would shrink desc {len(old)} → {len(new_desc)} chars")
+
+    if reasons:
+        msg = f"[{source}] refused: " + " | ".join(reasons)
+        print(f"[desc_guard] {task_id[:8]} REFUSED: {msg}")
+        try:
+            from monitoring import log_event
+            log_event(
+                'desc_guard', msg, status='warning', category='desc_guard',
+                metadata={'task_id': task_id, 'source': source,
+                          'reasons': reasons, 'old_len': len(old),
+                          'new_len': len(new_desc)},
+            )
+        except Exception:
+            pass
+        return False
+
+    sb.table('tasks').update({'description': new_desc}).eq('id', task_id).execute()
+    return True
+
+
 if __name__ == "__main__":
     from dotenv import load_dotenv
     load_dotenv()
