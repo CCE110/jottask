@@ -683,6 +683,22 @@ def _enrich_appt_lead(supabase, task_id, contact_id, appt_when_display, appt_typ
     src = dsw.source(contact) or 'Call Point'
     src_badge = dsw.source_badge(src, referred_by)
 
+    # 3b. Raw CRM notes — summarise() is prompt-dependent and routinely
+    #     drops key facts (product/bill/homeowner context). Pulling the
+    #     verbatim PipeReply notes here and embedding them below the AI
+    #     summary guarantees no content is lost even when the summary is
+    #     thin. Same shape the manual Darko backfill produced. Best-effort:
+    #     a fetch failure logs and continues — enrichment still writes the
+    #     summary + headers + appt block; only the CRM NOTES section is
+    #     absent that run.
+    try:
+        crm_notes_text = dsw.get_crm_notes_bodies(contact_id) or ''
+        if crm_notes_text:
+            plan['actions'].append(f'CRM notes scraped ({len(crm_notes_text)} chars)')
+    except Exception as e:
+        crm_notes_text = ''
+        plan['skipped'].append(f'get_crm_notes_bodies failed: {e}')
+
     # 4. OpenSolar project — dry_run reports intent only. In non-dry mode
     #    make_opensolar handles the email-in-use fallback so a repeat run
     #    returns the existing project rather than duplicating.
@@ -756,6 +772,10 @@ def _enrich_appt_lead(supabase, task_id, contact_id, appt_when_display, appt_typ
         f"CRM: {crm_url}\n"
         f"OpenSolar: {os_url or 'pending'}\n"
         f"\n{summary.strip()}\n"
+    )
+    if crm_notes_text:
+        new_desc += f"\nCRM NOTES:\n{crm_notes_text.strip()}\n"
+    new_desc += (
         f"\nAppointment: {appt_type} at {appt_when_display}. "
         f"Jottask due_at offset to T-{DEFAULT_LEAD_OFFSET_MIN}min for prep.\n"
         f"\n{appt_block}\n"
