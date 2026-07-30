@@ -162,8 +162,15 @@ LEAD_TAG_KEYS = list(LEAD_TAG_META.keys())
 
 # Patterns used by the retrospective scan AND by dsw_lead_poller.make_task at
 # create time. Single source of truth in lead_tags.py — battery + ev_charger
-# remain checkbox-only by design.
-from lead_tags import LEAD_TAG_SCAN_PATTERNS
+# remain checkbox-only by design. Guarded so a missing/broken lead_tags.py
+# can't crash boot (added 2026-07-30 after ModuleNotFoundError took web
+# down for ~1h post-deploy). Callers iterate this dict, so an empty
+# fallback silently degrades tag scanning to a no-op — no exceptions,
+# just no tag pills. Restore full behaviour by shipping lead_tags.py.
+try:
+    from lead_tags import LEAD_TAG_SCAN_PATTERNS
+except ImportError:
+    LEAD_TAG_SCAN_PATTERNS = {}
 
 
 def _fetch_task_tags(task_id):
