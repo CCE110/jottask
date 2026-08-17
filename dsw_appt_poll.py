@@ -523,6 +523,46 @@ def _execute_plan(supabase, plan, lead_offset_min=DEFAULT_LEAD_OFFSET_MIN):
             if not user_id:
                 print(f"  [appt_poll] CREATE skipped — no user_id for operator")
                 continue
+
+            # ── Race-recovery dedup re-check ──────────────────────────────
+            # The action='CREATE' decision was made back in poll_appointments()
+            # during the per-appointment scan (dsw_appt_poll.py:343-407),
+            # which can be 30–60s of PipeReply + Supabase reads before this
+            # execute phase runs. If dsw_lead_poller.make_task committed a
+            # matching task DURING that window (e.g. the SolarQuotes ingest
+            # for the same PipeReply cid — Liam Donald 2026-08-17 case:
+            # 9d46db88 at 02:30:30 + 65e823d4 at 02:31:07), the cached
+            # decision is stale. Re-run _find_linked_task now against the
+            # live DB — if a match exists, convert to LINK and reuse the
+            # existing LINK code path instead of duplicating.
+            found = _find_linked_task(supabase, r['contact_id'],
+                                      r['contact_name'], user_id)
+            if found:
+                tid = found['id']
+                new_desc = _embed_or_replace_block(found.get('description'),
+                                                   new_block)
+                update_fields = {
+                    'due_date':         new_date,
+                    'due_time':         new_time,
+                    'title':            new_title,
+                    'lead_status':      'intro_call',
+                    'reminder_sent_at': None,
+                    'description':      new_desc,
+                }
+                supabase.table('tasks').update(update_fields)\
+                    .eq('id', tid).execute()
+                results.append({
+                    'action': 'LINK', 'task_id': tid,
+                    'new_title': new_title, 'new_due_date': new_date,
+                    'new_due_time': new_time,
+                    'race_recovered': True,
+                })
+                print(f"  [appt_poll] race-recovered: converted CREATE→LINK "
+                      f"for cid={r['contact_id']} → task {tid[:8]} "
+                      f"(lead-poller committed during scan)")
+                # Skip enrichment — the lead-poller task is already enriched.
+                continue
+
             description = (
                 f"Phone: {r.get('phone') or 'N/A'}\n"
                 f"CRM: {CRM_BASE}/detail/{r['contact_id']}\n"
