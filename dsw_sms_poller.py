@@ -97,7 +97,30 @@ def find_pipereply_contact(name):
     return contacts[0]
 
 def extract_name(sms_text):
-    """Extract lead name from SolarQuotes SMS"""
+    """Extract (sms_type, name) from a DSW-trigger-number SMS.
+
+    Returns a 2-tuple:
+      (sms_type, name)  — sms_type is one of:
+        'new_lead'      → genuine lead-processing trigger. main() calls
+                          poller.process(contact) — full make_task /
+                          OpenSolar / send_email path. Shapes:
+                            "Hi Rob, <name> has just been assigned to you."
+                            "🔥 Hot lead alert! <name> on <date> at <time>…"
+                            "Email Quote Requested for <name> on <date>…"
+                            <2026-07 fallback: any 2+ capitalised words>
+        'appt_reminder' → informational reminder from DSW that an already-
+                          booked appointment is starting soon. NEVER calls
+                          poller.process — that would supersede an already-
+                          worked task and lose MY NOTES / Sub-note / lead-
+                          status progression / APPT-POLL block. Root cause
+                          for the Liam / Christine / James / Ali supersede
+                          duplicates 2026-08-18…20. Shapes:
+                            "Reminder: Upcoming Appointment with <name> in N minutes."
+                            "Upcoming Appointment with <name>"
+      (None, None)      — no name extractable (drop to raw-text fallback
+                          task). E.g. "Customer confidence issue…" or
+                          empty / unparseable SMS.
+    """
     import re
     # Name part: capital letter followed by letters/apostrophe, with optional
     # hyphenated suffix ("Canoa-Rojas") or mixed-case suffix ("McDonald").
@@ -105,46 +128,51 @@ def extract_name(sms_text):
     # sends names shouting.
     NAME_PART = r"[A-Z][A-Za-z']+(?:-[A-Z][A-Za-z']+)?(?:[A-Z][A-Za-z']+)?"
     NAME_FULL = rf'{NAME_PART}(?:\s+{NAME_PART})+'
+
+    # ── appt_reminder: MUST come BEFORE the fallback loop so an appointment
+    #    SMS is never mis-classified as a new lead. Both DSW shapes covered
+    #    by the "Appointment with <name>" anchor — NAME_FULL stops at
+    #    lowercase "in" so both "…with Peter Smith in 5 minutes." and
+    #    "Upcoming Appointment with Peter Smith" end cleanly.
+    m = re.search(rf'Appointment with\s+({NAME_FULL})', sms_text)
+    if m:
+        return ('appt_reminder', m.group(1))
+
+    # ── new_lead paths ────────────────────────────────────────────────────
     # DSW Energy format: "Hi Rob, Peter Smith has just been assigned to you."
     # Optional job reference (e.g. "Q2021980") may appear between name and "has just been".
     m = re.search(rf'Hi Rob,\s+({NAME_FULL})(?:\s+[A-Z]\d{{5,}})?\s+has just been assigned', sms_text)
     if m:
-        return m.group(1)
-    # DSW appointment-reminder format:
-    #   "Reminder: Upcoming Appointment with Peter Smith in 5 minutes."
-    #   "Upcoming Appointment with Peter Smith"
-    # The "with ... in" / "with ... <end>" anchor is reliable; one pattern
-    # covers both because NAME_FULL stops at lowercase "in".
-    m = re.search(rf'Appointment with\s+({NAME_FULL})', sms_text)
-    if m:
-        return m.group(1)
+        return ('new_lead', m.group(1))
     # NEW (2026-07 rollout on +61483988945): "🔥 Hot lead alert! Karina
     # Martinez on Jul 4th 2026 at 8:00 am for Karina Martinez". Anchor on
     # "Hot lead alert!" and stop at " on " so the trailing "for <name>"
     # (usually a duplicate of the customer) doesn't extend the boundary.
     m = re.search(rf'Hot lead alert!\s+({NAME_FULL})\s+on\s+', sms_text)
     if m:
-        return m.group(1)
+        return ('new_lead', m.group(1))
     # "Email Quote Requested for Karina Martinez on Jul 4th 2026 at
     # 12:00 am for Karina Martinez". Same anchor shape.
     m = re.search(rf'Email Quote Requested for\s+({NAME_FULL})\s+on\s+', sms_text)
     if m:
-        return m.group(1)
+        return ('new_lead', m.group(1))
     # Explicitly no reliable name: "Customer confidence issue, existing X
     # system needs review … for <owner>". The trailing "for <owner>" is
     # the account owner (e.g. "Aimee ARIA Property Group"), not the
     # customer, and the fallback loop would grab the SYSTEM name
-    # ("Blackmilk Coffee"). Return None so main() drops through to the
-    # raw-text task path instead of mis-scraping.
+    # ("Blackmilk Coffee"). Return (None, None) so main() drops through to
+    # the raw-text task path instead of mis-scraping.
     if re.search(r'Customer confidence issue', sms_text, re.IGNORECASE):
-        return None
+        return (None, None)
     # Fallback: any two+ capitalised words (with optional apostrophe),
-    # skipping matches that start with "Hi" (e.g. "Hi Rob").
+    # skipping matches that start with "Hi" (e.g. "Hi Rob"). Classified
+    # as 'new_lead' — same behaviour as pre-2026-08-20 (unknown-shape SMS
+    # was always assumed to be a genuine trigger).
     for m in re.finditer(rf'({NAME_FULL})', sms_text):
         candidate = m.group(1)
         if not candidate.startswith('Hi '):
-            return candidate
-    return None
+            return ('new_lead', candidate)
+    return (None, None)
 
 def _raw_fallback_task(raw_text, extracted_name=None):
     """Escape hatch for SMS the parser can't reliably structure.
@@ -262,14 +290,15 @@ def main():
     spec.loader.exec_module(poller)
     
     new_count = 0
+    appt_skipped = 0
     for rowid, text, date in rows:
         key = str(rowid)
         if key in done:
             continue
-        
+
         print(f"[SMS] New message: {text[:80]}")
-        name = extract_name(text or '')
-        
+        sms_type, name = extract_name(text or '')
+
         if not name:
             print(f"[SMS] Could not extract name — raw-text fallback")
             _raw_fallback_task(text or '')
@@ -277,9 +306,32 @@ def main():
             done.add(key)
             continue
 
+        # ── appt_reminder: informational — NEVER call poller.process ─────
+        # These are DSW reminders that an already-booked appointment is
+        # starting. The lead has already been worked (task exists with
+        # MY NOTES, Sub-note, lead_status, APPT-POLL block). Calling
+        # dsw.process here would find the existing task via
+        # find_existing_task_by_client and make_task(supersede_task_id=…),
+        # cancelling the worked task and creating a fresh one without
+        # the operator's edits. Root cause of the Liam / Christine /
+        # James / Ali supersede duplicates 2026-08-18…20 (all four
+        # triggered by "Reminder: Upcoming Appointment with <name>
+        # in 10 minutes." SMS from +61468001558 arriving ~10 min before
+        # the appointment). At most, clear reminder_sent_at on the
+        # existing task so today's Jottask reminder still fires if it
+        # was blocked; otherwise no-op.
+        if sms_type == 'appt_reminder':
+            print(f"[SMS] Appt-reminder for {name!r} — SKIPPING poller.process "
+                  f"(would supersede an already-worked task; see 2026-08-18…20 root-cause)")
+            _refresh_reminder_for_existing_task(name)
+            appt_skipped += 1
+            done.add(key)
+            continue
+
+        # ── new_lead (or fallback-shape): full lead-processing path ──────
         contact = find_pipereply_contact(name)
         if contact:
-            print(f"[SMS] Processing: {name}")
+            print(f"[SMS] Processing new_lead: {name}")
             poller.process(contact)
             new_count += 1
         else:
@@ -289,9 +341,44 @@ def main():
 
         done.add(key)
         time.sleep(2)
-    
+
     save_done(done)
-    print(f"[SMS] Done. Processed {new_count} new leads.")
+    print(f"[SMS] Done. Processed {new_count} new_lead(s); "
+          f"skipped {appt_skipped} appt_reminder(s) (no supersede).")
+
+
+def _refresh_reminder_for_existing_task(name):
+    """When an appt-reminder SMS arrives for a lead that already has a
+    pending DSW Solar task, clear that task's reminder_sent_at so today's
+    Jottask reminder can still fire (in case throttling was blocking it).
+    Does NOT create tasks, does NOT change status, does NOT call
+    dsw.process. Silent no-op if no matching task exists.
+
+    Kept separate from the process/make_task path so the ONLY writes this
+    function can produce are `reminder_sent_at = NULL` — nothing else.
+    """
+    try:
+        from supabase import create_client
+        sb = create_client(os.getenv('SUPABASE_URL'),
+                           os.getenv('SUPABASE_SERVICE_KEY') or os.getenv('SUPABASE_KEY'))
+        # Match a pending DSW Solar task by client_name — the same signal
+        # dsw_lead_poller.find_existing_task_by_client uses, but scoped to
+        # just the write we want to allow.
+        matches = sb.table('tasks').select('id, client_name, reminder_sent_at')\
+                    .eq('category', 'DSW Solar').eq('status', 'pending')\
+                    .ilike('client_name', name).limit(1).execute().data
+        if not matches:
+            print(f"[SMS appt-refresh] no pending task for {name!r} — no-op")
+            return
+        tid = matches[0]['id']
+        if matches[0].get('reminder_sent_at') is None:
+            print(f"[SMS appt-refresh] task {tid[:8]} reminder_sent_at already NULL — no-op")
+            return
+        sb.table('tasks').update({'reminder_sent_at': None}).eq('id', tid).execute()
+        print(f"[SMS appt-refresh] task {tid[:8]} reminder_sent_at cleared "
+              f"(Jottask reminder can now fire today)")
+    except Exception as e:
+        print(f"[SMS appt-refresh] error (non-fatal): {e}")
 
 if __name__ == '__main__':
     if len(sys.argv) > 1:

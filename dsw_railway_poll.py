@@ -160,6 +160,42 @@ def poll_dsw_pipereply(dry_run=False, lookback_minutes=30):
                              'phone': phone, 'reason': match_reason})
             continue
 
+        # ── Belt-and-braces supersede guard (same-class fix as the 2026-
+        #    08-20 dsw_sms_poller appt-reminder skip). Even though
+        #    _existing_dsw_keys above should already skip contacts with
+        #    a matching task, dsw_lead_poller.process()'s own
+        #    find_existing_task_by_client uses looser ilike matching that
+        #    can catch tasks the phone/name-set dedup missed (case, edge
+        #    normalisation). If it finds a match, calling dsw.process(c)
+        #    would trigger make_task(supersede_task_id=…) and cancel the
+        #    already-worked task — exactly the bug this file is meant to
+        #    replace, not perpetuate. Run the same lookup here and skip
+        #    if a match exists.
+        supersede_match = None
+        if name and name != 'unknown':
+            try:
+                users = tm.supabase.table('users').select('id')\
+                          .eq('email', 'rob@cloudcleanenergy.com.au').execute()
+                _uid = users.data[0]['id'] if users.data else None
+                if _uid:
+                    cand = tm.find_existing_task_by_client(client_name=name, user_id=_uid)
+                    if (cand and cand.get('category') == 'DSW Solar'
+                            and cand.get('status') == 'pending'):
+                        supersede_match = cand
+            except Exception as e:
+                # Guard MUST NOT block processing on lookup error — best-effort.
+                print(f'[dsw_poll] supersede-guard lookup failed for {name!r} (non-fatal): {e}')
+
+        if supersede_match:
+            skipped_dedup += 1
+            print(f'[dsw_poll] supersede-avoided: {name!r} (cid={cid}) — pending '
+                  f'DSW Solar task {supersede_match["id"][:8]} exists; NOT calling '
+                  f'dsw.process (would supersede the worked task)')
+            if dry_run:
+                plan.append({'action': 'skip_supersede_guard', 'cid': cid, 'name': name,
+                             'phone': phone, 'existing_task_id': supersede_match['id']})
+            continue
+
         if dry_run:
             plan.append({'action': 'process', 'cid': cid, 'name': name,
                          'phone': phone, 'date_added': date_added_raw})
