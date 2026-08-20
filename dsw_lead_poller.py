@@ -746,6 +746,50 @@ def _state_short_au(s):
     return s
 
 
+def _split_address_tail(address_string):
+    """Extract (locality, state_short, postcode) from an AU address string's
+    trailing "..., <Suburb> <STATE> <4-digit postcode>" tail.
+
+    Returns (locality, state_short, postcode) — each may be '' if the pattern
+    doesn't match. state_short is normalised via _state_short_au (so
+    "Queensland" → "QLD"). postcode is validated as a 4-digit number and
+    state must be in the AU set post-normalise; otherwise all three
+    return '' (safer to backfill nothing than the wrong thing).
+
+    Handles the common shapes we see from PipeReply's address1-with-
+    everything-jammed-in-a-single-field case:
+      "204 Huntingdale Street, Pullenvale, QLD 4069"
+      "15 Crestwood Drive , Camira QLD 4300"      (extra space before comma)
+      "23/20 Halfway Drive, Ormeau, Queensland, 4208"
+      "6 Peppermint Ln, Forest Lake QLD 4078"     (multi-word suburb)
+      "6 Peppermint Ln, Forest Lake QLD 4078, Australia"  (trailing country)
+    """
+    if not address_string:
+        return '', '', ''
+    # Locality: after a comma, alpha+space (no commas so we stop at any
+    # inner separator like ", Queensland"). Lazy so it stops at the
+    # STATE anchor. State: 2+ letters (matches both "QLD" and "Queensland").
+    # Postcode: exactly 4 digits with a word boundary.
+    m = re.search(
+        r',\s*([A-Za-z][A-Za-z\s]*?)'   # locality
+        r'[,\s]+([A-Za-z]{2,})'         # state (short or long)
+        r'[,\s]+(\d{4})\b',             # 4-digit postcode
+        address_string,
+    )
+    if not m:
+        return '', '', ''
+    loc = m.group(1).strip()
+    st  = _state_short_au(m.group(2))
+    pc  = m.group(3)
+    # Safety: refuse to backfill anything if the parsed state isn't an
+    # actual AU code (mis-parse guard — e.g. an address that happens to
+    # contain "…Suite Street NORTH 3000…" would match the regex but
+    # NORTH isn't a state).
+    if st not in ('QLD', 'NSW', 'VIC', 'SA', 'WA', 'TAS', 'NT', 'ACT'):
+        return '', '', ''
+    return loc, st, pc
+
+
 def _geocode_au(street, city, state, postcode):
     """Geocode an Australian address via Nominatim. Returns (lat, lon) or
     (None, None). Sanity-bounded to AU: lat ∈ (-45, -9), lon ∈ (112, 155).
@@ -795,6 +839,27 @@ def make_opensolar(name, phone, email, address, city, state, postcode,
         parts = (name or '').strip().split()
         first = (first_name or (parts[0] if parts else 'Unknown')).strip()
         last  = (last_name  or (' '.join(parts[1:]) if len(parts) > 1 else '')).strip()
+
+        # ── Parse-before-send: backfill empty structured fields from the
+        #    address string tail. Root cause of the ~11 % STC-broken auto-
+        #    creates audited 2026-08-20: PipeReply contacts with the full
+        #    address stuffed into address1 (e.g. "204 Huntingdale Street,
+        #    Pullenvale, QLD 4069") and city/state/postalCode all empty
+        #    would push empty strings straight into the OS payload's
+        #    zip/state/locality — OS's geocoder rescued lat/lon but the
+        #    structured zip stayed '', so STC-zone lookup couldn't run.
+        #    Only fills EMPTIES — never overwrites a populated field. The
+        #    state normalisation to short form ("Queensland" → "QLD") is
+        #    a secondary fix for the same rebate hazard.
+        if not (postcode and state) and address:
+            _loc, _st, _pc = _split_address_tail(address)
+            if not city     and _loc: city     = _loc
+            if not state    and _st:  state    = _st
+            if not postcode and _pc:  postcode = _pc
+            if _loc or _st or _pc:
+                print(f"[OpenSolar] Address tail parsed → "
+                      f"locality={_loc!r} state={_st!r} postcode={_pc!r} "
+                      f"(filled empties only; kept any pre-existing values)")
 
         # Structured address for OpenSolar. `address` gets street-only when we
         # can split it; city/state/zip carry the rest as separate fields so
