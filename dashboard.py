@@ -4184,6 +4184,262 @@ def api_update_task_title(task_id):
     return jsonify({'success': True})
 
 
+# ── Task-name editing (client_name + auto title regen + optional CRM push) ──
+# Design: PipeReply-first-then-local (fail loud, no silent revert on the next
+# appt-poll tick — the James lesson). If the linked PipeReply contact hits a
+# duplicate/A-B error, surface the sibling cid so the operator can decide
+# repoint vs merge instead of just seeing an opaque 502.
+_LEAD_TITLE_RE = re.compile(r'^Call\s+(.+?)\s+-\s+New DSW Lead\s*$')
+_APPT_TITLE_RE = re.compile(r'^📞\s+Call\s+(.+?)\s+—\s+appt\b')
+
+
+def _regenerate_title(old_title, old_name, new_name):
+    """Rebuild task.title when client_name changes.
+
+    Three shapes handled, in order:
+      1. "Call <name> - New DSW Lead"     → "Call <new> - New DSW Lead"
+         (dsw_lead_poller.make_task shape)
+      2. "📞 Call <name> — appt …"        → "📞 Call <new> — appt …"
+         (dsw_appt_poll._format_appt_title shape)
+      3. anything else (hand-crafted)     → single substring swap of old_name
+                                            → new_name, everything else
+                                            byte-identical. Never mangles a
+                                            title the operator typed by hand.
+
+    Falls back to returning the old title unchanged if no shape matches and
+    old_name doesn't appear inside it (i.e. nothing to swap).
+    """
+    old_title = old_title or ''
+    if _LEAD_TITLE_RE.match(old_title):
+        return f'Call {new_name} - New DSW Lead'
+    m = _APPT_TITLE_RE.match(old_title)
+    if m:
+        # Swap only the captured name group, preserve the "— appt <time>" tail
+        return old_title.replace(m.group(1), new_name, 1)
+    if old_name and old_name in old_title:
+        return old_title.replace(old_name, new_name, 1)
+    return old_title
+
+
+@app.route('/api/tasks/<task_id>/name', methods=['POST'])
+@login_required
+def api_update_task_name(task_id):
+    """Update client_name + auto-regenerate title. If the task has a linked
+    PipeReply cid in its description, PATCH PipeReply's firstName/lastName
+    FIRST — if that fails, the local write is skipped so the two never drift.
+    (The next appt-poll tick would otherwise re-pull the old name from
+    PipeReply and silently revert the local edit — the James lesson from
+    2026-08-19.)
+
+    Body: {"first_name": "...", "last_name": "..."} — either can be empty
+    if only one is being changed.
+
+    Returns:
+      200 {success, new_name, new_title, pushed_to_crm, pipereply}
+      400 if neither first nor last supplied
+      404 if task not owned by session user
+      500 if PIPEREPLY_TOKEN is missing on a cid-present task
+      502 if PipeReply PATCH failed — includes ab_split hint when the failure
+          is the duplicate-contact / matching-field shape (James pattern)
+    """
+    import requests
+    user_id = session['user_id']
+    body    = request.get_json(silent=True) or {}
+    first   = (body.get('first_name') or '').strip()
+    last    = (body.get('last_name')  or '').strip()
+    if not first and not last:
+        return jsonify({'error': 'first_name and/or last_name required'}), 400
+    new_name = f'{first} {last}'.strip()
+
+    # Ownership: only Rob (or the row's user_id) can edit their own task.
+    task = supabase.table('tasks')\
+        .select('id, title, description, client_name, user_id')\
+        .eq('id', task_id).eq('user_id', user_id).maybe_single().execute()
+    if not task or not task.data:
+        return jsonify({'error': 'not found'}), 404
+    t = task.data
+
+    # Extract cid from the CRM: line in the description, if any.
+    crm_m = re.search(r'^CRM:\s*(\S+)', t.get('description') or '', re.MULTILINE)
+    cid_m = re.search(r'/detail/([A-Za-z0-9]+)',
+                      crm_m.group(1)) if crm_m else None
+    cid   = cid_m.group(1) if cid_m else ''
+
+    pr_result = None
+    if cid:
+        PR_TOKEN = os.getenv('PIPEREPLY_TOKEN')
+        if not PR_TOKEN:
+            return jsonify({
+                'error': 'PIPEREPLY_TOKEN not configured — cannot push to CRM',
+            }), 500
+        PR_H = {'Authorization': f'Bearer {PR_TOKEN}',
+                'Content-Type': 'application/json',
+                'Version':       '2021-07-28'}
+        # Only patch fields the caller supplied. An empty last_name must NOT
+        # blow away an existing lastName on PipeReply.
+        patch = {}
+        if first: patch['firstName'] = first
+        if last:  patch['lastName']  = last
+        r = requests.put(
+            f'https://services.leadconnectorhq.com/contacts/{cid}',
+            headers=PR_H, json=patch, timeout=15,
+        )
+        if not r.ok:
+            # A/B-split detection. PipeReply's duplicate-contact error shape:
+            #   {"statusCode":400,
+            #    "message":"This location does not allow duplicated contacts.",
+            #    "meta":{"contactName":"...","contactId":"...",
+            #            "matchingField":"email"|"phone"}, ...}
+            ab_hint = None
+            try:
+                j = r.json() if r.text else {}
+                msg = (j.get('message') or '').lower()
+                meta = j.get('meta') or {}
+                if meta.get('contactId') and 'duplicat' in msg:
+                    ab_hint = {
+                        'sibling_cid':    meta.get('contactId'),
+                        'sibling_name':   meta.get('contactName'),
+                        'matching_field': meta.get('matchingField'),
+                        'note': ('A/B split (James 2026-08-19 pattern) — the name '
+                                 'you tried to set collides with a DIFFERENT '
+                                 'PipeReply contact on the given field. Options: '
+                                 '(a) repoint this task to sibling_cid, or '
+                                 '(b) merge the two contacts in PipeReply first. '
+                                 'The local task was NOT updated.'),
+                    }
+            except Exception:
+                pass
+            resp = {
+                'error': ('PipeReply PATCH failed — local task NOT updated '
+                          '(prevents silent revert on next appt-poll tick)'),
+                'pipereply_status': r.status_code,
+                'pipereply_body':   (r.text or '')[:600],
+            }
+            if ab_hint:
+                resp['ab_split'] = ab_hint
+            return jsonify(resp), 502
+        pr_result = {'http_status': r.status_code, 'patched': patch}
+
+    # Local write. Regenerate title if it matches one of the auto-shapes,
+    # otherwise do a single substring swap (preserves operator-typed titles).
+    new_title = _regenerate_title(
+        t.get('title', ''), t.get('client_name', ''), new_name,
+    )
+    supabase.table('tasks').update({
+        'client_name': new_name,
+        'title':       new_title,
+    }).eq('id', task_id).eq('user_id', user_id).execute()
+
+    return jsonify({
+        'success':       True,
+        'new_name':      new_name,
+        'new_title':     new_title,
+        'pushed_to_crm': bool(pr_result),
+        'pipereply':     pr_result,
+    })
+
+
+# ── OpenSolar-URL editing (task-description-only, no OS/CRM push) ──────────
+# The OpenSolar: line in the description is what renders as the ☀️ button on
+# the task page and in outbound lead emails. This endpoint just rewrites that
+# one line — no OpenSolar API call, no PipeReply push. Same login+ownership
+# gates as the name control; routed through safe_update_description so the
+# guard validates (OS demotion, CRM link drop, APPT-POLL preservation, shrink).
+def _valid_opensolar_url(url):
+    """True iff url is an http(s) URL on opensolar.com (any subdomain, any
+    path). Rejects look-alike hosts to prevent typo-pastes of unrelated URLs
+    landing in the OpenSolar: line and confusing downstream consumers that
+    treat the line as authoritative."""
+    if not url or not isinstance(url, str):
+        return False
+    try:
+        from urllib.parse import urlparse
+        p = urlparse(url.strip())
+        if p.scheme not in ('http', 'https'):
+            return False
+        host = (p.netloc or '').lower().split(':')[0]
+        return host == 'opensolar.com' or host.endswith('.opensolar.com')
+    except Exception:
+        return False
+
+
+@app.route('/api/tasks/<task_id>/opensolar', methods=['POST'])
+@login_required
+def api_update_task_opensolar_url(task_id):
+    """Update the OpenSolar: line in the task description. Task-only — no
+    OpenSolar API call, no PipeReply push.
+
+    Body: {"os_url": "https://app.opensolar.com/projects/1234/manage"}
+    Validation: URL must be on opensolar.com (any subdomain, any path).
+
+    Idempotency: replaces the existing OpenSolar: line if present, otherwise
+    inserts one right after the first header line found (Source: > Address: >
+    Email: > Phone:). If no header lines exist, prepends with a blank-line
+    separator.
+
+    Returns:
+      200 {success, new_os_url, new_desc_len}
+      400 if os_url missing or not an opensolar.com URL
+      404 if task not owned by session user
+      409 if safe_update_description's guard refused (surfaces the reason)
+    """
+    user_id = session['user_id']
+    body    = request.get_json(silent=True) or {}
+    new_url = (body.get('os_url') or '').strip()
+    if not new_url:
+        return jsonify({'error': 'os_url required'}), 400
+    if not _valid_opensolar_url(new_url):
+        return jsonify({'error': 'os_url must be an opensolar.com URL '
+                                 '(any subdomain, any path)'}), 400
+
+    # Ownership check
+    task = supabase.table('tasks')\
+        .select('id, description, user_id')\
+        .eq('id', task_id).eq('user_id', user_id).maybe_single().execute()
+    if not task or not task.data:
+        return jsonify({'error': 'not found'}), 404
+    old_desc = task.data.get('description') or ''
+
+    # Mutate the OpenSolar: line — replace-in-place if present, else insert
+    _os_line_re = re.compile(r'^OpenSolar:[^\n]*$', re.MULTILINE)
+    if _os_line_re.search(old_desc):
+        new_desc = _os_line_re.sub(f'OpenSolar: {new_url}', old_desc, count=1)
+    else:
+        inserted = False
+        for after_prefix in ('Source:', 'Address:', 'Email:', 'Phone:'):
+            _prefix_re = re.compile(rf'^({re.escape(after_prefix)}[^\n]*)$',
+                                    re.MULTILINE)
+            if _prefix_re.search(old_desc):
+                new_desc = _prefix_re.sub(rf'\1\nOpenSolar: {new_url}',
+                                          old_desc, count=1)
+                inserted = True
+                break
+        if not inserted:
+            # No header lines — prepend with a blank-line separator
+            new_desc = f'OpenSolar: {new_url}\n\n' + old_desc
+
+    # Route through the guard (validates OS demotion, CRM link drop,
+    # APPT-POLL preservation, no-shrink)
+    from task_manager import safe_update_description
+    wrote = safe_update_description(
+        supabase, task_id, new_desc,
+        source='edit_os_url.dashboard', force=False,
+    )
+    if not wrote:
+        return jsonify({
+            'error': ('safe_update_description guard refused the write '
+                      '(possible causes: OS demotion, CRM link drop, '
+                      'APPT-POLL block loss, or unexpected shrink — '
+                      'check the system_events desc_guard row for details)'),
+        }), 409
+
+    return jsonify({
+        'success':      True,
+        'new_os_url':   new_url,
+        'new_desc_len': len(new_desc),
+    })
+
+
 @app.route('/api/projects/<project_id>/status', methods=['POST'])
 @login_required
 def api_update_project_status(project_id):
@@ -4652,6 +4908,16 @@ def _render_lead_detail(task_id):
     addr_raw = _field('Address:', desc)
     maps_url = ('https://maps.google.com/?q=' + urllib.parse.quote(addr_raw)) if addr_raw else ''
 
+    # is_owner gates the pencil (edit-name) button in the template — the
+    # /task/<id> page has no @login_required (opens from lead emails), so an
+    # anonymous viewer must NOT see edit controls. Only Rob when logged in
+    # sees the pencil on his own tasks. Also derive first/last so the JS can
+    # pre-fill the two prompts without guessing the split.
+    is_owner = (session.get('user_id') == t.get('user_id'))
+    _name_parts = (name or '').split(None, 1)
+    current_first = _name_parts[0] if _name_parts else ''
+    current_last  = _name_parts[1] if len(_name_parts) > 1 else ''
+
     STATUSES = [
         ('Intro Call',        'intro_call',        '#1e40af'),
         ('Site Visit',        'site_visit_booked', '#7c3aed'),
@@ -4734,7 +5000,7 @@ textarea:focus{border-color:#1e40af;box-shadow:0 0 0 3px rgba(30,64,175,.1)}
 <!-- Name + Call -->
 <div class="card">
   <div class="name-row">
-    <div class="lead-name">{{ name }}</div>
+    <div class="lead-name">{{ name }}{% if is_owner %} <button type="button" id="editNameBtn" data-task-id="{{ task_id }}" data-cid="{{ crm_cid }}" data-current-first="{{ current_first | e }}" data-current-last="{{ current_last | e }}" title="Edit name" style="background:none;border:none;cursor:pointer;font-size:15px;margin-left:6px;opacity:0.55;padding:2px 6px;border-radius:4px;vertical-align:middle" onmouseover="this.style.opacity=1" onmouseout="this.style.opacity=0.55">✏️</button>{% endif %}</div>
     {% if phone %}<a href="tel:{{ phone }}" class="call-btn">📞 Call</a>{% endif %}
   </div>
   {% if email %}<a href="mailto:{{ email }}" class="addr-link">✉️ {{ email }}</a>{% endif %}
@@ -4743,11 +5009,16 @@ textarea:focus{border-color:#1e40af;box-shadow:0 0 0 3px rgba(30,64,175,.1)}
 </div>
 
 <!-- Pipereply + OpenSolar -->
-{% if crm_url or os_url %}
+{% if crm_url or os_url or is_owner %}
 <div class="card">
   <div class="btn-row">
     {% if crm_url %}<a href="{{ crm_url }}" class="btn btn-blue" target="_blank">Pipereply</a>{% endif %}
     {% if os_url %}<a href="{{ os_url }}" class="btn btn-amber" target="_blank">☀️ OpenSolar</a>{% endif %}
+    {% if is_owner %}
+      {% if os_url %}<button type="button" id="editOsBtn" data-task-id="{{ task_id }}" data-current-url="{{ os_url | e }}" title="Edit OpenSolar URL" style="background:none;border:none;cursor:pointer;font-size:15px;opacity:0.55;padding:2px 6px;border-radius:4px;vertical-align:middle" onmouseover="this.style.opacity=1" onmouseout="this.style.opacity=0.55">✏️</button>
+      {% else %}<button type="button" id="editOsBtn" data-task-id="{{ task_id }}" data-current-url="" class="btn" style="background:#6b7280;color:#fff">➕ Add OpenSolar URL</button>
+      {% endif %}
+    {% endif %}
     {% if crm_cid %}
     <form action="/task/{{ task_id }}/migrate" method="POST" style="display:inline"
           onsubmit="return confirm('Migrate this task to the new format? The current task will be cancelled and replaced with a fresh one carrying all notes forward.');">
@@ -4941,6 +5212,119 @@ if(sp.get('reminder_set')==='1'){
     }
   });
 })();
+
+// ── Edit-name pencil ──────────────────────────────────────────────────────
+// Two-prompt flow (first / last) so the API can PATCH firstName/lastName on
+// PipeReply per-field — a single "full name" field would force a wrong-split
+// guess. cid-aware confirm: makes the CRM push explicit when it will happen,
+// so the operator knows the blast radius before saying OK.
+(function(){
+  var btn = document.getElementById('editNameBtn');
+  if(!btn) return;
+  btn.addEventListener('click', async function(){
+    var cid = btn.dataset.cid || '';
+    var taskId = btn.dataset.taskId;
+    var curFirst = btn.dataset.currentFirst || '';
+    var curLast  = btn.dataset.currentLast  || '';
+    var newFirst = prompt('First name:', curFirst);
+    if(newFirst === null) return;
+    var newLast  = prompt('Last name:',  curLast);
+    if(newLast === null) return;
+    newFirst = (newFirst || '').trim();
+    newLast  = (newLast  || '').trim();
+    if(!newFirst && !newLast) { alert('Need at least a first or last name.'); return; }
+    var willPush = !!cid;
+    var msg = willPush
+      ? 'Update name to "'+newFirst+' '+newLast+'" on this task AND push to PipeReply?\n\n'+
+        'PipeReply push is required — otherwise the next appt-poll tick will silently revert the change (James lesson).'
+      : 'Update name to "'+newFirst+' '+newLast+'" on this task only?\n\n'+
+        'No linked PipeReply contact — task-only edit is complete.';
+    if(!confirm(msg)) return;
+    var origLabel = btn.textContent;
+    btn.textContent = '⏳'; btn.disabled = true;
+    try {
+      var res = await fetch('/api/tasks/'+taskId+'/name', {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({first_name:newFirst, last_name:newLast})
+      });
+      var data = {};
+      try { data = await res.json(); } catch(e){}
+      if(res.ok && data.success) {
+        showToast('Name updated'+(data.pushed_to_crm ? ' + pushed to PipeReply' : '')+' ✓', 2200);
+        setTimeout(function(){ location.reload(); }, 600);
+      } else if(res.status === 401) {
+        alert('Login required to edit — redirecting.');
+        location.href = '/login?next=' + encodeURIComponent(location.pathname);
+      } else if(res.status === 502 && data.ab_split) {
+        alert('PipeReply refused — A/B split detected.\n\n'+
+              'This name collides with a DIFFERENT PipeReply contact on '+data.ab_split.matching_field+':\n'+
+              '  sibling name: '+data.ab_split.sibling_name+'\n'+
+              '  sibling cid:  '+data.ab_split.sibling_cid+'\n\n'+
+              'Either repoint this task to that sibling contact, or merge the two in PipeReply first.\n\n'+
+              'The local task was NOT updated.');
+      } else {
+        alert('Edit failed: '+(data.error || ('HTTP '+res.status)));
+      }
+    } catch(err) {
+      alert('Edit failed: '+err.message);
+    } finally {
+      btn.textContent = origLabel; btn.disabled = false;
+    }
+  });
+})();
+
+// ── Edit-OpenSolar-URL pencil / ➕Add button ───────────────────────────────
+// Task-description-only edit — no OpenSolar API call, no PipeReply push.
+// Server validates the URL is on opensolar.com before touching the desc,
+// then routes the write through safe_update_description so the guard checks
+// (OS demotion, CRM link drop, APPT-POLL preservation, no-shrink) all apply.
+(function(){
+  var btn = document.getElementById('editOsBtn');
+  if(!btn) return;
+  btn.addEventListener('click', async function(){
+    var taskId = btn.dataset.taskId;
+    var currentUrl = btn.dataset.currentUrl || '';
+    var prompt_txt = currentUrl
+      ? 'Edit OpenSolar URL for this task.\n\nMust be an opensolar.com URL (any subdomain, any path). Task-description-only — no OS API call, no CRM push.'
+      : 'Add OpenSolar URL for this task.\n\nMust be an opensolar.com URL (any subdomain, any path). Task-description-only — no OS API call, no CRM push.';
+    var newUrl = prompt(prompt_txt, currentUrl || 'https://app.opensolar.com/projects/');
+    if(newUrl === null) return;
+    newUrl = (newUrl || '').trim();
+    if(!newUrl){ alert('URL required.'); return; }
+    // Client-side sanity check — server enforces the real validation
+    if(!/^https?:\/\/[^\s]*opensolar\.com/i.test(newUrl)){
+      alert('Not an opensolar.com URL — refused before hitting the server.');
+      return;
+    }
+    var origLabel = btn.textContent;
+    btn.textContent = '⏳'; btn.disabled = true;
+    try {
+      var res = await fetch('/api/tasks/'+taskId+'/opensolar', {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({os_url: newUrl})
+      });
+      var data = {};
+      try { data = await res.json(); } catch(e){}
+      if(res.ok && data.success){
+        showToast('OpenSolar URL saved ✓', 2200);
+        setTimeout(function(){ location.reload(); }, 600);
+      } else if(res.status === 401){
+        alert('Login required to edit — redirecting.');
+        location.href = '/login?next=' + encodeURIComponent(location.pathname);
+      } else if(res.status === 409){
+        alert('safe_update_description guard refused the write:\n\n' +
+              (data.error || 'unknown') +
+              '\n\nThe task was NOT updated.');
+      } else {
+        alert('Save failed: '+(data.error || ('HTTP '+res.status)));
+      }
+    } catch(err){
+      alert('Save failed: '+err.message);
+    } finally {
+      btn.textContent = origLabel; btn.disabled = false;
+    }
+  });
+})();
 </script>
 </body>
 </html>""",
@@ -4953,6 +5337,7 @@ if(sp.get('reminder_set')==='1'){
         lead_status=lead_status, statuses=STATUSES,
         task_id=task_id, tomorrow=tomorrow, sub_note=sub_note,
         tag_options=tag_options,
+        is_owner=is_owner, current_first=current_first, current_last=current_last,
     )
 
 
