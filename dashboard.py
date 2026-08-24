@@ -4403,15 +4403,21 @@ def api_update_task_opensolar_url(task_id):
     # Mutate the OpenSolar: line — replace-in-place if present, else insert
     _os_line_re = re.compile(r'^OpenSolar:[^\n]*$', re.MULTILINE)
     if _os_line_re.search(old_desc):
-        new_desc = _os_line_re.sub(f'OpenSolar: {new_url}', old_desc, count=1)
+        # Callable repl — re.sub's template parser doesn't touch a callable's
+        # return value, so any backslash / group-ref-looking substring in
+        # new_url is inert. See 2026-08-24 note-save 500 root-cause fix.
+        new_desc = _os_line_re.sub(lambda m: f'OpenSolar: {new_url}',
+                                   old_desc, count=1)
     else:
         inserted = False
         for after_prefix in ('Source:', 'Address:', 'Email:', 'Phone:'):
             _prefix_re = re.compile(rf'^({re.escape(after_prefix)}[^\n]*)$',
                                     re.MULTILINE)
             if _prefix_re.search(old_desc):
-                new_desc = _prefix_re.sub(rf'\1\nOpenSolar: {new_url}',
-                                          old_desc, count=1)
+                # Callable repl — see 2026-08-24 note-save 500 fix.
+                new_desc = _prefix_re.sub(
+                    lambda m: m.group(1) + f'\nOpenSolar: {new_url}',
+                    old_desc, count=1)
                 inserted = True
                 break
         if not inserted:
@@ -5851,8 +5857,15 @@ def lead_save_notes(task_id):
         if first_note_line:
             first_note_line = first_note_line[:80]
             if re.search(r'^OpenSolar:', cust_part, re.MULTILINE):
-                cust_part = re.sub(r'^(OpenSolar:[^\n]*)', rf'\1\nSub-note: {first_note_line}',
-                                   cust_part, flags=re.MULTILINE, count=1)
+                # Callable repl so any \ / \1 / \g<0> / \U in first_note_line
+                # can't crash re.sub's template parser (2026-08-24 Jeanita
+                # 447c1c91 root-cause: `re.error: bad escape (end of pattern)`
+                # when the operator's first note contains a backslash — e.g.
+                # a Windows path fragment, trailing '\', or truncated '\U').
+                cust_part = re.sub(
+                    r'^(OpenSolar:[^\n]*)',
+                    lambda m: m.group(1) + f'\nSub-note: {first_note_line}',
+                    cust_part, flags=re.MULTILINE, count=1)
             else:
                 cust_part = cust_part.rstrip() + f'\nSub-note: {first_note_line}'
 
@@ -6083,14 +6096,21 @@ def lead_save_sub_note(task_id):
 
     if _re.search(r'^Sub-note:.*$', desc, _re.MULTILINE):
         if sub_note:
-            new_desc = _re.sub(r'^Sub-note:.*$', f'Sub-note: {sub_note}', desc, flags=_re.MULTILINE)
+            # Callable repl — see 2026-08-24 note-save 500 fix.
+            new_desc = _re.sub(r'^Sub-note:.*$',
+                               lambda m: f'Sub-note: {sub_note}',
+                               desc, flags=_re.MULTILINE)
         else:
             new_desc = _re.sub(r'^Sub-note:.*\n?', '', desc, flags=_re.MULTILINE)
     else:
         if sub_note:
             # Insert after the OpenSolar line if present, otherwise prepend
             if _re.search(r'^OpenSolar:', desc, _re.MULTILINE):
-                new_desc = _re.sub(r'^(OpenSolar:[^\n]*)', rf'\1\nSub-note: {sub_note}', desc, flags=_re.MULTILINE, count=1)
+                # Callable repl — see 2026-08-24 note-save 500 fix.
+                new_desc = _re.sub(
+                    r'^(OpenSolar:[^\n]*)',
+                    lambda m: m.group(1) + f'\nSub-note: {sub_note}',
+                    desc, flags=_re.MULTILINE, count=1)
             else:
                 new_desc = f'Sub-note: {sub_note}\n' + desc
         else:
@@ -7384,10 +7404,13 @@ def admin_create_opensolar_for_task(task_id):
             new_desc += '\n\nMY NOTES:\n' + notes_part
     else:
         if re.search(r'^OpenSolar:\s*\S', new_desc, re.MULTILINE):
-            new_desc = re.sub(r'^OpenSolar:\s*.+$', f'OpenSolar: {os_url}',
+            # Callable repl — see 2026-08-24 note-save 500 fix.
+            new_desc = re.sub(r'^OpenSolar:\s*.+$',
+                              lambda m: f'OpenSolar: {os_url}',
                               new_desc, count=1, flags=re.MULTILINE)
         elif re.search(r'^CRM:', new_desc, re.MULTILINE):
-            new_desc = re.sub(r'^(CRM:[^\n]*)', rf'\1\nOpenSolar: {os_url}',
+            new_desc = re.sub(r'^(CRM:[^\n]*)',
+                              lambda m: m.group(1) + f'\nOpenSolar: {os_url}',
                               new_desc, count=1, flags=re.MULTILINE)
         else:
             new_desc = f'OpenSolar: {os_url}\n\n' + new_desc
