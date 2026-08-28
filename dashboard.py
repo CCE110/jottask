@@ -4446,6 +4446,217 @@ def api_update_task_opensolar_url(task_id):
     })
 
 
+# ── MY NOTES surgical editor (Arvind lesson 2026-08-28) ─────────────────────
+# The legacy /task/<id>/notes handler auto-populates Sub-note from the first
+# line of the note (leaks bogus data), then refreshes the whole description
+# from PipeReply. On Arvind Rajagopalan, a Christine Jessop paste got
+# mirrored to PipeReply as a MY NOTES note, then the refresh re-embedded
+# the Christine text INSIDE the CRM NOTES section. Purely local cleanup
+# alone doesn't hold — the next refresh pulls the mirror back.
+#
+# This endpoint edits ONLY the top-level `MY NOTES:` section:
+#   * mirrors to PipeReply FIRST (PR-first, fail loud on PR failure so
+#     local never diverges — same discipline as the edit-name control),
+#   * then writes the local description via safe_update_description,
+#   * NO auto-populate Sub-note, NO refresh from PipeReply, NO lead email,
+#     NO make_task / make_opensolar / iCloud / process,
+#   * pure string split + concat — never re.sub with an f-string template
+#     (the class of bug we fixed 7× on 2026-08-24 that crashes on any \
+#     in the operator's text).
+def _split_at_my_notes(desc):
+    """Return (cust_part, notes_body) split at the top-level 'MY NOTES:'
+    header. cust_part is everything before, rstripped. notes_body is
+    everything after the header, rstripped. If no header, returns
+    (desc.rstrip(), '')."""
+    NOTES_SEP = 'MY NOTES:'
+    if NOTES_SEP in desc:
+        cust_part, notes_body = desc.split(NOTES_SEP, 1)
+        return cust_part.rstrip(), notes_body.strip()
+    return desc.rstrip(), ''
+
+
+def _rebuild_desc_with_my_notes(cust_part, new_notes):
+    """Build the new description. new_notes empty → drop the MY NOTES
+    section entirely (returns cust_part). Non-empty → append with a
+    blank-line separator and 'MY NOTES:\\n<body>'. Pure string ops — no
+    re.sub, no template escapes to worry about."""
+    if not new_notes.strip():
+        return cust_part
+    return cust_part + '\n\n' + 'MY NOTES:\n' + new_notes.strip() + '\n'
+
+
+def _find_pipereply_my_notes_note(cid, pr_h):
+    """Return the (id, body) of the most recent PipeReply note whose body
+    starts with 'MY NOTES (' — that's the shape written by the legacy
+    lead_save_notes handler (dashboard.py:~5895). If multiple exist,
+    prefer the most recent (highest dateAdded). Returns (None, None) if
+    none exists."""
+    import requests as rq
+    r = rq.get(
+        f'https://services.leadconnectorhq.com/contacts/{cid}/notes',
+        headers=pr_h, timeout=10,
+    )
+    if not r.ok:
+        return None, None
+    notes = (r.json() or {}).get('notes') or []
+    my_notes = [n for n in notes
+                if (n.get('body') or '').lstrip().startswith('MY NOTES (')]
+    if not my_notes:
+        return None, None
+    my_notes.sort(key=lambda n: n.get('dateAdded') or '', reverse=True)
+    n = my_notes[0]
+    return n.get('id'), n.get('body') or ''
+
+
+@app.route('/api/tasks/<task_id>/my_notes', methods=['POST'])
+@login_required
+def api_update_task_my_notes(task_id):
+    """Surgical edit of the top-level MY NOTES section on a task.
+
+    Body: {"my_notes": "<full new notes text>"} — empty string clears.
+
+    Order of operations (PR-first, fail-loud on PR failure):
+      1. Ownership check (session user_id == task.user_id).
+      2. Locate the mirrored MY NOTES note on the PipeReply contact.
+      3. Mirror the edit to PipeReply:
+           empty + note exists → DELETE
+           empty + no note     → no-op
+           non-empty + note    → PUT with new body
+           non-empty + no note → POST new note
+         Any PR failure → 502 with detail. Local NOT touched.
+      4. If PR succeeded (or no cid), apply local edit via
+         safe_update_description. On refusal → 500 with pr_succeeded
+         flag so the operator knows the PR side has landed.
+
+    Returns 200 {success, new_desc_len, pushed_to_crm, pipereply}
+            400 if my_notes key missing
+            404 if task not owned by session user
+            502 if PipeReply mirror failed (local NOT written)
+            500 if PR succeeded but local write refused
+    """
+    import requests as rq
+    from datetime import datetime as _dt
+
+    user_id = session['user_id']
+    body    = request.get_json(silent=True) or {}
+    if 'my_notes' not in body:
+        return jsonify({'error': 'my_notes key required (empty string OK)'}), 400
+    new_notes = (body.get('my_notes') or '').rstrip()
+
+    # Ownership + fetch
+    task = supabase.table('tasks')\
+        .select('id, description, user_id')\
+        .eq('id', task_id).eq('user_id', user_id).maybe_single().execute()
+    if not task or not task.data:
+        return jsonify({'error': 'not found'}), 404
+    old_desc = task.data.get('description') or ''
+
+    # Extract cid from the CRM: line (if any)
+    crm_m = re.search(r'^CRM:\s*(\S+)', old_desc, re.MULTILINE)
+    cid_m = re.search(r'/detail/([A-Za-z0-9]+)',
+                      crm_m.group(1)) if crm_m else None
+    cid   = cid_m.group(1) if cid_m else ''
+
+    # ── PipeReply mirror FIRST (fail loud) ────────────────────────────
+    pr_result = None
+    if cid:
+        PR_TOKEN = os.getenv('PIPEREPLY_TOKEN')
+        if not PR_TOKEN:
+            return jsonify({
+                'error': 'PIPEREPLY_TOKEN not configured — cannot mirror to CRM',
+            }), 500
+        PR_BASE = 'https://services.leadconnectorhq.com'
+        PR_H = {'Authorization': f'Bearer {PR_TOKEN}',
+                'Content-Type':  'application/json',
+                'Version':       '2021-07-28'}
+
+        existing_id, _ = _find_pipereply_my_notes_note(cid, PR_H)
+        aest = pytz.timezone('Australia/Brisbane')
+        ts   = _dt.now(aest).strftime('%-d %b %Y %I:%M %p')
+
+        pr_action = 'noop'
+        pr_status = None
+        pr_body_text = ''
+        try:
+            if not new_notes:
+                if existing_id:
+                    pr_action = 'delete'
+                    r = rq.delete(f'{PR_BASE}/contacts/{cid}/notes/{existing_id}',
+                                  headers=PR_H, timeout=15)
+                    pr_status = r.status_code
+                    pr_body_text = r.text[:400]
+                    if not r.ok:
+                        return jsonify({
+                            'error': ('PipeReply DELETE failed — local task NOT updated '
+                                      '(prevents divergence: next refresh would revert)'),
+                            'pipereply_action': 'delete',
+                            'pipereply_status': pr_status,
+                            'pipereply_body':   pr_body_text,
+                        }), 502
+                # else: nothing to delete, no PR call
+            else:
+                mirror_body = f'MY NOTES ({ts}):\n{new_notes}'
+                if existing_id:
+                    pr_action = 'update'
+                    r = rq.put(f'{PR_BASE}/contacts/{cid}/notes/{existing_id}',
+                               headers=PR_H, json={'body': mirror_body}, timeout=15)
+                else:
+                    pr_action = 'create'
+                    r = rq.post(f'{PR_BASE}/contacts/{cid}/notes',
+                                headers=PR_H, json={'body': mirror_body}, timeout=15)
+                pr_status = r.status_code
+                pr_body_text = r.text[:400]
+                if not r.ok:
+                    return jsonify({
+                        'error': (f'PipeReply {pr_action.upper()} failed — local task '
+                                  'NOT updated (prevents divergence: next refresh would revert)'),
+                        'pipereply_action': pr_action,
+                        'pipereply_status': pr_status,
+                        'pipereply_body':   pr_body_text,
+                    }), 502
+        except Exception as e:
+            return jsonify({
+                'error': (f'PipeReply mirror exception — local task NOT updated: '
+                          f'{type(e).__name__}: {str(e)[:200]}'),
+                'pipereply_action': pr_action,
+            }), 502
+
+        pr_result = {
+            'action':      pr_action,
+            'http_status': pr_status,
+            'note_id':     existing_id,
+        }
+
+    # ── Local write (PR succeeded above, so no risk of self-revert) ───
+    cust_part, _old_notes = _split_at_my_notes(old_desc)
+    new_desc = _rebuild_desc_with_my_notes(cust_part, new_notes)
+
+    from task_manager import safe_update_description
+    wrote = safe_update_description(
+        supabase, task_id, new_desc,
+        source='edit_my_notes.dashboard', force=False,
+    )
+    if not wrote:
+        # PR side already landed. Tell the operator so they know why the
+        # UI shows the new notes only after the next PipeReply refresh.
+        return jsonify({
+            'error': ('safe_update_description guard refused the local write '
+                      '(possible cause: OS demotion, CRM link drop, APPT-POLL '
+                      'block loss, or unexpected shrink). PipeReply side ALREADY '
+                      'updated — next refresh will bring the new notes into '
+                      'the local description.'),
+            'pr_succeeded': True,
+            'pipereply':    pr_result,
+        }), 500
+
+    return jsonify({
+        'success':      True,
+        'new_desc_len': len(new_desc),
+        'pushed_to_crm': bool(pr_result and pr_result.get('action') != 'noop'),
+        'pipereply':    pr_result,
+    })
+
+
 @app.route('/api/projects/<project_id>/status', methods=['POST'])
 @login_required
 def api_update_project_status(project_id):
@@ -5059,7 +5270,7 @@ textarea:focus{border-color:#1e40af;box-shadow:0 0 0 3px rgba(30,64,175,.1)}
 
 <!-- My Notes -->
 <div class="card">
-  <div class="sec">My Notes</div>
+  <div class="sec">My Notes{% if is_owner %} <button type="button" id="editMyNotesBtn" data-task-id="{{ task_id }}" title="Edit MY NOTES (surgical — no refresh, no lead body touched)" style="background:none;border:none;cursor:pointer;font-size:14px;margin-left:6px;opacity:0.55;padding:2px 6px;border-radius:4px;vertical-align:middle" onmouseover="this.style.opacity=1" onmouseout="this.style.opacity=0.55">✏️</button>{% endif %}</div>
   <form action="/task/{{ task_id }}/notes" method="POST" id="notesForm">
     <textarea id="notesTextarea" name="notes" placeholder="Call notes, outcome, next steps...">{{ notes_raw }}</textarea>
     <button type="submit" class="save-btn" id="saveNotesBtn">Save Notes</button>
@@ -5184,39 +5395,65 @@ if(sp.get('reminder_set')==='1'){
   var card = document.getElementById('custReqCard');
   if(!form||!ta||!btn) return;
 
+  // Reroute to the surgical /api/tasks/<id>/my_notes endpoint (Arvind lesson
+  // 2026-08-28). The legacy /notes handler auto-populates Sub-note from the
+  // first note line and refreshes from PipeReply, both of which caused the
+  // Christine paste to embed in Arvind's CRM NOTES via the mirror. The new
+  // endpoint edits ONLY the MY NOTES section, mirrors to PipeReply first,
+  // fails loud on PR failure (no local divergence), and never touches
+  // Sub-note / lead body / CRM NOTES / APPT-POLL block / send_email.
   form.addEventListener('submit', async function(e){
     e.preventDefault();
     var origLabel = btn.textContent;
     btn.textContent = 'Saving…'; btn.disabled = true;
+    var taskId = form.action.split('/task/')[1].split('/')[0];
     try {
-      var res = await fetch(form.action, {
+      var res = await fetch('/api/tasks/'+taskId+'/my_notes', {
         method: 'POST',
         headers: { 'Content-Type':'application/json', 'Accept':'application/json' },
-        body: JSON.stringify({ notes: ta.value })
+        body: JSON.stringify({ my_notes: ta.value })
       });
-      if(!res.ok) throw new Error('HTTP '+res.status);
-      var data = await res.json();
-      if(data && data.refreshed && data.refreshed.cust_text) {
-        if(box) box.textContent = data.refreshed.cust_text;
-        if(card) card.style.display = '';
-        showToast('Saved & refreshed from PipeReply ✓', 2200);
+      var data = {};
+      try { data = await res.json(); } catch(e){}
+      if(res.ok && data.success) {
+        var suffix = data.pushed_to_crm ? ' + PipeReply ✓' : ' ✓';
+        showToast('Notes saved'+suffix, 2200);
+      } else if(res.status === 401) {
+        alert('Login required to save notes — redirecting.');
+        location.href = '/login?next=' + encodeURIComponent(location.pathname);
+      } else if(res.status === 502) {
+        alert('PipeReply mirror failed — local notes NOT saved to prevent divergence.\n\n' +
+              'Action: '+(data.pipereply_action || '?')+'\n' +
+              'HTTP: '+(data.pipereply_status || '?')+'\n' +
+              'Body: '+(data.pipereply_body || '').substring(0, 300)+'\n\n' +
+              (data.error || ''));
+      } else if(res.status === 500 && data.pr_succeeded) {
+        alert('PipeReply mirror LANDED but local write refused by safe_update_description:\n\n' +
+              (data.error || 'unknown') + '\n\n' +
+              'The new notes are live in PipeReply — a refresh from PipeReply will bring them into the local description.');
       } else {
-        showToast('Notes saved ✓');
-      }
-      // Update sub-note input if the refresh derived a new one
-      var subInp = document.getElementById('sub-note-input');
-      if(subInp && data && data.refreshed && data.refreshed.sub_note != null) {
-        subInp.value = data.refreshed.sub_note;
+        alert('Save failed: '+(data.error || ('HTTP '+res.status)));
       }
     } catch (err) {
-      // Fall back to a regular form submit so the user never loses their note
-      console.error('Notes save AJAX failed:', err);
-      form.submit();
-      return;
+      alert('Save failed: '+err.message);
     } finally {
       btn.textContent = origLabel; btn.disabled = false;
     }
   });
+
+  // Pencil button next to the "My Notes" heading: focus the textarea +
+  // scroll into view. Visual parity with edit-name / edit-OS controls.
+  // (The textarea itself is already the edit control — clicking the
+  // pencil is a shortcut when scrolled far from the notes card.)
+  var pencil = document.getElementById('editMyNotesBtn');
+  if(pencil){
+    pencil.addEventListener('click', function(){
+      ta.scrollIntoView({behavior:'smooth', block:'center'});
+      ta.focus();
+      // Move caret to end
+      var v = ta.value; ta.value = ''; ta.value = v;
+    });
+  }
 })();
 
 // ── Edit-name pencil ──────────────────────────────────────────────────────
