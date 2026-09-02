@@ -308,7 +308,18 @@ class AIEmailProcessor:
         processed = self._load_processed_emails(connection_id=user_ctx.connection_id)
 
         try:
-            mail = imaplib.IMAP4_SSL(imap_server)
+            # timeout=30 (2026-09-02 worker-hang fix): imaplib.IMAP4_SSL() with
+            # no timeout inherits Python's socket default = unlimited, so a
+            # stalled TLS handshake against the IMAP server can freeze this
+            # tick loop indefinitely. Root cause of the 2026-08-31 → 2026-09-02
+            # 37-hour "worker DOWN — last heartbeat 2212m ago" outage: an
+            # imaplib.IMAP4_SSL() call at ~14:49:48Z blocked in do_handshake()
+            # forever (Railway showed the instance as RUNNING, no error event
+            # was logged, tick loop never advanced past tick #4518). 30s
+            # timeout breaks the socket, exception falls through to the outer
+            # except in _process_connection / process_forwarded_emails, and
+            # the next tick fires normally.
+            mail = imaplib.IMAP4_SSL(imap_server, timeout=30)
             mail.login(imap_user, imap_password)
             mail.select('inbox')
 
@@ -479,7 +490,9 @@ class AIEmailProcessor:
         self.processed_emails = self._load_processed_emails()
 
         try:
-            mail = imaplib.IMAP4_SSL(self.imap_server)
+            # timeout=30 — see the sibling _process_connection call above
+            # for the full 2026-09-02 root-cause note.
+            mail = imaplib.IMAP4_SSL(self.imap_server, timeout=30)
             mail.login(self.email_user, self.email_password)
             mail.select('inbox')
 
