@@ -137,7 +137,11 @@ def poll_squad_inbox() -> int:
     mail = None
 
     try:
-        mail = imaplib.IMAP4_SSL(GMAIL_IMAP_SERVER, GMAIL_IMAP_PORT)
+        # timeout=30 bounds the TLS handshake — same class of latent hang fixed
+        # in saas_email_processor.py:{322,495} (commit c8d5ec3). Without it, a
+        # stalled Gmail IMAP handshake freezes the entire worker tick loop
+        # (which took down DSW for ~37h on 2026-08-31 → 2026-09-02).
+        mail = imaplib.IMAP4_SSL(GMAIL_IMAP_SERVER, GMAIL_IMAP_PORT, timeout=30)
         mail.login(gmail_address, gmail_password)
         mail.select('INBOX')
 

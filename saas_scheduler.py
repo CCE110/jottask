@@ -872,8 +872,35 @@ def check_and_send_dsw_reminders():
 _squad_tuesday_last_date = None
 
 
+def _squad_tuesday_already_sent_today(now_aest):
+    """Restart-safe check: has ANY squad_tuesday event succeeded today (AEST)?
+
+    The module-level _squad_tuesday_last_date marker is lost on worker restart.
+    Without a durable check, a mid-Tuesday restart (or the widened 08:00–11:59
+    catch-up window) could double-send after a successful 08:00 fire.
+    system_events survives — every successful send writes a row via
+    send_email(..., category='squad_tuesday').
+
+    Fail-open on DB error: if the check itself fails, we'd rather double-send
+    the WhatsApp copy than silently skip Rob's weekly reminder.
+    """
+    aest = pytz.timezone('Australia/Brisbane')
+    start = aest.localize(datetime.combine(now_aest.date(), datetime.min.time()))
+    end   = start + timedelta(days=1)
+    try:
+        r = _get_supabase().table('system_events').select('id')\
+              .eq('category', 'squad_tuesday').eq('status', 'success')\
+              .gte('created_at', start.astimezone(pytz.UTC).isoformat())\
+              .lt('created_at',  end.astimezone(pytz.UTC).isoformat())\
+              .limit(1).execute()
+        return bool(r.data)
+    except Exception as e:
+        print(f"[SquadTue] restart-catchup DB check failed (non-fatal, will attempt send): {e}")
+        return False
+
+
 def send_squad_tuesday_whatsapp():
-    """Tuesday 8 AM AEST: email a WhatsApp-ready Saturday game message to Rob.
+    """Tuesday 8 AM–noon AEST: email a WhatsApp-ready Saturday game message to Rob.
 
     Returns 'sent' | 'skipped' | 'failed'. Looks up every squad in the DB,
     finds Saturday's game (is_cancelled=false), and sends one email per
@@ -883,11 +910,19 @@ def send_squad_tuesday_whatsapp():
     aest = pytz.timezone('Australia/Brisbane')
     now = datetime.now(aest)
 
-    # Gate: Tuesday + 8 AM hour
-    if now.weekday() != 1 or now.hour != 8:
+    # Gate: Tuesday morning AEST (08:00–11:59), once per day. The widened
+    # window is a catch-up: if the worker was down at 08:00 sharp (as it was
+    # on 2026-09-02, missing that week's send entirely), the first post-
+    # recovery tick that lands before noon still fires.
+    if now.weekday() != 1 or now.hour < 8 or now.hour >= 12:
         return 'skipped'
     if _squad_tuesday_last_date == now.date():
-        return 'skipped'  # already sent this morning
+        return 'skipped'  # already sent this morning (in-memory fast path)
+    # DB fallback — survives restart. Stops a mid-Tuesday restart from
+    # re-firing after a successful earlier send today.
+    if _squad_tuesday_already_sent_today(now):
+        _squad_tuesday_last_date = now.date()
+        return 'skipped'
 
     # That Saturday is 4 days after Tuesday
     saturday = (now + timedelta(days=4)).date().isoformat()
