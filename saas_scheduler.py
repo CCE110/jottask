@@ -1005,6 +1005,14 @@ def send_squad_tuesday_whatsapp():
                     if shirt_name else "👕 Shirts: (not assigned)\n"
                 )
 
+                # Free-form per-event note (squad_events.notes). Rendered if
+                # non-empty — for one-off overrides (season-final callout,
+                # roster swaps, kickoff-change reminders) that don't fit the
+                # fruit/shirt roster columns. Notes should NOT duplicate what
+                # the roster lines already say (e.g. don't re-claim fruit).
+                note_raw = (ev.get('notes') or '').strip()
+                note_line = f"\n📝 {note_raw}\n" if note_raw else ""
+
                 whatsapp = (
                     f"⚽ {squad_name} Game This Saturday!\n\n"
                     f"📅 {date_str} at {time_str}\n"
@@ -1012,6 +1020,7 @@ def send_squad_tuesday_whatsapp():
                     f"📍 {venue_clean}{field_part}\n"
                     f"{fruit_line}"
                     f"{shirt_line}"
+                    f"{note_line}"
                     f"\nGood luck {squad_name}! 🟢⚫"
                 )
 
