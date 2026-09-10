@@ -3217,8 +3217,24 @@ if __name__ == "__main__":
             from dsw_appt_poll import _maybe_run_appt_poll
             _maybe_run_appt_poll()
         except Exception as e:
-            print(f"Error in appointment poll: {e}")
+            print(f"Error in appt poll: {e}")
             log_error('appt_poll', e, category='appt_poll')
+            tick_errors += 1
+
+        try:
+            # 2h. DSW Railway lead poll — 10-min throttled (DSW_POLL_INTERVAL_SEC).
+            # Pulls PipeReply contacts matching LEAD_TAGS and creates jottask
+            # tasks via dsw_lead_poller.process(). Fail-closed wrapper, never
+            # raises. Prior to 2026-09-10 this hook lived only inside
+            # saas_scheduler.run_scheduler() — a dead entry-point (Procfile
+            # dropped the separate scheduler process in commit 344bf76), so
+            # since it was added on 2026-06-06 it never fired in production.
+            # Zero `dsw_poll` system_events ever recorded before this wire-up.
+            from saas_scheduler import _maybe_run_dsw_poll
+            _maybe_run_dsw_poll()
+        except Exception as e:
+            print(f"Error in DSW lead poll: {e}")
+            log_error('dsw_lead_poll', e, category='dsw_poll')
             tick_errors += 1
 
         try:

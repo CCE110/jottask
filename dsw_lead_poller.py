@@ -13,7 +13,13 @@ FROM_EMAIL = "jottask@flowquote.ai"
 PROCESSED = os.path.expanduser("~/.dsw_processed_leads.json")
 BASE = "https://services.leadconnectorhq.com"
 CRM_BASE = "https://app.pipereply.com/v2/location/0k6Ix1hW5QoHuUh2YSru/contacts"
-LEAD_TAGS = ["solar_quotes_lead","sem","website","facebook","google","referral"]
+# LEAD_TAGS — the substring allowlist that get_contacts() uses to decide
+# which PipeReply contacts to ingest. Match is substring-in-tag-string, so
+# 'home-show' catches 'home-show-qr', 'home-show-2026', etc. Add tokens
+# whenever a new lead-source needs auto-ingestion — the only alternative
+# is dsw_appt_poll picking up the contact via an appointment SMS later.
+# 2026-09-10: 'home-show' added for the QR-form lead flow at the Home Show.
+LEAD_TAGS = ["solar_quotes_lead","sem","website","facebook","google","referral","home-show"]
 H = {"Authorization": f"Bearer {TOKEN}", "Content-Type": "application/json", "Version": "2021-07-28"}
 STATUS_LABELS = {
     'new_lead':           '🔵 NEW LEAD',
