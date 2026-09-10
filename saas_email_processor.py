@@ -2479,6 +2479,49 @@ Rules:
     return True
 
 
+# Rob's Supabase user_id (DSW owner) — used as the tenant scope for the
+# handle_dsw_new_lead loop-guard below. Value is stable; matches the pattern
+# in dsw_railway_poll.py which does `.eq('email','rob@cloudcleanenergy.com.au')`.
+# Hard-coded rather than looked up per call because this runs on the hot IMAP
+# path and any extra Supabase query is a new point of transient failure.
+ROB_UID = 'e515407e-dbd6-4331-a815-1878815c89bc'
+
+
+def _dsw_pending_task_for(client_name, hours=2):
+    """Loop-guard lookup used by handle_dsw_new_lead. Returns (task_or_None, ok).
+
+    ok=True   → query completed. task_or_None is definitive.
+    ok=False  → query ERRORED. Caller MUST fail closed (treat as "likely
+                duplicate, skip") — this is the whole point of the guard.
+                dsw_lead_poller._find_recent_pending_dsw_task falls back to
+                None on error, which reopens the Silke/Aimee-storm loop
+                whenever Supabase throws a transient. We don't repeat that
+                mistake here.
+
+    Scoped to ROB_UID + status='pending' + category='DSW Solar' + within
+    `hours`. ILIKE on client_name (case-insensitive exact — no wildcards, so
+    the query is equivalent to case-insensitive equality on the stored name).
+    """
+    if not client_name or client_name.lower() == 'unknown':
+        return None, True   # nothing to guard against
+    try:
+        cutoff = (datetime.now(pytz.UTC) - timedelta(hours=hours)).isoformat()
+        _tm = TaskManager()
+        r = _tm.supabase.table('tasks')\
+              .select('id, client_name, created_at')\
+              .eq('user_id', ROB_UID)\
+              .eq('status', 'pending')\
+              .eq('category', 'DSW Solar')\
+              .gte('created_at', cutoff)\
+              .ilike('client_name', client_name)\
+              .order('created_at', desc=True).limit(1).execute()
+        return (r.data[0] if r.data else None), True
+    except Exception as e:
+        print(f"[DSW NEW LEAD] loop-guard query ERRORED for {client_name!r}: {e}")
+        print(f"[DSW NEW LEAD] failing CLOSED — treating as likely duplicate")
+        return None, False
+
+
 def handle_dsw_new_lead(subject, body_text, sender_email):
     """Handle a self-generated lead email from rob.l@directsolarwholesaler.com.au.
 
@@ -2488,6 +2531,14 @@ def handle_dsw_new_lead(subject, body_text, sender_email):
       b) Saves CRM note with referral source + notes
       c) Calls dsw_lead_poller.process() → creates OpenSolar project, Mac contact,
          Jottask task (due tomorrow 9am), and sends full DSW lead email.
+
+    A loop-guard runs BEFORE (a)/(b)/(c) — see the Silke/Aimee storm
+    2026-09-10 for what happens when it isn't there. dsw_lead_poller's own
+    process()-internal dedup at dsw_lead_poller.py:1561 is bypassed
+    intermittently (Supabase flake caught by silent `except: return None`,
+    or a race between concurrent IMAP-batch invocations), and each bypass
+    reopens a feedback loop where our own outbound "New Lead:" email lands
+    back in the inbox and gets treated as a fresh trigger.
     """
     import re, os, requests, importlib.util as ilu
     from datetime import datetime, timedelta
@@ -2516,6 +2567,32 @@ def handle_dsw_new_lead(subject, body_text, sender_email):
     if not name:
         print("[DSW NEW LEAD] No Name: field found in body — skipping")
         return False
+
+    # ── LOOP-GUARD — belt-and-braces above process()'s internal dedup ──
+    # Runs BEFORE the PipeReply CRM-note POST and BEFORE dsw.process(). If a
+    # pending DSW Solar task for this name was created in the last 2h, the
+    # trigger is a duplicate: our own outbound "New Lead:" email echoing back.
+    # Skip everything — no CRM note, no OpenSolar, no task, no email. Return
+    # True so the caller marks the email consumed (dropped from queue) and
+    # doesn't re-fire the same trigger on the next tick.
+    #
+    # FAILS CLOSED on query error: dsw_lead_poller._find_recent_pending_dsw_task
+    # returns None on any exception, which treats a transient Supabase flake
+    # as "no dup exists" and reopens the loop. We do the opposite here —
+    # ok=False also skips, so a flake cannot amplify. Only a *definitive*
+    # "no pending task exists" answer proceeds to the create path.
+    _existing, _guard_ok = _dsw_pending_task_for(name, hours=2)
+    if _existing is not None:
+        print(f"[DSW NEW LEAD] LOOP-GUARD MATCH: pending DSW task "
+              f"{_existing['id'][:8]} exists for {name!r} "
+              f"(created {(_existing.get('created_at','') or '')[:19]}) — "
+              f"skipping (no CRM note, no process call, no email)")
+        return True   # handled → mark email consumed, no re-fire
+    if not _guard_ok:
+        print(f"[DSW NEW LEAD] LOOP-GUARD query failed for {name!r} — "
+              f"failing closed, not proceeding. Refire on next tick will "
+              f"re-run the guard.")
+        return True   # fail closed → mark consumed, do NOT create
 
     TOKEN       = os.getenv('PIPEREPLY_TOKEN')
     BASE = 'https://services.leadconnectorhq.com'
