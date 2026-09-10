@@ -436,7 +436,7 @@ def _mac_contact_exists(name, phone=''):
 
 def source(c):
     tags = " ".join([t.lower() for t in (c.get("tags") or [])])
-    for s, k in [("SolarQuotes","solar_quotes"),("Bid My Solar","bid_my_solar"),("Bid My Solar","bidmysolar"),("SEM","sem"),("Oxley FC","oxley_fc"),("Facebook","facebook"),("Website","website"),("Referral","referral")]:
+    for s, k in [("SolarQuotes","solar_quotes"),("Bid My Solar","bid_my_solar"),("Bid My Solar","bidmysolar"),("SEM","sem"),("Oxley FC","oxley_fc"),("Facebook","facebook"),("Website","website"),("Referral","referral"),("Home Show","home-show")]:
         if k in tags: return s
     return c.get("source", "Unknown")
 
@@ -454,9 +454,30 @@ def source_badge(src_name, referred_by=''):
         return '👤 Referral'
     if 'oxley' in sn or sn == 'oxley fc':
         return '⚽ Oxley United FC'
+    if 'home' in sn and 'show' in sn:
+        return '🎪 Home Show'
     if not src_name or sn == 'unknown':
         return '📋 Unknown'
     return f'📋 {src_name}'
+
+
+def _next_monday_10am_aest(now_aest):
+    """Return the next Monday 10:00 in the given AEST-aware datetime's tz.
+
+    Rule:
+      - If now is Mon before 10:00 AEST      → this Monday 10:00
+      - If now is Mon at/after 10:00 AEST    → NEXT Monday (7 days ahead)
+      - Any other day (Tue-Sun)              → the next calendar Monday
+
+    Used to defer Home-Show-sourced leads until Rob is off the show floor.
+    Rob is at the show Fri-Sun; a Home Show lead arriving any of those days
+    (or a stragglers Mon before 10am) rolls to that Monday at 10:00 AEST.
+    """
+    days = (0 - now_aest.weekday()) % 7   # 0=Mon, 6=Sun; days-until-next-Mon
+    if days == 0 and now_aest.hour >= 10:
+        days = 7
+    target = now_aest + timedelta(days=days)
+    return target.replace(hour=10, minute=0, second=0, microsecond=0)
 
 
 def get_referred_by_from_crm(cid):
@@ -1166,8 +1187,21 @@ def make_task(name, phone, summary, crm_url, os_url, email='', prev_notes_block=
             )
         # Default due: now + 4 hours in AEST (Australia/Brisbane is UTC+10, no DST).
         # Ensures the task always lands inside today's daily-summary + reminder window.
+        #
+        # OVERRIDE for Home Show leads — when the source badge is Home Show
+        # (i.e. the PipeReply contact carried a 'home-show' substring in its
+        # tags), the caller is at the show and can't take calls until Monday.
+        # Route these to next Monday 10:00 AEST instead. Non-Home-Show leads
+        # keep the byte-identical now+4h default.
         _aest = timezone(timedelta(hours=10))
-        _target = datetime.now(_aest) + timedelta(hours=4)
+        _now_aest = datetime.now(_aest)
+        _is_home_show = 'home show' in (source_badge_text or '').lower()
+        if _is_home_show:
+            _target = _next_monday_10am_aest(_now_aest)
+            print(f"[home-show] {name}: due deferred to {_target.isoformat()} "
+                  f"(next Monday 10am AEST, off show floor)")
+        else:
+            _target = _now_aest + timedelta(hours=4)
         due = _target.strftime("%Y-%m-%d")
         due_time = _target.strftime("%H:%M:00")
         email_line = ("Email: "+email+"\n") if email else ""
