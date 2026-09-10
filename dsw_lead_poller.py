@@ -20,6 +20,13 @@ CRM_BASE = "https://app.pipereply.com/v2/location/0k6Ix1hW5QoHuUh2YSru/contacts"
 # is dsw_appt_poll picking up the contact via an appointment SMS later.
 # 2026-09-10: 'home-show' added for the QR-form lead flow at the Home Show.
 LEAD_TAGS = ["solar_quotes_lead","sem","website","facebook","google","referral","home-show"]
+# Rob's PipeReply (LeadConnector) user id — NOT the Supabase user_id. Used to
+# server-side-scope get_contacts() to Rob's assigned pool only. Mirrors the
+# constant in dsw_appt_poll.py:57. Without this, get_contacts() returns the
+# location-wide pool (every rep's contacts + unassigned) — see 2026-09-10
+# incident: 5 company/unassigned leads were auto-ingested and emailed to Rob
+# in the first 3h after 3ae2fea wired the poll into the tick loop.
+ROB_UID = 'zK43HKCu06NAFEbitnJW'
 H = {"Authorization": f"Bearer {TOKEN}", "Content-Type": "application/json", "Version": "2021-07-28"}
 STATUS_LABELS = {
     'new_lead':           '🔵 NEW LEAD',
@@ -142,8 +149,14 @@ def filter_junk_lines(text):
 
 
 def get_contacts():
-    # Fetch last 7 days of contacts - poller tracks processed IDs to avoid duplicates
-    r = req.get(f"{BASE}/contacts/", headers=H, params={"locationId": LOCATION_ID, "limit": 100})
+    # Fetch last 7 days of contacts - poller tracks processed IDs to avoid duplicates.
+    # assignedTo=ROB_UID scopes server-side to Rob's own assigned pool only —
+    # excludes company leads assigned to other reps AND the unassigned pool.
+    # Mirrors dsw_appt_poll.py:167. Rob's Home Show QR form MUST include an
+    # "Assign to Rob" step in its LC workflow, otherwise its submissions land
+    # unassigned and get correctly filtered out here.
+    r = req.get(f"{BASE}/contacts/", headers=H,
+                params={"locationId": LOCATION_ID, "assignedTo": ROB_UID, "limit": 100})
     if r.status_code != 200: print("Pipereply error:", r.status_code); return []
     contacts = r.json().get("contacts", [])
     cutoff = datetime.now(timezone.utc) - timedelta(days=7)
