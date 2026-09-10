@@ -1416,14 +1416,25 @@ def _normalize_phone_for_dedup(p):
 
 
 def _find_recent_pending_dsw_task(client_name, hours=2, phone=None):
-    """Look up a pending DSW Solar task for this client created within the
-    last `hours` window. Returns the most recent match, or None.
+    """Look up a pending DSW Solar task for this client in the last `hours`.
+
+    Returns (task_or_None, ok):
+      (task_dict, True)  → definitive match found
+      (None, True)       → definitive: no matching task exists
+      (None, False)      → query ERRORED — caller MUST fail closed. Do NOT
+                           treat this as "no dup" and proceed to create.
+                           That was the pre-2026-09-10 behaviour and it
+                           caused the Silke/Aimee amplification storm: a
+                           transient Supabase flake let handle_dsw_new_lead
+                           and process() spawn duplicate OpenSolar projects,
+                           duplicate tasks, and duplicate outbound "New Lead:"
+                           emails — each of which looped back through the
+                           IMAP inbox to re-trigger the handler.
 
     Used as a duplicate-fire guard at the top of process(): if a second
     SMS / forwarded-email / admin retrigger arrives shortly after the first,
     we don't want to spawn a second OpenSolar project, a second task, and a
-    second lead email. Falls back silently to None on any error so the
-    caller stays on the create path rather than crashing.
+    second lead email.
 
     Matches on client_name (case-insensitive) OR client_phone (normalised).
     Phone matching catches the case where the same contact gets renamed
@@ -1431,7 +1442,7 @@ def _find_recent_pending_dsw_task(client_name, hours=2, phone=None):
     the second send still gets short-circuited.
     """
     if (not client_name or client_name.lower() == 'unknown') and not phone:
-        return None
+        return None, True   # definitive: nothing to look up
     try:
         from task_manager import TaskManager
         from datetime import timezone as _tz
@@ -1457,12 +1468,17 @@ def _find_recent_pending_dsw_task(client_name, hours=2, phone=None):
                 if v:
                     clauses.append(f'client_phone.eq.{v}')
         if not clauses:
-            return None
+            return None, True   # definitive: no clauses to build a query from
         r = q.or_(','.join(clauses)).execute()
-        return (r.data or [None])[0]
+        return ((r.data or [None])[0]), True
     except Exception as e:
-        print(f"[dedup] lookup failed for {client_name!r}/{phone!r}: {e}")
-        return None
+        # FAIL CLOSED — a Supabase / network flake here used to silently
+        # return None, which the caller treated as "no dup → create fresh".
+        # See feedback_fail_closed_dedup memory + commit 56b66fb + this
+        # commit's message for the full incident timeline.
+        print(f"[dedup] lookup ERRORED for {client_name!r}/{phone!r}: {e} "
+              f"— returning ok=False (caller MUST fail closed)")
+        return None, False
 
 
 def _resend_lead_email_for_recent(task, contact, full, cid, name,
@@ -1560,7 +1576,18 @@ def process(contact, task_id=None, lead_status=None, is_new_contact=True,
     # customer scenario.
     if not task_id and not force_new:
         _dedup_phone = full.get("phone") or contact.get("phone", "")
-        _recent = _find_recent_pending_dsw_task(name, hours=2, phone=_dedup_phone)
+        _recent, _dedup_ok = _find_recent_pending_dsw_task(name, hours=2, phone=_dedup_phone)
+        if not _dedup_ok:
+            # FAIL CLOSED — query errored. Refuse to proceed rather than
+            # assume "no dup exists" and spawn a fresh OpenSolar + task +
+            # outbound "New Lead:" email that a network flake could amplify
+            # into a storm (Silke/Aimee 2026-09-10). Silent return — the
+            # next retrigger of process() will re-run the guard.
+            print(f"[dedup] {name}: query ERRORED — failing closed, "
+                  f"NOT creating (would risk reopening the storm loop)")
+            print("Done in", round(time.time() - t0, 1), "s:", name,
+                  "(dedup fail-closed)")
+            return
         if _recent:
             print(f"[dedup] {name}: pending DSW task {_recent['id'][:8]} created "
                   f"{(_recent.get('created_at') or '')[:19]} (<2h ago) — short-circuiting")

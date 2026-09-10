@@ -2493,10 +2493,12 @@ def _dsw_pending_task_for(client_name, hours=2):
     ok=True   → query completed. task_or_None is definitive.
     ok=False  → query ERRORED. Caller MUST fail closed (treat as "likely
                 duplicate, skip") — this is the whole point of the guard.
-                dsw_lead_poller._find_recent_pending_dsw_task falls back to
-                None on error, which reopens the Silke/Aimee-storm loop
-                whenever Supabase throws a transient. We don't repeat that
-                mistake here.
+                dsw_lead_poller._find_recent_pending_dsw_task *used to* fall
+                back to None on error, which reopened the Silke/Aimee-storm
+                loop whenever Supabase threw a transient. Fixed to also
+                fail closed in the follow-up commit — this outer guard now
+                stands as belt-and-braces above a fail-closed inner guard,
+                not a compensation for a broken one.
 
     Scoped to ROB_UID + status='pending' + category='DSW Solar' + within
     `hours`. ILIKE on client_name (case-insensitive exact — no wildcards, so
@@ -2576,10 +2578,10 @@ def handle_dsw_new_lead(subject, body_text, sender_email):
     # True so the caller marks the email consumed (dropped from queue) and
     # doesn't re-fire the same trigger on the next tick.
     #
-    # FAILS CLOSED on query error: dsw_lead_poller._find_recent_pending_dsw_task
-    # returns None on any exception, which treats a transient Supabase flake
-    # as "no dup exists" and reopens the loop. We do the opposite here —
-    # ok=False also skips, so a flake cannot amplify. Only a *definitive*
+    # FAILS CLOSED on query error. Both guards (this outer one and
+    # dsw_lead_poller.process()'s inner one at line 1561) now return an
+    # explicit ok flag and skip on ok=False, so a transient Supabase flake
+    # can no longer amplify into a storm at any layer. Only a *definitive*
     # "no pending task exists" answer proceeds to the create path.
     _existing, _guard_ok = _dsw_pending_task_for(name, hours=2)
     if _existing is not None:
