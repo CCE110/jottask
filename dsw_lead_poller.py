@@ -27,6 +27,15 @@ LEAD_TAGS = ["solar_quotes_lead","sem","website","facebook","google","referral",
 # incident: 5 company/unassigned leads were auto-ingested and emailed to Rob
 # in the first 3h after 3ae2fea wired the poll into the tick loop.
 ROB_UID = 'zK43HKCu06NAFEbitnJW'
+
+# ── Rate-limit / circuit-breaker (see migration 013 + _rate_limit_check below).
+# Two thresholds cover both fast bursts and slow drips of the same contact.
+# Env-var overridable so a mid-Home-Show incident can tune without a redeploy.
+RATE_LIMIT_FAST_MAX     = int(os.getenv('DSW_RATE_LIMIT_FAST_MAX', '3'))       # trip on the 4th action
+RATE_LIMIT_FAST_WINDOW  = int(os.getenv('DSW_RATE_LIMIT_FAST_MIN', '10'))      # …within 10 min
+RATE_LIMIT_SLOW_MAX     = int(os.getenv('DSW_RATE_LIMIT_SLOW_MAX', '10'))      # trip on the 11th action
+RATE_LIMIT_SLOW_WINDOW  = int(os.getenv('DSW_RATE_LIMIT_SLOW_MIN', '60'))      # …within 60 min
+
 H = {"Authorization": f"Bearer {TOKEN}", "Content-Type": "application/json", "Version": "2021-07-28"}
 STATUS_LABELS = {
     'new_lead':           '🔵 NEW LEAD',
@@ -1187,6 +1196,16 @@ def make_task(name, phone, summary, crm_url, os_url, email='', prev_notes_block=
     If supersede_task_id is provided, that task is cancelled after the new
     task is created and a supersede note is added to it.
     """
+    # ── Rate-limit gate (belt-and-braces below dsw.process's gate) ──
+    # Direct callers of make_task (bypassing process) still hit this.
+    # Extracts cid from crm_url (the same URL that carries it in every caller).
+    _rl_cid = _cid_from_crm_url(crm_url)
+    _rl_ok, _rl_why = _rate_limit_check(_rl_cid, 'task_create',
+                                        triggered_by='dsw.make_task')
+    if not _rl_ok:
+        print(f"[rate-limit] make_task({_rl_cid}) BLOCKED: {_rl_why}")
+        return None
+
     try:
         from task_manager import TaskManager
         tm = TaskManager()
@@ -1272,6 +1291,19 @@ def make_task(name, phone, summary, crm_url, os_url, email='', prev_notes_block=
     except Exception as e: print("Task error:", e); return None
 
 def send_email(name, phone, addr, src, summary, crm_url, os_url, task_id=None, lead_status=None, subject=None, email='', source_badge_text='', reminder_tag=None, appointment=None):
+    # ── Rate-limit gate (final backstop — catches every outbound path) ──
+    # Reminders (reminder_tag set) bypass — they have their own reminder_sent_at
+    # dedup and shouldn't count toward storm-detection windows. Appointment
+    # notifications also bypass — one per booked appt via dsw_appt_poll.
+    _rl_cid = _cid_from_crm_url(crm_url)
+    _rl_bypass = bool(reminder_tag) or bool(appointment)
+    _rl_ok, _rl_why = _rate_limit_check(_rl_cid, 'lead_email',
+                                        triggered_by='dsw.send_email',
+                                        bypass=_rl_bypass)
+    if not _rl_ok:
+        print(f"[rate-limit] send_email({_rl_cid}) BLOCKED: {_rl_why}")
+        return False, f'rate-limited: {_rl_why}'
+
     now = datetime.now().strftime("%d %b %Y %I:%M %p")
     if appointment:
         header_title = 'DSW Appointment Booked'
@@ -1468,6 +1500,247 @@ def _normalize_phone_for_dedup(p):
     return digits
 
 
+def _cid_from_crm_url(crm_url):
+    """Extract PipeReply contact id from a stored CRM URL. Returns '' if absent.
+
+    Matches the shape used by make_task/send_email: contacts/detail/<cid>.
+    """
+    if not crm_url:
+        return ''
+    m = re.search(r'/contacts/detail/([A-Za-z0-9]+)', crm_url)
+    return m.group(1) if m else ''
+
+
+def _rate_limit_check(contact_id, action_type, triggered_by='', bypass=False):
+    """Circuit-breaker gate. Returns (ok, reason).
+
+    Behaviour:
+      1. bypass=True                                 → immediate (True, '')
+      2. contact_id blank                            → (False, 'no cid') — fail-closed
+                                                       (a lead with no cid means we
+                                                       can't rate-limit it; refuse
+                                                       rather than let a mystery-cid
+                                                       storm through)
+      3. Contact already in circuit_breaker + NOT manually_cleared
+                                                     → (False, 'circuit tripped')
+      4. Log the attempt, check both thresholds:
+           fast: >RATE_LIMIT_FAST_MAX in RATE_LIMIT_FAST_WINDOW min
+           slow: >RATE_LIMIT_SLOW_MAX in RATE_LIMIT_SLOW_WINDOW min
+         If EITHER exceeded → trip breaker, fire ONE alert (idempotent per
+         alerted_at), return (False, why).
+      5. Otherwise → (True, '').
+
+    Fail-closed: any Supabase exception in steps 3-4 returns (False, 'errored').
+    Same pattern as ff1c64f — a flake must not let a storm through.
+
+    action_type: process_call | task_create | lead_email | crm_note_post
+    triggered_by: short label of the caller (e.g. 'handle_oxley_fc_lead',
+                  'dsw_railway_poll', 'send_dsw_reminder_for_task'). Never
+                  breaks anything if wrong/missing — pure diagnostic.
+
+    Reminder paths pass bypass=True — they have their own reminder_sent_at
+    dedup and shouldn't count toward the storm-detection window.
+    """
+    if bypass:
+        return True, ''
+    if not contact_id:
+        return False, 'no cid'
+    try:
+        from task_manager import TaskManager
+        from datetime import timezone as _tz
+        _tm = TaskManager()
+        sb = _tm.supabase
+
+        # (a) already tripped?  Two escape hatches:
+        #     - manually_cleared=true    → Rob explicitly re-enabled
+        #     - tripped_at older than 24h → AUTO-CLOSE (a false trip on
+        #       Saturday self-heals by Sunday without Rob running SQL from
+        #       the show floor). The old row stays as an audit record with
+        #       cleared_by='auto-24h'; a fresh threshold breach re-trips
+        #       and re-alerts.
+        br = sb.table('contact_circuit_breaker').select('*')\
+                .eq('contact_id', contact_id).limit(1).execute().data or []
+        if br and not br[0].get('manually_cleared'):
+            row = br[0]
+            tripped_at_str = row.get('tripped_at', '') or ''
+            expired = False
+            if tripped_at_str:
+                try:
+                    tripped_dt = datetime.fromisoformat(
+                        tripped_at_str.replace('Z', '+00:00'))
+                    age_h = (datetime.now(_tz.utc) - tripped_dt).total_seconds() / 3600
+                    expired = age_h >= 24
+                except Exception:
+                    # Parse failure → fail closed (keep blocking) rather than
+                    # silently un-block on a malformed timestamp.
+                    expired = False
+            if expired:
+                # Auto-close: mark cleared, then fall through to fresh
+                # threshold check. A new spike here counts against a fresh
+                # window and will re-trip + re-alert.
+                try:
+                    sb.table('contact_circuit_breaker').update({
+                        'manually_cleared': True,
+                        'cleared_at':       datetime.now(_tz.utc).isoformat(),
+                        'cleared_by':       'auto-24h',
+                    }).eq('contact_id', contact_id).execute()
+                    print(f"[rate-limit] AUTO-CLOSED tripped breaker for "
+                          f"{contact_id} (age >{int(age_h)}h)")
+                except Exception as _e:
+                    print(f"[rate-limit] auto-close UPDATE flake for "
+                          f"{contact_id}: {_e} — falling through anyway")
+                # Fall through — no return
+            else:
+                return False, (
+                    f"circuit-breaker tripped at {tripped_at_str[:19]} "
+                    f"({row.get('trip_reason')})"
+                )
+
+        # (b) log this attempt (before threshold check, so a stuck path
+        #     still increments the counter — no free retries)
+        try:
+            sb.table('contact_actions').insert({
+                'contact_id': contact_id,
+                'action_type': action_type,
+                'triggered_by': (triggered_by or '')[:120],
+            }).execute()
+        except Exception as _e:
+            # Log-write flake — still check windows below with the existing
+            # rows. Don't fail the whole check on a single INSERT flake, but
+            # do log loudly so operators see it.
+            print(f"[rate-limit] contact_actions INSERT flake for {contact_id}: {_e}")
+
+        # (c) rolling-window counts — two thresholds, whichever trips first wins
+        now = datetime.now(_tz.utc)
+        cutoff_fast = (now - timedelta(minutes=RATE_LIMIT_FAST_WINDOW)).isoformat()
+        cutoff_slow = (now - timedelta(minutes=RATE_LIMIT_SLOW_WINDOW)).isoformat()
+
+        fast_cnt = (sb.table('contact_actions').select('id', count='exact')
+                     .eq('contact_id', contact_id).gte('at', cutoff_fast)
+                     .execute().count or 0)
+        slow_cnt = (sb.table('contact_actions').select('id', count='exact')
+                     .eq('contact_id', contact_id).gte('at', cutoff_slow)
+                     .execute().count or 0)
+
+        tripped_window = None
+        if fast_cnt > RATE_LIMIT_FAST_MAX:
+            tripped_window = ('fast', fast_cnt,
+                              f"{fast_cnt} actions in {RATE_LIMIT_FAST_WINDOW}min "
+                              f"(fast-burst threshold)")
+        elif slow_cnt > RATE_LIMIT_SLOW_MAX:
+            tripped_window = ('slow', slow_cnt,
+                              f"{slow_cnt} actions in {RATE_LIMIT_SLOW_WINDOW}min "
+                              f"(slow-drip threshold)")
+
+        if tripped_window:
+            window_name, cnt, reason = tripped_window
+            _trip_and_alert(contact_id, cnt, window_name, reason, action_type, triggered_by)
+            return False, reason
+
+        return True, ''
+    except Exception as e:
+        # FAIL CLOSED — same lesson as ff1c64f. A flake in the check must
+        # not allow a storm through. One missed legit lead is recoverable;
+        # an uncontrolled storm mid-Home-Show is not.
+        print(f"[rate-limit] check ERRORED for cid={contact_id} "
+              f"action={action_type}: {e} — failing closed")
+        return False, 'check errored'
+
+
+def _trip_and_alert(contact_id, cnt, window_name, reason, action_type, triggered_by):
+    """Trip the breaker + fire ONE alert. Idempotent — subsequent trips for
+    the same contact are silent until manually_cleared."""
+    try:
+        from task_manager import TaskManager
+        from datetime import timezone as _tz
+        sb = TaskManager().supabase
+
+        # Fresh trip vs continuation of an existing one:
+        #   - No existing row               → INSERT a new trip
+        #   - Existing row, manually_cleared=true (either Rob-cleared or the
+        #     auto-24h path) → UPSERT resetting alerted_at → fresh alert fires
+        #   - Existing row, NOT cleared      → leave as-is; alerted_at lock
+        #     will short-circuit the alert below (silent — no double alert)
+        existing = sb.table('contact_circuit_breaker').select('*')\
+                     .eq('contact_id', contact_id).limit(1).execute().data or []
+        _fresh = (not existing) or bool(existing[0].get('manually_cleared'))
+
+        if _fresh:
+            sb.table('contact_circuit_breaker').upsert({
+                'contact_id':       contact_id,
+                'tripped_at':       datetime.now(_tz.utc).isoformat(),
+                'trip_reason':      reason,
+                'trip_count':       cnt,
+                'trip_window':      window_name,
+                'alerted_at':       None,   # reset lock → new alert fires
+                'manually_cleared': False,
+                'cleared_at':       None,
+                'cleared_by':       None,
+            }, on_conflict='contact_id').execute()
+
+        # Alert once, using alerted_at as the lock
+        row = (sb.table('contact_circuit_breaker').select('alerted_at')
+                 .eq('contact_id', contact_id).execute().data or [{}])[0]
+        if row.get('alerted_at'):
+            return   # already alerted for this trip cycle — silent skip
+
+        # Best-effort name lookup for a readable alert
+        display_name = _lookup_contact_name(contact_id)
+        try:
+            from monitoring import send_self_alert
+            send_self_alert(
+                subject=f"🚨 DSW rate-limit tripped — {display_name}",
+                detail=(
+                    f"Contact {display_name} (PipeReply id {contact_id}) hit "
+                    f"{cnt} actions in the {window_name}-window "
+                    f"(threshold "
+                    f"{RATE_LIMIT_FAST_MAX if window_name == 'fast' else RATE_LIMIT_SLOW_MAX}"
+                    f" in "
+                    f"{RATE_LIMIT_FAST_WINDOW if window_name == 'fast' else RATE_LIMIT_SLOW_WINDOW}"
+                    f" min).\n\n"
+                    f"Latest trigger: {action_type} via {triggered_by or 'unknown'}.\n\n"
+                    f"Circuit-breaker OPEN — all DSW paths refusing to process "
+                    f"this contact. New attempts will be silently blocked.\n\n"
+                    f"To re-enable manually (Supabase SQL Editor):\n"
+                    f"  UPDATE contact_circuit_breaker\n"
+                    f"     SET manually_cleared = true,\n"
+                    f"         cleared_at      = now(),\n"
+                    f"         cleared_by      = 'rob'\n"
+                    f"   WHERE contact_id = '{contact_id}';\n\n"
+                    f"Full action log:\n"
+                    f"  SELECT * FROM contact_actions\n"
+                    f"   WHERE contact_id = '{contact_id}'\n"
+                    f"   ORDER BY at DESC;\n"
+                ),
+            )
+        except Exception as _e:
+            print(f"[rate-limit] alert send failed for {contact_id}: {_e}")
+
+        # Lock the alert (idempotent — future trips for same contact stay silent)
+        sb.table('contact_circuit_breaker').update({
+            'alerted_at': datetime.now(_tz.utc).isoformat()
+        }).eq('contact_id', contact_id).execute()
+
+        print(f"[rate-limit] TRIPPED {display_name} ({contact_id}) — "
+              f"{cnt} in {window_name}-window. Alert sent.")
+    except Exception as e:
+        print(f"[rate-limit] _trip_and_alert failed for {contact_id}: {e}")
+
+
+def _lookup_contact_name(contact_id):
+    """Best-effort display name for the alert body — try PipeReply, fall back to cid."""
+    try:
+        r = req.get(f'{BASE}/contacts/{contact_id}', headers=H, timeout=8)
+        if r.ok:
+            d = r.json().get('contact', r.json())
+            return (d.get('contactName')
+                    or f"{d.get('firstName','')} {d.get('lastName','')}".strip()
+                    or contact_id)
+    except Exception:
+        pass
+    return contact_id
+
+
 def _find_recent_pending_dsw_task(client_name, hours=2, phone=None):
     """Look up a pending DSW Solar task for this client in the last `hours`.
 
@@ -1592,6 +1865,20 @@ def process(contact, task_id=None, lead_status=None, is_new_contact=True,
     """
     t0 = time.time()
     cid = contact.get("id")
+
+    # ── Rate-limit / circuit-breaker gate (backstop below all per-path guards) ──
+    # If this contact has hit the fast (>3/10min) or slow (>10/60min) threshold,
+    # refuse to run ANY of process()'s side-effects — no get_full, no OpenSolar,
+    # no task, no email. Fail-closed on Supabase error. See migration 013 +
+    # _rate_limit_check for full semantics. Reminders bypass elsewhere via
+    # send_email(reminder_tag=...).
+    _rl_ok, _rl_why = _rate_limit_check(cid, 'process_call',
+                                        triggered_by='dsw.process')
+    if not _rl_ok:
+        print(f"[rate-limit] process({cid}) BLOCKED: {_rl_why}")
+        print("Done in", round(time.time() - t0, 1), "s: (rate-limit)")
+        return
+
     full = get_full(cid)
     # Prefer contactName from full (PipeReply often puts the full name in
     # contactName AND duplicates it into firstName + lastName both, so
