@@ -35,6 +35,12 @@ RATE_LIMIT_FAST_MAX     = int(os.getenv('DSW_RATE_LIMIT_FAST_MAX', '3'))       #
 RATE_LIMIT_FAST_WINDOW  = int(os.getenv('DSW_RATE_LIMIT_FAST_MIN', '10'))      # …within 10 min
 RATE_LIMIT_SLOW_MAX     = int(os.getenv('DSW_RATE_LIMIT_SLOW_MAX', '10'))      # trip on the 11th action
 RATE_LIMIT_SLOW_WINDOW  = int(os.getenv('DSW_RATE_LIMIT_SLOW_MIN', '60'))      # …within 60 min
+# 24h ceiling — catches once-per-hour drips that pace below the fast + slow
+# thresholds. Added 2026-09-12 after Silke/Aimee showed 12 process_calls over
+# 10h (~1/hour) — below fast+slow but obviously not legitimate. 20+ actions
+# for a single contact in a day is never a normal lead flow.
+RATE_LIMIT_DAY_MAX      = int(os.getenv('DSW_RATE_LIMIT_DAY_MAX', '20'))       # trip on the 21st action
+RATE_LIMIT_DAY_WINDOW   = int(os.getenv('DSW_RATE_LIMIT_DAY_MIN', '1440'))     # …within 24h
 
 H = {"Authorization": f"Bearer {TOKEN}", "Content-Type": "application/json", "Version": "2021-07-28"}
 STATUS_LABELS = {
@@ -1610,16 +1616,22 @@ def _rate_limit_check(contact_id, action_type, triggered_by='', bypass=False):
             # do log loudly so operators see it.
             print(f"[rate-limit] contact_actions INSERT flake for {contact_id}: {_e}")
 
-        # (c) rolling-window counts — two thresholds, whichever trips first wins
+        # (c) rolling-window counts — three thresholds, whichever trips first wins.
+        # fast/slow catch bursts; day catches slow drips that pace below both
+        # (like Silke/Aimee's 12 process_calls/10h on 2026-09-11).
         now = datetime.now(_tz.utc)
         cutoff_fast = (now - timedelta(minutes=RATE_LIMIT_FAST_WINDOW)).isoformat()
         cutoff_slow = (now - timedelta(minutes=RATE_LIMIT_SLOW_WINDOW)).isoformat()
+        cutoff_day  = (now - timedelta(minutes=RATE_LIMIT_DAY_WINDOW)).isoformat()
 
         fast_cnt = (sb.table('contact_actions').select('id', count='exact')
                      .eq('contact_id', contact_id).gte('at', cutoff_fast)
                      .execute().count or 0)
         slow_cnt = (sb.table('contact_actions').select('id', count='exact')
                      .eq('contact_id', contact_id).gte('at', cutoff_slow)
+                     .execute().count or 0)
+        day_cnt  = (sb.table('contact_actions').select('id', count='exact')
+                     .eq('contact_id', contact_id).gte('at', cutoff_day)
                      .execute().count or 0)
 
         tripped_window = None
@@ -1631,6 +1643,11 @@ def _rate_limit_check(contact_id, action_type, triggered_by='', bypass=False):
             tripped_window = ('slow', slow_cnt,
                               f"{slow_cnt} actions in {RATE_LIMIT_SLOW_WINDOW}min "
                               f"(slow-drip threshold)")
+        elif day_cnt > RATE_LIMIT_DAY_MAX:
+            tripped_window = ('day', day_cnt,
+                              f"{day_cnt} actions in 24h "
+                              f"(day-ceiling threshold — legit lead flow never "
+                              f"exceeds this per contact)")
 
         if tripped_window:
             window_name, cnt, reason = tripped_window
@@ -1688,16 +1705,16 @@ def _trip_and_alert(contact_id, cnt, window_name, reason, action_type, triggered
         display_name = _lookup_contact_name(contact_id)
         try:
             from monitoring import send_self_alert
+            _th_max = {'fast': RATE_LIMIT_FAST_MAX, 'slow': RATE_LIMIT_SLOW_MAX,
+                       'day': RATE_LIMIT_DAY_MAX}.get(window_name, '?')
+            _th_min = {'fast': RATE_LIMIT_FAST_WINDOW, 'slow': RATE_LIMIT_SLOW_WINDOW,
+                       'day': RATE_LIMIT_DAY_WINDOW}.get(window_name, '?')
             send_self_alert(
                 subject=f"🚨 DSW rate-limit tripped — {display_name}",
                 detail=(
                     f"Contact {display_name} (PipeReply id {contact_id}) hit "
                     f"{cnt} actions in the {window_name}-window "
-                    f"(threshold "
-                    f"{RATE_LIMIT_FAST_MAX if window_name == 'fast' else RATE_LIMIT_SLOW_MAX}"
-                    f" in "
-                    f"{RATE_LIMIT_FAST_WINDOW if window_name == 'fast' else RATE_LIMIT_SLOW_WINDOW}"
-                    f" min).\n\n"
+                    f"(threshold >{_th_max} in {_th_min} min).\n\n"
                     f"Latest trigger: {action_type} via {triggered_by or 'unknown'}.\n\n"
                     f"Circuit-breaker OPEN — all DSW paths refusing to process "
                     f"this contact. New attempts will be silently blocked.\n\n"
@@ -1741,8 +1758,20 @@ def _lookup_contact_name(contact_id):
     return contact_id
 
 
-def _find_recent_pending_dsw_task(client_name, hours=2, phone=None):
+def _find_recent_pending_dsw_task(client_name, hours=24, phone=None):
     """Look up a pending DSW Solar task for this client in the last `hours`.
+
+    Default window widened from 2h → 24h on 2026-09-12 after the Silke/Aimee
+    18:22 UTC slow-drip artifact: their storm-day pending tasks were 11h old,
+    outside the 2h window, so a fresh trigger (likely a PipeReply note-added
+    notification) spawned a duplicate task + email. A 24h window catches that
+    class — a contact with any pending DSW task in the last day short-circuits
+    subsequent triggers into the dedup path (which is now resend-suppressed
+    per commit 2bd38fc, so no side effect fires at all).
+
+    Trade-off: a legitimately abandoned lead can't get a fresh task within
+    24h. That's acceptable — the pending task still shows in the dashboard,
+    Rob can act on it directly. Weekend-safe against slow loops.
 
     Returns (task_or_None, ok):
       (task_dict, True)  → definitive match found
@@ -1916,7 +1945,10 @@ def process(contact, task_id=None, lead_status=None, is_new_contact=True,
     # customer scenario.
     if not task_id and not force_new:
         _dedup_phone = full.get("phone") or contact.get("phone", "")
-        _recent, _dedup_ok = _find_recent_pending_dsw_task(name, hours=2, phone=_dedup_phone)
+        # 24h window (2026-09-12): a task in the last day short-circuits any
+        # fresh trigger for the same client — catches the slow-drip artifact
+        # that a 2h window missed (Silke/Aimee at 18:22 UTC 2026-09-11).
+        _recent, _dedup_ok = _find_recent_pending_dsw_task(name, hours=24, phone=_dedup_phone)
         if not _dedup_ok:
             # FAIL CLOSED — query errored. Refuse to proceed rather than
             # assume "no dup exists" and spawn a fresh OpenSolar + task +

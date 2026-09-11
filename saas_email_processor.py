@@ -2487,8 +2487,14 @@ Rules:
 ROB_UID = 'e515407e-dbd6-4331-a815-1878815c89bc'
 
 
-def _dsw_pending_task_for(client_name, hours=2):
+def _dsw_pending_task_for(client_name, hours=24):
     """Loop-guard lookup used by handle_dsw_new_lead. Returns (task_or_None, ok).
+
+    Default window widened from 2h → 24h on 2026-09-12 to close the
+    slow-drip blind spot (see dsw_lead_poller._find_recent_pending_dsw_task
+    docstring for the incident detail — Silke/Aimee 18:22 UTC 2026-09-11).
+    A contact with any pending DSW Solar task in the last day short-circuits
+    the handler completely (no CRM note, no process(), no email).
 
     ok=True   → query completed. task_or_None is definitive.
     ok=False  → query ERRORED. Caller MUST fail closed (treat as "likely
@@ -2583,7 +2589,9 @@ def handle_dsw_new_lead(subject, body_text, sender_email):
     # explicit ok flag and skip on ok=False, so a transient Supabase flake
     # can no longer amplify into a storm at any layer. Only a *definitive*
     # "no pending task exists" answer proceeds to the create path.
-    _existing, _guard_ok = _dsw_pending_task_for(name, hours=2)
+    # 24h window (2026-09-12): matches inner dedup in dsw_lead_poller.
+    # Any pending task in the last day short-circuits the entire handler.
+    _existing, _guard_ok = _dsw_pending_task_for(name, hours=24)
     if _existing is not None:
         print(f"[DSW NEW LEAD] LOOP-GUARD MATCH: pending DSW task "
               f"{_existing['id'][:8]} exists for {name!r} "
