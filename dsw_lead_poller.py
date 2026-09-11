@@ -1667,10 +1667,22 @@ def process(contact, task_id=None, lead_status=None, is_new_contact=True,
             _summary = append_crm_notes_idempotent(
                 _summary, cid,
                 task_id=(_recent.get('id') if _recent else None))
-            _resend_lead_email_for_recent(_recent, contact, full, cid, name,
-                                          _phone, _email, _addr, _src,
-                                          _summary, _badge, _crm_url)
-            print("Done in", round(time.time() - t0, 1), "s:", name, "(dedup short-circuit)")
+            # STORM-STOP 2026-09-11: outbound email disabled in the dedup
+            # short-circuit path — was feeding a self-sustaining loop when any
+            # UNGUARDED handler (handle_oxley_fc_lead saas_email_processor.py:2018,
+            # handle_dsw_forward saas_email_processor.py:2212) called dsw.process().
+            # Each resend became a fresh inbound trigger via jottask@ IMAP →
+            # unguarded handler → dsw.process → dedup short-circuit → resend →
+            # loop forever. Silke's task 86f82f1f grew from 47 to 125 CRM notes
+            # in ~24h; ~30 outbound emails between 07:31 and 08:52 UTC on 09-11.
+            # Re-enable after Option 2 follow-up adds outer LOOP-GUARD to those
+            # two handlers. The dedup itself and idempotent CRM-note append stay
+            # active — only the outbound email is suppressed.
+            print(f"[dedup] {name}: RESEND SUPPRESSED (storm-stop 2026-09-11) — "
+                  f"task {_recent['id'][:8]} exists (<2h), no outbound email fired. "
+                  f"See handle_oxley_fc_lead + handle_dsw_forward guard follow-up.")
+            print("Done in", round(time.time() - t0, 1), "s:", name,
+                  "(dedup short-circuit, resend suppressed)")
             return
     phone = full.get("phone") or contact.get("phone","N/A")
     email = full.get("email") or contact.get("email","")
