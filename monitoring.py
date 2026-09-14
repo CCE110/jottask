@@ -600,11 +600,21 @@ def send_daily_health_digest():
 
         since_24h = (now_utc - timedelta(hours=24)).isoformat()
 
-        # Reminder emails sent in last 24h (from system_events)
+        # Reminder emails sent in last 24h (from system_events).
+        #
+        # Bug fix 2026-09-15: the original query filtered ONLY category='reminder',
+        # which missed every DSW-lead reminder. DSW reminders flow through
+        # dsw_lead_poller.send_email(reminder_tag=…) which stamps the outbound
+        # event with category='dsw_lead' (its own file's namespace), not
+        # 'reminder'. Result: this counter was ~always 0 for Rob and the digest
+        # falsely fired 'reminders CRITICAL'. Now counts both categories AND
+        # filters by 'REMINDER' in the message subject so fresh 'New Lead:'
+        # dsw_lead sends aren't miscounted as reminders.
         reminders_result = sb.table('system_events')\
             .select('id', count='exact')\
             .eq('event_type', 'email_sent')\
-            .eq('category', 'reminder')\
+            .in_('category', ['reminder', 'dsw_lead'])\
+            .ilike('message', '%REMINDER%')\
             .gte('created_at', since_24h)\
             .execute()
         reminders_sent_24h = reminders_result.count or 0
