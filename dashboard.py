@@ -3036,8 +3036,59 @@ def billing():
 # ============================================
 
 
+def _due_update_no_kill_reminder(task_or_id, updates):
+    """Build a tasks.update() dict that reschedules a task WITHOUT silently
+    suppressing its next reminder.
+
+    Root of the 2026-09-14 landmine sweep: every reschedule/delay/snooze
+    site was stamping `reminder_sent_at = datetime.now(pytz.UTC).isoformat()`,
+    which combined with saas_scheduler.check_and_send_reminders line 619-626
+    (4h throttle) meant the scheduler skipped the task until the throttle
+    cleared — by which time the new due time was already past. Compounded
+    by line 606-608 (DSW-Solar + lead_status='new_lead'|NULL → skip) for
+    Rob's DSW leads, silently trapping every same-day-due Home Show lead.
+
+    This helper does two things every reschedule caller should do:
+      1. Set `reminder_sent_at = None`      → scheduler picks up new due
+      2. Promote lead_status 'new_lead'/NULL → 'intro_call' (DSW Solar only)
+         so the DSW-new_lead-skip filter doesn't override the reminder.
+
+    Won't override a caller that's explicitly setting lead_status (e.g.
+    'no_reply' or 'won') — the promotion runs only when the caller left
+    lead_status unset.
+
+    task_or_id: either a task dict (with 'category' and 'lead_status') or
+    a task_id string — the helper fetches the task if given only an id.
+    updates: caller's base update dict (due_date/due_time/status/…). Mutated
+             — pass a fresh dict if you need the original preserved.
+
+    Returns the final update dict ready to `.update(_).eq('id', tid).execute()`.
+    """
+    updates = dict(updates)
+    updates['reminder_sent_at'] = None
+    # Promotion only fires when the caller hasn't set lead_status explicitly.
+    if 'lead_status' not in updates:
+        if isinstance(task_or_id, dict):
+            _t = task_or_id
+        else:
+            try:
+                _t = (supabase.table('tasks').select('category, lead_status')
+                              .eq('id', task_or_id).single().execute().data) or {}
+            except Exception:
+                _t = {}
+        if _t.get('category') == 'DSW Solar' and \
+           (_t.get('lead_status') or 'new_lead') == 'new_lead':
+            updates['lead_status'] = 'intro_call'
+    return updates
+
+
 def _resend_dsw_email(task_id, task_data):
-    """Resend DSW lead email with current lead_status for delayed tasks."""
+    """Resend DSW lead email with current lead_status for delayed tasks.
+
+    NOTE 2026-09-15: this function is currently ORPHANED. All delay-branch
+    callers were removed in commit d066b26 (delay = quiet update, not fresh
+    notification). Kept in place in case a future 'Rebuild + resend' button
+    wants to reuse it. Safe to delete in a cleanup pass."""
     import importlib.util, sys, os
     try:
         spec = importlib.util.spec_from_file_location("dsw_lead_poller", 
@@ -3444,11 +3495,14 @@ def handle_action():
         r_date = request.args.get('date', '')
         r_time = request.args.get('time', '09:00')
         if r_date:
-            supabase.table('tasks').update({
-                'due_date': r_date,
-                'due_time': r_time + ':00',
-                'reminder_sent_at': datetime.now(pytz.UTC).isoformat(),
-            }).eq('id', task_id).execute()
+            # Routed through _due_update_no_kill_reminder so the delayed
+            # reminder actually fires at the new time (see helper docstring).
+            supabase.table('tasks').update(
+                _due_update_no_kill_reminder(task_data, {
+                    'due_date': r_date,
+                    'due_time': r_time + ':00',
+                })
+            ).eq('id', task_id).execute()
         return redirect(url_for('lead_detail', task_id=task_id))
 
     elif action == 'no_reply' and task_id:
@@ -3459,12 +3513,15 @@ def handle_action():
             current_time = '09:00:00'
         aest = pytz.timezone('Australia/Brisbane')
         tomorrow = (datetime.now(aest) + timedelta(days=1)).date().isoformat()
-        supabase.table('tasks').update({
-            'due_date': tomorrow,
-            'due_time': current_time,
-            'lead_status': 'no_reply',
-            'reminder_sent_at': datetime.now(pytz.UTC).isoformat(),
-        }).eq('id', task_id).execute()
+        # Explicit lead_status='no_reply' — helper won't override it
+        # (only promotes when caller hasn't set lead_status).
+        supabase.table('tasks').update(
+            _due_update_no_kill_reminder(task_data, {
+                'due_date': tomorrow,
+                'due_time': current_time,
+                'lead_status': 'no_reply',
+            })
+        ).eq('id', task_id).execute()
         return redirect(url_for('lead_detail', task_id=task_id))
 
     elif action == 'set_status' and task_id:
@@ -3539,13 +3596,13 @@ def handle_reschedule_submit():
         """)
 
     try:
-        # Build update data
-        update_data = {
+        # Build update data. Routed through _due_update_no_kill_reminder
+        # so the rescheduled task's reminder fires at the new time.
+        update_data = _due_update_no_kill_reminder(task_id, {
             'due_date': new_date,
             'due_time': new_time + ':00',
-            'reminder_sent_at': datetime.now(pytz.UTC).isoformat(),
-            'status': 'pending'
-        }
+            'status': 'pending',
+        })
 
         # Update title if provided
         if new_title:
@@ -4185,12 +4242,13 @@ def api_delay_task(task_id):
     else:
         new_dt = now + timedelta(hours=hours, days=days)
 
-    supabase.table('tasks').update({
-        'due_date': new_dt.date().isoformat(),
-        'due_time': new_dt.strftime('%H:%M:%S'),
-        'status': 'pending',
-        'reminder_sent_at': datetime.now(pytz.UTC).isoformat()
-    }).eq('id', task_id).execute()
+    supabase.table('tasks').update(
+        _due_update_no_kill_reminder(task.data, {
+            'due_date': new_dt.date().isoformat(),
+            'due_time': new_dt.strftime('%H:%M:%S'),
+            'status': 'pending',
+        })
+    ).eq('id', task_id).execute()
 
     return jsonify({'success': True, 'new_due': new_dt.isoformat()})
 
@@ -5030,31 +5088,47 @@ def _render_lead_detail(task_id):
         return '<html><body style="font-family:sans-serif;text-align:center;padding:50px"><h2>Lead not found</h2></body></html>', 404
 
     # ── Handle GET actions (delay / status) — redirect back to clean URL ──
+    # All delay/reschedule branches route through _due_update_no_kill_reminder
+    # (see helper docstring in this file) so reminders fire at the new time
+    # and DSW-new_lead tasks aren't trapped by the scheduler skip.
     action = request.args.get('action', '')
     if action:
         update = {}
-        _rem_now = datetime.now(pytz.UTC).isoformat()
         if action == 'delay_1hour':
             nd = datetime.now(aest) + timedelta(hours=1)
-            update = {'due_date': nd.date().isoformat(), 'due_time': nd.strftime('%H:%M:00'), 'reminder_sent_at': _rem_now}
+            update = _due_update_no_kill_reminder(t, {
+                'due_date': nd.date().isoformat(),
+                'due_time': nd.strftime('%H:%M:00'),
+            })
         elif action == 'delay_1day':
             try:
                 base = datetime.fromisoformat(t.get('due_date', '')).replace(tzinfo=aest)
             except Exception:
                 base = datetime.now(aest)
             nd = base + timedelta(days=1)
-            update = {'due_date': nd.date().isoformat(), 'reminder_sent_at': _rem_now}
+            update = _due_update_no_kill_reminder(t, {
+                'due_date': nd.date().isoformat(),
+            })
         elif action == 'delay_next_day_8am':
             tgt = (datetime.now(aest) + timedelta(days=1)).replace(hour=8, minute=0, second=0, microsecond=0)
-            update = {'due_date': tgt.date().isoformat(), 'due_time': '08:00:00', 'reminder_sent_at': _rem_now}
+            update = _due_update_no_kill_reminder(t, {
+                'due_date': tgt.date().isoformat(),
+                'due_time': '08:00:00',
+            })
         elif action == 'delay_next_day_9am':
             tgt = (datetime.now(aest) + timedelta(days=1)).replace(hour=9, minute=0, second=0, microsecond=0)
-            update = {'due_date': tgt.date().isoformat(), 'due_time': '09:00:00', 'reminder_sent_at': _rem_now}
+            update = _due_update_no_kill_reminder(t, {
+                'due_date': tgt.date().isoformat(),
+                'due_time': '09:00:00',
+            })
         elif action == 'delay_next_monday_9am':
             now = datetime.now(aest)
             days = (7 - now.weekday()) % 7 or 7
             tgt = (now + timedelta(days=days)).replace(hour=9, minute=0, second=0, microsecond=0)
-            update = {'due_date': tgt.date().isoformat(), 'due_time': '09:00:00', 'reminder_sent_at': _rem_now}
+            update = _due_update_no_kill_reminder(t, {
+                'due_date': tgt.date().isoformat(),
+                'due_time': '09:00:00',
+            })
         elif action == 'set_status':
             sv = request.args.get('status', '')
             if sv in STATUS_LABELS:
@@ -5066,11 +5140,10 @@ def _render_lead_detail(task_id):
             r_date = request.args.get('date', '')
             r_time = request.args.get('time', '09:00')
             if r_date:
-                update = {
+                update = _due_update_no_kill_reminder(t, {
                     'due_date': r_date,
                     'due_time': r_time + ':00',
-                    'reminder_sent_at': _rem_now,
-                }
+                })
                 supabase.table('tasks').update(update).eq('id', task_id).execute()
                 return redirect(url_for('lead_detail', task_id=task_id,
                                         reminder_set='1', rdate=r_date, rtime=r_time))
@@ -6438,17 +6511,19 @@ def email_action(token):
         return redirect(url_for('edit_task', task_id=task_id))
 
     elif action == 'delay_1hour':
-        # Delay task by 1 hour from NOW (not from original due time)
+        # Delay task by 1 hour from NOW (not from original due time).
+        # Routed through _due_update_no_kill_reminder so delayed reminder fires.
         aest = pytz.timezone('Australia/Brisbane')
         new_dt = datetime.now(aest) + timedelta(hours=1)
         new_time = new_dt.strftime('%H:%M:00')
         new_date = new_dt.date().isoformat()
 
-        supabase.table('tasks').update({
-            'due_date': new_date,
-            'due_time': new_time,
-            'reminder_sent_at': datetime.now(pytz.UTC).isoformat()  # Re-remind at new time (throttled)
-        }).eq('id', task_id).execute()
+        supabase.table('tasks').update(
+            _due_update_no_kill_reminder(task_data, {
+                'due_date': new_date,
+                'due_time': new_time,
+            })
+        ).eq('id', task_id).execute()
 
         return render_template_string("""
         <html>
@@ -6470,10 +6545,11 @@ def email_action(token):
         except:
             new_date = (datetime.now(pytz.timezone('Australia/Brisbane')) + timedelta(days=1)).date().isoformat()
 
-        supabase.table('tasks').update({
-            'due_date': new_date,
-            'reminder_sent_at': datetime.now(pytz.UTC).isoformat()  # Re-remind at new time (throttled)
-        }).eq('id', task_id).execute()
+        supabase.table('tasks').update(
+            _due_update_no_kill_reminder(task_data, {
+                'due_date': new_date,
+            })
+        ).eq('id', task_id).execute()
 
         return render_template_string("""
         <html>
@@ -6500,11 +6576,12 @@ def email_action(token):
             target = (now_aest + timedelta(days=days_until_monday)).replace(hour=9, minute=0, second=0, microsecond=0)
             label = 'Monday 9:00 AM'
 
-        supabase.table('tasks').update({
-            'due_date': target.date().isoformat(),
-            'due_time': target.strftime('%H:%M:%S'),
-            'reminder_sent_at': datetime.now(pytz.UTC).isoformat()
-        }).eq('id', task_id).execute()
+        supabase.table('tasks').update(
+            _due_update_no_kill_reminder(task_data, {
+                'due_date': target.date().isoformat(),
+                'due_time': target.strftime('%H:%M:%S'),
+            })
+        ).eq('id', task_id).execute()
 
         return render_template_string("""
         <html>
