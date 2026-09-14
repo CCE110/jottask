@@ -3164,18 +3164,37 @@ def handle_action():
                 new_time = new_dt.strftime('%H:%M:00')
                 new_date = new_dt.date().isoformat()
 
-                supabase.table('tasks').update({
+                # reminder_sent_at = None (was: now()) — so the scheduler
+                # re-picks up this task at its NEW due time. Stamping now()
+                # here silently suppressed every delayed reminder because
+                # the 4h throttle + DSW-new_lead skip together left the
+                # new due time never triggered (2026-09-14 batch trip
+                # + missed reminders). See saas_scheduler.py:619 (4h
+                # throttle) + :606-608 (DSW-new_lead skip).
+                _updates = {
                     'due_date': new_date,
                     'due_time': new_time,
-                    'reminder_sent_at': datetime.now(pytz.UTC).isoformat()
-                }).eq('id', task_id).execute()
+                    'reminder_sent_at': None,
+                }
+                # DSW-new_lead trap: if the delayed task is DSW Solar +
+                # lead_status='new_lead' (or NULL, which the scheduler
+                # treats as new_lead), promote to 'intro_call' so
+                # check_and_send_reminders picks it up instead of
+                # deferring to the 24h+3d DSW reminder path. A user
+                # hitting "delay" is explicitly asking for a specific
+                # reminder time — that intent should route through the
+                # standard due-time reminder.
+                if task_data.get('category') == 'DSW Solar' and \
+                   (task_data.get('lead_status') or 'new_lead') == 'new_lead':
+                    _updates['lead_status'] = 'intro_call'
+                supabase.table('tasks').update(_updates).eq('id', task_id).execute()
 
-                # If DSW Solar task, resend lead email with current status
-                if task_data.get('category') == 'DSW Solar':
-                    try:
-                        _resend_dsw_email(task_id, task_data)
-                    except Exception as e:
-                        print(f"DSW resend error: {e}")
+                # _resend_dsw_email removed 2026-09-15: delaying is a quiet
+                # due_time update, not a fresh "New Lead" notification. The
+                # resend fired the batch that tripped 4 circuit-breakers on
+                # 2026-09-14 (Supresh/Kent/Michael/Shane) — same click,
+                # unwanted side effect. Fix 1 (this file) + Fix 2 (removing
+                # this call) address the same incident.
                 return render_template_string("""
                 <html><head><title>Task Delayed</title></head>
                 <body style="font-family: sans-serif; text-align: center; padding: 50px; background: #eff6ff;">
@@ -3194,16 +3213,18 @@ def handle_action():
                 except:
                     new_date = (datetime.now(pytz.timezone('Australia/Brisbane')) + timedelta(days=1)).date().isoformat()
 
-                supabase.table('tasks').update({
+                # See delay_1hour above for the reminder_sent_at=None +
+                # DSW-new_lead-promotion rationale (same bug, same fix).
+                _updates = {
                     'due_date': new_date,
-                    'reminder_sent_at': datetime.now(pytz.UTC).isoformat()
-                }).eq('id', task_id).execute()
+                    'reminder_sent_at': None,
+                }
+                if task_data.get('category') == 'DSW Solar' and \
+                   (task_data.get('lead_status') or 'new_lead') == 'new_lead':
+                    _updates['lead_status'] = 'intro_call'
+                supabase.table('tasks').update(_updates).eq('id', task_id).execute()
 
-                if task_data.get('category') == 'DSW Solar':
-                    try:
-                        _resend_dsw_email(task_id, task_data)
-                    except Exception as e:
-                        print(f"DSW resend error: {e}")
+                # _resend_dsw_email removed 2026-09-15 (see delay_1hour above).
                 return render_template_string("""
                 <html><head><title>Task Delayed</title></head>
                 <body style="font-family: sans-serif; text-align: center; padding: 50px; background: #eff6ff;">
@@ -3228,11 +3249,19 @@ def handle_action():
                     target = (now_aest + timedelta(days=days_until_monday)).replace(hour=9, minute=0, second=0, microsecond=0)
                     label = 'Monday 9:00 AM'
 
-                supabase.table('tasks').update({
+                # See delay_1hour above for the reminder_sent_at=None +
+                # DSW-new_lead-promotion rationale (same bug, same fix).
+                # This branch didn't have a _resend_dsw_email call to
+                # remove — only the stamp-null needed here.
+                _updates = {
                     'due_date': target.date().isoformat(),
                     'due_time': target.strftime('%H:%M:%S'),
-                    'reminder_sent_at': datetime.now(pytz.UTC).isoformat()
-                }).eq('id', task_id).execute()
+                    'reminder_sent_at': None,
+                }
+                if task_data.get('category') == 'DSW Solar' and \
+                   (task_data.get('lead_status') or 'new_lead') == 'new_lead':
+                    _updates['lead_status'] = 'intro_call'
+                supabase.table('tasks').update(_updates).eq('id', task_id).execute()
 
                 return render_template_string("""
                 <html><head><title>Task Rescheduled</title></head>
