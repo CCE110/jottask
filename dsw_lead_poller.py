@@ -1443,8 +1443,10 @@ def send_email(name, phone, addr, src, summary, crm_url, os_url, task_id=None, l
         '<a href="tel:'+phone+'" style="display:inline-block;background:#10B981;color:white;padding:10px 16px;border-radius:8px;text-decoration:none;font-weight:600;font-size:13px">Call '+phone+'</a>'
         '<a href="'+crm_url+'" style="display:inline-block;background:#1e40af;color:white;padding:10px 16px;border-radius:8px;text-decoration:none;font-weight:600;font-size:13px">Pipereply</a>'
         +os_btn+'</div>'
-        '<hr style="border:1px solid #e2e8f0"><h4>Lead Summary</h4>'
-        '<div style="background:#f8fafc;padding:15px;border-radius:6px;white-space:pre-line;font-size:14px;line-height:1.6">'+summary+'</div>'
+        # ── Action buttons FIRST (2026-09-15) — reminder emails are worked
+        # by clicking a button, not by reading the summary. Buttons up top
+        # so Rob can act in one tap on mobile without scrolling. Lead
+        # Summary follows below for reference during / after the call.
         '<hr style="border:1px solid #e2e8f0">'
         '<p style="font-weight:600;color:#6B7280;font-size:13px">Task Delay</p>'
         f'{abtns}'
@@ -1452,6 +1454,8 @@ def send_email(name, phone, addr, src, summary, crm_url, os_url, task_id=None, l
         '<p style="font-weight:600;color:#6B7280;font-size:13px;margin-top:12px">Lead Status</p>'
         f'{sbtns}'
         f'{no_reply_btn}'
+        '<hr style="border:1px solid #e2e8f0"><h4>Lead Summary</h4>'
+        '<div style="background:#f8fafc;padding:15px;border-radius:6px;white-space:pre-line;font-size:14px;line-height:1.6">'+summary+'</div>'
         '</div>'
         '<div style="background:'+header_bg+';padding:12px;border-radius:0 0 8px 8px;text-align:center">'
         + (f'<a href="https://www.jottask.app/task/{task_id}" style="color:white;font-weight:bold;text-decoration:none">Open Jottask</a>'
