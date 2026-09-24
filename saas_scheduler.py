@@ -1076,6 +1076,19 @@ def run_scheduler():
             check_and_send_reminders()
             check_and_send_dsw_reminders()
 
+            # V2G Charger Follow-up drip (2026-09-28 → 2026-10-02, weekdays
+            # 08:00-11:59 AEST). All gates + dedup live inside run_v2g_drip;
+            # it's a no-op outside the window / after all 15 sent.
+            try:
+                from v2g_drip import run_v2g_drip
+                _v2g = run_v2g_drip()
+                if _v2g.get('action') == 'fired':
+                    print(f"[v2g_drip] {_v2g.get('date')}: fired "
+                          f"{len(_v2g.get('fired',[]))}, "
+                          f"{_v2g.get('remaining_after')} remaining")
+            except Exception as _v2g_err:
+                print(f"[v2g_drip] non-fatal error: {_v2g_err}")
+
 
             # Poll Squad inbox every tick (Gmail IMAP, ~15s per run)
             try:

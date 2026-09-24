@@ -563,6 +563,179 @@ def _test_imap_connection(server, user, password, label):
         return {'label': label, 'status': 'error', 'detail': str(e)[:200]}
 
 
+def check_backup_heartbeat():
+    """Verdict on the Mac backup heartbeat.
+
+    Fail-loud three-state:
+      GREEN  — latest backup_heartbeat ≤ 26h old AND no repo has (dirty>0 OR
+               ahead>0) with last commit >24h old
+      RED    — heartbeat absent or > 26h old (Mac cron isn't running)
+      AMBER  — heartbeat fresh but at least one repo is stale-dirty (>24h
+               unpushed local changes — the WIP-passenger risk)
+
+    Returns {'verdict': 'GREEN'|'RED'|'AMBER', 'detail': str, 'age_h': float|None,
+             'stale_repos': list}
+    """
+    try:
+        sb = _get_supabase()
+        r = sb.table('system_events').select('created_at, metadata')\
+            .eq('event_type', 'backup_heartbeat')\
+            .order('created_at', desc=True)\
+            .limit(1).execute().data or []
+    except Exception as e:
+        return {'verdict': 'RED', 'detail': f'query error: {e}',
+                'age_h': None, 'stale_repos': []}
+
+    if not r:
+        return {'verdict': 'RED',
+                'detail': 'no backup_heartbeat rows ever — Mac cron not installed',
+                'age_h': None, 'stale_repos': []}
+
+    row = r[0]
+    try:
+        ts = datetime.fromisoformat(row['created_at'].replace('Z', '+00:00'))
+    except Exception:
+        return {'verdict': 'RED', 'detail': 'unparseable heartbeat timestamp',
+                'age_h': None, 'stale_repos': []}
+    age_h = (datetime.now(pytz.UTC) - ts).total_seconds() / 3600
+
+    if age_h > 26:
+        return {'verdict': 'RED',
+                'detail': f'last heartbeat {age_h:.1f}h ago (>26h — Mac cron stopped)',
+                'age_h': age_h, 'stale_repos': []}
+
+    # Heartbeat fresh — inspect per-repo state
+    md = row.get('metadata') or {}
+    repos = md.get('repos') if isinstance(md, dict) else []
+    stale = []
+    for repo in (repos or []):
+        dirty = repo.get('dirty') or 0
+        ahead = repo.get('ahead') or 0
+        commit_age_h = repo.get('age_hours')
+        if (dirty > 0 or ahead > 0) and commit_age_h and commit_age_h > 24:
+            stale.append({
+                'name':  repo.get('name'),
+                'dirty': dirty, 'ahead': ahead,
+                'age_h': commit_age_h,
+            })
+
+    if stale:
+        names = ', '.join(f"{s['name']} ({'d='+str(s['dirty']) if s['dirty'] else ''}"
+                          f"{'a='+str(s['ahead']) if s['ahead'] else ''}, "
+                          f"{s['age_h']:.0f}h)" for s in stale)
+        return {'verdict': 'AMBER',
+                'detail': f'stale unpushed work: {names}',
+                'age_h': age_h, 'stale_repos': stale}
+
+    return {'verdict': 'GREEN',
+            'detail': f'heartbeat {age_h:.1f}h old, {len(repos or [])} repos all current',
+            'age_h': age_h, 'stale_repos': []}
+
+
+def check_supabase_backup():
+    """Verdict on Supabase's own managed backups via the Management API.
+
+    Requires SUPABASE_ACCESS_TOKEN in env. Without it we can NOT confirm a
+    backup happened — returns AMBER, never GREEN.
+
+    Fail-loud three-state:
+      GREEN — Management API returns a backup ≤ 26h old
+      RED   — API returns no recent backup, or the call errors
+      AMBER — SUPABASE_ACCESS_TOKEN unset (can't verify)
+
+    Returns {'verdict': ..., 'detail': str, 'last_backup': ISO str|None}
+    """
+    token = os.getenv('SUPABASE_ACCESS_TOKEN')
+    if not token:
+        return {'verdict': 'AMBER',
+                'detail': 'SUPABASE_ACCESS_TOKEN unset — cannot verify backup',
+                'last_backup': None}
+
+    try:
+        # Project ref = subdomain of SUPABASE_URL (e.g. bcrovytubvhrmypefzpe)
+        supabase_url = os.getenv('SUPABASE_URL', '')
+        project_ref = supabase_url.split('//', 1)[-1].split('.', 1)[0]
+        if not project_ref:
+            return {'verdict': 'RED',
+                    'detail': 'could not derive project_ref from SUPABASE_URL',
+                    'last_backup': None}
+
+        import urllib.request, json as _json
+        req = urllib.request.Request(
+            f'https://api.supabase.com/v1/projects/{project_ref}/database/backups',
+            headers={'Authorization': f'Bearer {token}'},
+        )
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = _json.loads(resp.read().decode('utf-8'))
+    except Exception as e:
+        return {'verdict': 'RED',
+                'detail': f'Management API error: {e}',
+                'last_backup': None}
+
+    # Response shape: {"backups":[{"inserted_at":"...","status":"COMPLETED",...}, ...]}
+    backups = data.get('backups') if isinstance(data, dict) else data
+    if not backups:
+        return {'verdict': 'RED',
+                'detail': 'API returned no backups',
+                'last_backup': None}
+
+    latest = None
+    for b in backups:
+        if (b.get('status') or '').upper() in ('COMPLETED', 'DONE'):
+            ts = b.get('inserted_at') or b.get('created_at') or b.get('completed_at')
+            if ts and (latest is None or ts > latest):
+                latest = ts
+    if not latest:
+        return {'verdict': 'RED',
+                'detail': f'no COMPLETED backups in {len(backups)} rows',
+                'last_backup': None}
+
+    try:
+        ts_dt = datetime.fromisoformat(latest.replace('Z', '+00:00'))
+        age_h = (datetime.now(pytz.UTC) - ts_dt).total_seconds() / 3600
+    except Exception:
+        return {'verdict': 'RED', 'detail': f'unparseable backup timestamp {latest}',
+                'last_backup': latest}
+
+    if age_h > 26:
+        return {'verdict': 'RED',
+                'detail': f'last backup {age_h:.1f}h ago (>26h)',
+                'last_backup': latest}
+
+    return {'verdict': 'GREEN',
+            'detail': f'last backup {age_h:.1f}h ago',
+            'last_backup': latest}
+
+
+def _render_backup_section(hb, sb_bk):
+    """HTML block for the Backups (24h) section. Three-state verdict pills."""
+    def pill(v):
+        colors = {'GREEN': '#10B981', 'AMBER': '#F59E0B', 'RED': '#EF4444'}
+        labels = {'GREEN': 'OK', 'AMBER': 'UNVERIFIED', 'RED': 'FAILING'}
+        c = colors.get(v, '#6B7280'); l = labels.get(v, v)
+        return (f'<span style="background:{c};color:white;padding:3px 10px;'
+                f'border-radius:4px;font-size:13px;font-weight:600;">{l}</span>')
+
+    rows = [
+        ('Local repos (Mac)',            hb['verdict'],   hb['detail']),
+        ('Supabase managed backup',      sb_bk['verdict'],sb_bk['detail']),
+        ('Independent DB dump',          'AMBER',         'not configured — phase 4 (independent pg_dump to S3)'),
+    ]
+    trs = ''
+    for label, v, detail in rows:
+        trs += (
+            f'<tr style="border-bottom:1px solid #E5E7EB;">'
+            f'<td style="padding:10px 0;font-weight:500;">{label}</td>'
+            f'<td style="padding:10px 0;text-align:right;">{pill(v)}</td>'
+            f'</tr>'
+            f'<tr><td colspan="2" style="padding:0 0 8px 12px;font-size:12px;'
+            f'color:#6B7280;font-style:italic;">{detail}</td></tr>'
+        )
+    return (f'<h2 style="font-size:16px;margin:24px 0 12px;color:#374151;">'
+            f'Backups (24h)</h2>'
+            f'<table style="width:100%;border-collapse:collapse;">{trs}</table>')
+
+
 def send_daily_health_digest():
     """Send a comprehensive daily health report at 8 AM AEST.
 
@@ -661,9 +834,18 @@ def send_daily_health_digest():
         canary_ok = canary['status'] == 'ok'
         email_fail_rate = health['emails_failed_24h'] / max(health['emails_sent_24h'] + health['emails_failed_24h'], 1)
 
+        # Backup health — three-state (GREEN/AMBER/RED). AMBER counts as
+        # a failure state per the fail-loud rule: banner cannot go green
+        # if we can't actually verify a backup.
+        backup_hb = check_backup_heartbeat()
+        backup_sb = check_supabase_backup()
+        backups_green = (backup_hb['verdict'] == 'GREEN' and
+                         backup_sb['verdict'] == 'GREEN')
+
         all_green = (worker_ok and imap_ok and canary_ok and reminder_ok
                      and not reminders_critical
-                     and email_fail_rate < 0.1 and not recent_errors)
+                     and email_fail_rate < 0.1 and not recent_errors
+                     and backups_green)
         overall_color = '#10B981' if all_green else '#EF4444'
         overall_text = 'All Systems Healthy' if all_green else 'Issues Detected'
 
@@ -757,6 +939,8 @@ def send_daily_health_digest():
                     <strong>IMAP:</strong> {imap_detail}<br>
                     <strong>Canary:</strong> Last successful at {canary.get('last_canary', 'never')}<br>
                 </div>
+
+                {_render_backup_section(backup_hb, backup_sb)}
 
                 {errors_html}
                 {alerts_html}
