@@ -19,7 +19,11 @@ CRM_BASE = "https://app.pipereply.com/v2/location/0k6Ix1hW5QoHuUh2YSru/contacts"
 # whenever a new lead-source needs auto-ingestion — the only alternative
 # is dsw_appt_poll picking up the contact via an appointment SMS later.
 # 2026-09-10: 'home-show' added for the QR-form lead flow at the Home Show.
-LEAD_TAGS = ["solar_quotes_lead","sem","website","facebook","google","referral","home-show"]
+# 2026-10-28: '1. lead to appt pipeline' added. Call Point (agent Roy) leads arrive with ONLY the tags
+# ['1. lead to appt pipeline', 'ai off'] and source 'Call Point', so none of the source-style tokens above
+# matched them (James 27 Oct, Tommy 26 Oct, Ajay) and the 10-min poll never saw them. That tag is the entry
+# stage of Rob's pipeline, so it catches every new lead whatever its source.
+LEAD_TAGS = ["solar_quotes_lead","sem","website","facebook","google","referral","home-show","1. lead to appt pipeline"]
 # Rob's PipeReply (LeadConnector) user id — NOT the Supabase user_id. Used to
 # server-side-scope get_contacts() to Rob's assigned pool only. Mirrors the
 # constant in dsw_appt_poll.py:57. Without this, get_contacts() returns the
@@ -163,6 +167,12 @@ def filter_junk_lines(text):
     return '\n'.join(kept).strip()
 
 
+def is_lead_contact(c):
+    """True when a PipeReply contact carries a LEAD_TAGS token (substring match on the joined, lowercased tags)."""
+    tags = " ".join([t.lower() for t in (c.get("tags") or [])])
+    return any(lt in tags for lt in LEAD_TAGS)
+
+
 def get_contacts():
     # Fetch last 7 days of contacts - poller tracks processed IDs to avoid duplicates.
     # assignedTo=ROB_UID scopes server-side to Rob's own assigned pool only —
@@ -182,8 +192,7 @@ def get_contacts():
         try:
             if datetime.fromisoformat(da.replace("Z", "+00:00")) < cutoff: continue
         except: continue
-        tags = " ".join([t.lower() for t in (c.get("tags") or [])])
-        if any(lt in tags for lt in LEAD_TAGS): out.append(c)
+        if is_lead_contact(c): out.append(c)
     print("Found", len(contacts), "contacts,", len(out), "unprocessed DSW leads in last 7 days")
     return out
 
