@@ -729,6 +729,9 @@ class AIEmailProcessor:
             if is_dsw_reply:
                 if handle_dsw_reply(subject, content, sender_email_addr):
                     return ("dsw_reply", "DSW lead notes updated")
+            # DSW "New Task Assigned to You" (off unless DSW_TASK_ASSIGNED_ENABLED=1; parse unverified)
+            if handle_dsw_task_assigned(subject, content, sender_email_addr):
+                return ("task_created", f"DSW task assigned: {subject[:80]}")
             # DSW Energy appointment confirmation (sender @dswenergy.com.au or subject match)
             if handle_dsw_appointment(subject, content, sender_email_addr):
                 return ("task_created", f"DSW appointment: {subject[:80]}")
@@ -2716,9 +2719,14 @@ def handle_dsw_appointment(subject, body_text, sender_email):
         return False
     user_id = users.data[0]['id']
 
-    existing = tm.find_existing_task_by_client(client_name=name, user_id=user_id)
-    if existing and (existing.get('category') != 'DSW Solar' or existing.get('status') != 'pending'):
-        existing = None
+    # One contact = one task: resolve the PipeReply contact first, then match a PENDING DSW task
+    # by contact id -> phone -> name. FAIL CLOSED: a lookup error raises and nothing is inserted.
+    import dsw_contact_dedup as _dd
+    try:
+        existing, pr_contact = _dd.find_existing_for_contact(tm.supabase, user_id, name=name, phone=phone)
+    except _dd.DedupLookupError as _e:
+        print(f"[DSW APPT] BLOCKED — dedup lookup failed for {name!r}, not creating a task: {_e}")
+        raise
 
     update_fields = {'lead_status': 'intro_call', 'reminder_sent_at': None}
     if appt_dt:
@@ -2731,6 +2739,10 @@ def handle_dsw_appointment(subject, body_text, sender_email):
 
     if existing:
         task_id = existing['id']
+        # Backfill what older email-created tasks lack so the poll can match them too
+        _phone_e164 = _dd.to_e164((pr_contact or {}).get('phone') or phone)
+        if _phone_e164 and not existing.get('client_phone'):
+            update_fields['client_phone'] = _phone_e164
         tm.supabase.table('tasks').update(update_fields).eq('id', task_id).execute()
         print(f"[DSW APPT] Updated task {task_id[:8]} → intro_call "
               f"due={update_fields.get('due_date')} {update_fields.get('due_time')}")
@@ -2748,11 +2760,15 @@ def handle_dsw_appointment(subject, body_text, sender_email):
     else:
         due_date = update_fields.get('due_date') or datetime.now(aest).strftime('%Y-%m-%d')
         due_time = update_fields.get('due_time') or '09:00:00'
+        crm_url = _dd.crm_url_for(pr_contact)
+        _phone_e164 = _dd.to_e164((pr_contact or {}).get('phone') or phone)
         task_data = {
             'user_id': user_id,
             'title': f'Call {name} - DSW Appointment',
-            'description': (f"Phone: {phone or 'N/A'}\nCRM: \nOpenSolar: pending\n\n"
+            'description': (f"Phone: {phone or 'N/A'}\nCRM: {crm_url}\nOpenSolar: pending\n\n"
                             f"Appointment booked: {appt_type or 'Intro Call'} on {dt_str or 'TBC'}"),
+            'client_phone': _phone_e164 or None,
+            'client_email': (pr_contact or {}).get('email') or None,
             'due_date': due_date,
             'due_time': due_time,
             'priority': 'high',
@@ -2792,6 +2808,123 @@ def handle_dsw_appointment(subject, body_text, sender_email):
         print(f"[DSW APPT] Email send error: {e}")
 
     return True
+
+
+def parse_dsw_task_assigned(subject, body_text):
+    """PROVISIONAL parse of a DSW 'New Task Assigned to You' email (reply@replies.dswenergy.com.au).
+
+    Field labels are guesses until the real email is available — verify against it before
+    DSW_TASK_ASSIGNED_ENABLED is switched on. Returns a dict, or None when the email is not
+    this format or no contact could be extracted (the caller then does nothing).
+    """
+    import re
+    text = f"{subject or ''}\n{body_text or ''}"
+    if not re.search(r'new\s+task\s+assigned', text, re.IGNORECASE):
+        return None
+
+    def grab(pattern):
+        m = re.search(pattern, body_text or '', re.IGNORECASE | re.MULTILINE)
+        return re.sub(r'\s+', ' ', m.group(1)).strip() if m else ''
+
+    name = grab(r'Contact(?:\s*Name)?\s*:\s*(.+)')
+    if not name:
+        return None
+    phone_m = re.search(r'(\+?61[\d\s\-]{8,12}|\b04[\d\s\-]{8,10})', body_text or '')
+    email_m = re.search(r'[\w.+-]+@[\w-]+\.[\w.-]+', grab(r'(?:Contact\s*)?E-?mail\s*:\s*(.+)') or '')
+    return {
+        'name': ' '.join(w.capitalize() for w in name.split()),
+        'task_title': grab(r'(?:Task|Title)\s*:\s*(.+)') or (subject or '').strip(),
+        'due': grab(r'Due(?:\s*(?:Date|Time))?\s*:\s*(.+)'),
+        'phone': re.sub(r'[\s\-]', '', phone_m.group(1)) if phone_m else '',
+        'email': email_m.group(0) if email_m else '',
+    }
+
+
+def handle_dsw_task_assigned(subject, body_text, sender_email, dry_run=False):
+    """DSW 'New Task Assigned to You' email -> one task per PipeReply contact.
+
+    Same safe shape as handle_dsw_appointment: resolve the contact in PipeReply first, match a
+    PENDING DSW Solar task by contact id -> phone -> name, then note + re-arm the reminder if one
+    exists, otherwise create it WITH client_phone and the CRM link. A lookup failure raises
+    (nothing inserted). A completed/cancelled task does not block a fresh job.
+    Disabled unless DSW_TASK_ASSIGNED_ENABLED=1 (or dry_run) until verified against the real email.
+    Returns a dict describing what happened (dry_run: what would happen), or False if not applicable.
+    """
+    import os, re
+    from datetime import datetime
+    import pytz
+    if 'dswenergy.com.au' not in (sender_email or '').lower():
+        return False
+    if not (dry_run or os.getenv('DSW_TASK_ASSIGNED_ENABLED') == '1'):
+        return False
+    parsed = parse_dsw_task_assigned(subject, body_text)
+    if not parsed:
+        return False
+
+    import dsw_contact_dedup as _dd
+    from task_manager import TaskManager
+    tm = TaskManager()
+    users = tm.supabase.table('users').select('id').eq('email', 'rob@cloudcleanenergy.com.au').execute()
+    if not users.data:
+        print("[DSW TASK] Rob user not found")
+        return False
+    user_id = users.data[0]['id']
+    name = parsed['name']
+
+    try:
+        existing, contact = _dd.find_existing_for_contact(
+            tm.supabase, user_id, name=name, phone=parsed['phone'], email=parsed['email'])
+    except _dd.DedupLookupError as e:
+        print(f"[DSW TASK] BLOCKED — dedup lookup failed for {name!r}, not creating a task: {e}")
+        raise
+
+    aest = pytz.timezone('Australia/Brisbane')
+    due_date = due_time = None
+    if parsed['due']:
+        try:
+            from dateutil import parser as dp
+            dt = dp.parse(parsed['due'], fuzzy=True)
+            dt = aest.localize(dt) if dt.tzinfo is None else dt.astimezone(aest)
+            due_date, due_time = dt.strftime('%Y-%m-%d'), dt.strftime('%H:%M:00')
+        except Exception as e:
+            print(f"[DSW TASK] could not parse due {parsed['due']!r}: {e}")
+    note = f"DSW task assigned: {parsed['task_title']}" + (f" (due {parsed['due']})" if parsed['due'] else '')
+    phone_e164 = _dd.to_e164((contact or {}).get('phone') or parsed['phone'])
+
+    if existing:
+        plan = {'action': 'update', 'task_id': existing['id']}
+        if not dry_run:
+            fields = {'reminder_sent_at': None}
+            if due_date:
+                fields.update(due_date=due_date, due_time=due_time or '09:00:00')
+            if phone_e164 and not existing.get('client_phone'):
+                fields['client_phone'] = phone_e164
+            tm.supabase.table('tasks').update(fields).eq('id', existing['id']).execute()
+            tm.supabase.table('task_notes').insert(
+                {'task_id': existing['id'], 'content': note, 'author': 'DSW email'}).execute()
+        print(f"[DSW TASK] {'DRY-RUN ' if dry_run else ''}existing task {existing['id'][:8]} for {name!r} — noted, no insert")
+        return plan
+
+    crm_url = _dd.crm_url_for(contact)
+    task_data = {
+        'user_id': user_id,
+        'title': f"{parsed['task_title']} - {name}"[:200],
+        'description': f"Phone: {phone_e164 or parsed['phone'] or 'N/A'}\nCRM: {crm_url}\nOpenSolar: pending\n\n{note}",
+        'due_date': due_date or datetime.now(aest).strftime('%Y-%m-%d'),
+        'due_time': due_time or '09:00:00',
+        'priority': 'high', 'status': 'pending', 'category': 'DSW Solar',
+        'client_name': (contact or {}).get('contactName') or name,
+        'client_phone': phone_e164 or None,
+        'client_email': (contact or {}).get('email') or parsed['email'] or None,
+        'lead_status': 'intro_call',
+    }
+    if dry_run:
+        print(f"[DSW TASK] DRY-RUN would create: {task_data}")
+        return {'action': 'create', 'task': task_data}
+    res = tm.supabase.table('tasks').insert(task_data).execute()
+    task_id = res.data[0]['id'] if res.data else None
+    print(f"[DSW TASK] created {str(task_id)[:8]} for {name!r}")
+    return {'action': 'create', 'task_id': task_id}
 
 
 def handle_dsw_reply(subject, body_text, sender_email):
