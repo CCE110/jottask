@@ -12,80 +12,18 @@ import pytest
 
 os.environ.setdefault('PIPEREPLY_TOKEN', 'x')
 import dsw_contact_dedup as dd
+from tests.fake_supabase import FakeDB, fake_task_manager
 
 ROB = 'rob-uid'
 CID = 'abc123CID'
 CONTACT = {'id': CID, 'contactName': 'Kyi Aung', 'phone': '+61412345678', 'email': 'kyi@example.com'}
 
 
-class FakeQuery:
-    def __init__(self, db, name):
-        self.db, self.name, self.rows = db, name, None
-        self.filters, self._limit, self._op, self._payload = [], None, 'select', None
-
-    def select(self, *_a, **_k): return self
-    def eq(self, c, v): self.filters.append(lambda r: r.get(c) == v); return self
-    def gte(self, c, v): self.filters.append(lambda r: (r.get(c) or '') >= v); return self
-    def order(self, *_a, **_k): return self
-    def limit(self, n): self._limit = n; return self
-
-    def ilike(self, c, pat):
-        p = pat.lower().strip('%')
-        wild = pat.startswith('%')
-        self.filters.append(lambda r: (p in (r.get(c) or '').lower()) if wild else (p == (r.get(c) or '').lower()))
-        return self
-
-    def or_(self, expr):
-        conds = []
-        for part in expr.split(','):
-            col, op, val = part.split('.', 2)
-            conds.append((col, op, val))
-        def m(r):
-            for col, op, val in conds:
-                v = r.get(col) or ''
-                if (op == 'eq' and v == val) or (op == 'ilike' and v.lower() == val.lower()):
-                    return True
-            return False
-        self.filters.append(m)
-        return self
-
-    def insert(self, payload): self._op, self._payload = 'insert', payload; return self
-    def update(self, payload): self._op, self._payload = 'update', payload; return self
-
-    def execute(self):
-        if self.db.fail and self.name == 'tasks':
-            raise RuntimeError('supabase down')
-        table = self.db.tables.setdefault(self.name, [])
-        if self._op == 'insert':
-            row = dict(self._payload)
-            row.setdefault('id', f'{self.name}-{len(table) + 1}')
-            row.setdefault('created_at', datetime.now(timezone.utc).isoformat())
-            table.append(row)
-            return types.SimpleNamespace(data=[row])
-        hits = [r for r in table if all(f(r) for f in self.filters)]
-        if self._op == 'update':
-            for r in hits:
-                r.update(self._payload)
-            return types.SimpleNamespace(data=hits)
-        hits = list(reversed(hits))
-        return types.SimpleNamespace(data=hits[:self._limit] if self._limit else hits)
-
-
-class FakeDB:
-    def __init__(self):
-        self.tables = {'users': [{'id': ROB, 'email': 'rob@cloudcleanenergy.com.au'}]}
-        self.fail = False
-
-    def table(self, name): return FakeQuery(self, name)
-
-    def tasks(self): return self.tables.get('tasks', [])
-
-
 @pytest.fixture
 def db(monkeypatch):
-    fake = FakeDB()
+    fake = FakeDB(ROB)
     import task_manager
-    monkeypatch.setattr(task_manager, 'TaskManager', lambda *a, **k: types.SimpleNamespace(supabase=fake))
+    monkeypatch.setattr(task_manager, 'TaskManager', lambda *a, **k: fake_task_manager(fake))
     # PipeReply: phone / name search returns the contact; email handler imports dsw_lead_poller -> stub it
     monkeypatch.setattr(dd, '_pr_get', lambda path, params: {'contacts': [CONTACT]})
     monkeypatch.setattr(importlib.util, 'spec_from_file_location',

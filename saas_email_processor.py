@@ -2900,8 +2900,7 @@ def handle_dsw_task_assigned(subject, body_text, sender_email, dry_run=False):
             if phone_e164 and not existing.get('client_phone'):
                 fields['client_phone'] = phone_e164
             tm.supabase.table('tasks').update(fields).eq('id', existing['id']).execute()
-            tm.supabase.table('task_notes').insert(
-                {'task_id': existing['id'], 'content': note, 'author': 'DSW email'}).execute()
+            tm.add_note(existing['id'], note, source='dsw_email')
         print(f"[DSW TASK] {'DRY-RUN ' if dry_run else ''}existing task {existing['id'][:8]} for {name!r} — noted, no insert")
         return plan
 

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """DSW SMS Poller - reads SolarQuotes SMS from Messages app and processes new leads"""
 import os, sys, sqlite3, json, time, importlib.util, requests, re
+import dsw_contact_dedup as dd
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
 
@@ -138,6 +139,15 @@ def extract_name(sms_text):
     if m:
         return ('appt_reminder', m.group(1))
 
+    # ── signal: a named message ABOUT an existing lead ("New YES reply from X",
+    #    "Follow Up With X", "Cancelled Meeting Follow Up with X"). Updates that
+    #    lead's task; never a lead of its own. Before 2026-10-29 these fell to
+    #    the fallback below and produced client_name='New YES' duplicates.
+    import dsw_sms_signal
+    sig = dsw_sms_signal.classify_signal(sms_text)
+    if sig:
+        return ('signal', sig)
+
     # ── new_lead paths ────────────────────────────────────────────────────
     # DSW Energy format: "Hi Rob, Peter Smith has just been assigned to you."
     # Optional job reference (e.g. "Q2021980") may appear between name and "has just been".
@@ -170,11 +180,11 @@ def extract_name(sms_text):
     # was always assumed to be a genuine trigger).
     for m in re.finditer(rf'({NAME_FULL})', sms_text):
         candidate = m.group(1)
-        if not candidate.startswith('Hi '):
+        if not candidate.startswith('Hi ') and not dsw_sms_signal.is_junk_name(candidate):
             return ('new_lead', candidate)
     return (None, None)
 
-def _raw_fallback_task(raw_text, extracted_name=None):
+def _raw_fallback_task(raw_text, extracted_name=None, contact=None, stub=False):
     """Escape hatch for SMS the parser can't reliably structure.
 
     Creates a Jottask task + emails Rob so the SMS is never silently
@@ -226,7 +236,9 @@ def _raw_fallback_task(raw_text, extracted_name=None):
                             f"RAW MESSAGE:\n{clean}\n\n"
                             f"Parser couldn't reliably extract a customer contact. "
                             f"Review and create PipeReply / OpenSolar / task manually "
-                            f"if actionable."),
+                            f"if actionable."
+                            + (f"\n\nPhone: {(contact or {}).get('phone') or 'N/A'}\nCRM: {dd.crm_url_for(contact)}\n{dd.STUB_MARKER}"
+                               if stub else '')),
             'due_date':    due.strftime('%Y-%m-%d'),
             'due_time':    due.strftime('%H:%M:00'),
             'priority':    'high',
@@ -235,6 +247,9 @@ def _raw_fallback_task(raw_text, extracted_name=None):
             'lead_status': 'new_lead',
             'client_name': display_name,
         }
+        if stub:
+            task['client_phone'] = dd.to_e164((contact or {}).get('phone')) or None
+            task['client_email'] = (contact or {}).get('email') or None
         ins = sb.table('tasks').insert(task).execute()
         tid = ins.data[0]['id'] if ins.data else None
         if not tid:
@@ -306,6 +321,18 @@ def main():
             done.add(key)
             continue
 
+        # ── signal: update the lead's existing task, never insert a second ──
+        # Fail closed: a lookup error leaves the SMS un-done so the next cron run retries it.
+        if sms_type == 'signal':
+            try:
+                _handle_signal(name, text or '')
+            except dd.DedupLookupError as e:
+                print(f"[SMS] signal lookup failed for {name!r} — NOT creating, will retry next run: {e}")
+                continue
+            new_count += 1
+            done.add(key)
+            continue
+
         # ── appt_reminder: informational — NEVER call poller.process ─────
         # These are DSW reminders that an already-booked appointment is
         # starting. The lead has already been worked (task exists with
@@ -345,6 +372,25 @@ def main():
     save_done(done)
     print(f"[SMS] Done. Processed {new_count} new_lead(s); "
           f"skipped {appt_skipped} appt_reminder(s) (no supersede).")
+
+
+def _handle_signal(name, raw):
+    """Wire dsw_sms_signal.apply_signal to the real Supabase / reminder / review-email helpers."""
+    import dsw_sms_signal
+    from task_manager import TaskManager
+    tm = TaskManager()
+    u = tm.supabase.table('users').select('id').eq('email', 'rob@cloudcleanenergy.com.au').execute()
+    if not u.data:
+        raise dd.DedupLookupError('Rob user not found')
+    spec = importlib.util.spec_from_file_location('dsw_lead_poller', os.path.join(os.path.dirname(os.path.abspath(__file__)), 'dsw_lead_poller.py'))
+    poller = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(poller)
+    res = dsw_sms_signal.apply_signal(
+        name, raw, sb=tm.supabase, tm=tm, user_id=u.data[0]['id'],
+        create_stub=lambda r, display, contact: _raw_fallback_task(r, extracted_name=display, contact=contact, stub=True),
+        send_reminder=poller.send_dsw_reminder_for_task)
+    print(f"[SMS signal] {name!r}: {res['action']} {str(res.get('task_id'))[:8]}")
+    return res
 
 
 def _refresh_reminder_for_existing_task(name):

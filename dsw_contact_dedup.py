@@ -21,6 +21,15 @@ CRM_CONTACT_URL = f'https://app.pipereply.com/v2/location/{PR_LOCATION}/contacts
 NAME_FUZZY = 0.85
 
 
+# Marks a task created from a name-only signal (SMS "YES reply from X") before the lead itself exists.
+# The poll treats a stub as "no real task yet" and adopts it (supersede) when the lead arrives.
+STUB_MARKER = '<!-- DSW-SIGNAL-STUB -->'
+
+
+def is_stub(task):
+    return STUB_MARKER in ((task or {}).get('description') or '')
+
+
 class DedupLookupError(Exception):
     """A dedup lookup failed. The caller must NOT insert."""
 
@@ -107,17 +116,20 @@ def resolve_pr_contact(name='', phone='', email='', pr_get=None):
         raise DedupLookupError(f'PipeReply lookup failed: {type(e).__name__}: {e}')
 
 
-_COLS = 'id, title, client_name, client_phone, status, lead_status, due_date, due_time, description, category, reminder_sent_at, user_id'
+_COLS = 'id, title, client_name, client_phone, client_email, status, lead_status, due_date, due_time, description, category, reminder_sent_at, completed_at, user_id'
 
 
-def find_pending_dsw_task(supabase, user_id, cid='', phone='', names=()):
-    """Pending DSW Solar task for this contact: contact id -> phone -> name. None = definitive no match.
+def find_pending_dsw_task(supabase, user_id, cid='', phone='', names=(), status='pending', completed_since=None):
+    """DSW Solar task (default: PENDING) for this contact: contact id -> phone -> name. None = definitive no match.
+
+    status='completed' with completed_since=<iso> finds a recently worked lead (used to reopen on a new signal).
 
     Raises DedupLookupError on any query failure.
     """
     def base():
-        return (supabase.table('tasks').select(_COLS).eq('user_id', user_id)
-                .eq('category', 'DSW Solar').eq('status', 'pending'))
+        q = (supabase.table('tasks').select(_COLS).eq('user_id', user_id)
+             .eq('category', 'DSW Solar').eq('status', status))
+        return q.gte('completed_at', completed_since) if completed_since else q
     try:
         if cid:
             r = base().ilike('description', f'%/contacts/detail/{cid}%').order('created_at', desc=True).limit(1).execute()

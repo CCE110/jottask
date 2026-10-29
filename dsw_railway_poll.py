@@ -29,6 +29,9 @@ import traceback
 from datetime import datetime, timedelta, timezone
 
 
+from dsw_contact_dedup import STUB_MARKER
+
+
 def _normalize_phone_for_match(p):
     """Mirror dsw_lead_poller._normalize_phone — strip non-digits, drop +61."""
     import re
@@ -47,11 +50,15 @@ def _existing_dsw_keys(tm, days=7):
     """
     cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
     res = tm.supabase.table('tasks').select(
-        'id, client_name, client_phone, status, created_at'
+        'id, client_name, client_phone, status, created_at, description'
     ).eq('category', 'DSW Solar').gte('created_at', cutoff).execute()
 
     phones, names = set(), set()
     for t in (res.data or []):
+        # A name-only signal stub is not the lead's task: let the lead through so
+        # process() can adopt (supersede) the stub and carry its notes forward.
+        if STUB_MARKER in (t.get('description') or ''):
+            continue
         ph = _normalize_phone_for_match(t.get('client_phone') or '')
         if ph:
             phones.add(ph)
@@ -180,7 +187,8 @@ def poll_dsw_pipereply(dry_run=False, lookback_minutes=30):
                 if _uid:
                     cand = tm.find_existing_task_by_client(client_name=name, user_id=_uid)
                     if (cand and cand.get('category') == 'DSW Solar'
-                            and cand.get('status') == 'pending'):
+                            and cand.get('status') == 'pending'
+                            and STUB_MARKER not in (cand.get('description') or '')):
                         supersede_match = cand
             except Exception as e:
                 # Guard MUST NOT block processing on lookup error — best-effort.

@@ -1973,6 +1973,11 @@ def process(contact, task_id=None, lead_status=None, is_new_contact=True,
             print("Done in", round(time.time() - t0, 1), "s:", name,
                   "(dedup fail-closed)")
             return
+        if _recent and '<!-- DSW-SIGNAL-STUB -->' in (_recent.get('description') or ''):
+            # Name-only signal stub (SMS "YES reply from X" before the lead existed): adopt it.
+            # The migrate path below finds it by name and supersedes it, carrying its notes.
+            print(f"[dedup] {name}: stub task {_recent['id'][:8]} — adopting via supersede, not short-circuiting")
+            _recent = None
         if _recent:
             print(f"[dedup] {name}: pending DSW task {_recent['id'][:8]} created "
                   f"{(_recent.get('created_at') or '')[:19]} (<2h ago) — short-circuiting")
