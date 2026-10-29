@@ -158,6 +158,8 @@ Rules:
 - Group under short headings, plain text, one fact per line starting with "- ":
   Requirements / Property / Bill & electricity / Timeframe & payment / Appointment / Call takeaways & next steps / Still to collect
   (omit empty groups).
+- Mention the quarterly/electricity bill ONCE only (one line, under Bill & electricity), never again elsewhere.
+- "Still to collect": at most 5 short items (2-6 words each), most important first. No sentences.
 - "Appointment" holds ONLY a booked call/visit date, time or type. Whether a home visit is wanted, and any
   other preference, belongs under Requirements. If no appointment is stated, omit the Appointment group.
 - No preamble, no closing remarks.
@@ -174,6 +176,37 @@ def llm_merge(system_text, client=None, model='claude-haiku-4-5-20251001'):
     return ''.join(b.text for b in r.content if getattr(b, 'text', None)).strip()
 
 
+STILL_MAX = 5
+_STILL = re.compile(r'^still to collect\b', re.I)
+_BILL = re.compile(r'\b(bill|quarterly|electricity (cost|usage))\b', re.I)
+
+
+def tighten(merged):
+    """Deterministic clean-up of the LLM output (system text only): drop repeated lines, keep ONE bill line,
+    cap the 'Still to collect' list. Never touches anything but the merged system summary."""
+    out, seen, bill_seen, in_still, still_n = [], set(), False, False, 0
+    for ln in (merged or '').split('\n'):
+        s = ln.strip()
+        if not s.startswith('-'):                           # heading / blank
+            in_still, still_n = bool(_STILL.match(s.rstrip(':'))), 0
+            out.append(ln)
+            continue
+        key = re.sub(r'\W+', ' ', s.lower()).strip()
+        if key in seen:
+            continue
+        if _BILL.search(s) and not in_still:
+            if bill_seen:
+                continue
+            bill_seen = True
+        if in_still:
+            still_n += 1
+            if still_n > STILL_MAX:
+                continue
+        seen.add(key)
+        out.append(ln)
+    return '\n'.join(out).strip()
+
+
 def condense(desc, merge=llm_merge):
     """-> (display_text, report) or None when the task must be left alone (unrecognised MY NOTES form).
 
@@ -185,7 +218,7 @@ def condense(desc, merge=llm_merge):
     runs = partition(p['body'])
     system_text = '\n'.join(t for k, t in runs if k == 'system').strip()
     verbatim = [t.strip('\n') for k, t in runs if k == 'verbatim' and t.strip()]
-    merged = merge(system_text) if system_text else ''
+    merged = tighten(merge(system_text)) if system_text else ''
     out = list(p['header'])
     out += ['', '── CRM SUMMARY (condensed - reference only) ──', merged or '(nothing to condense)']
     if verbatim:
@@ -211,7 +244,7 @@ def verify(report, text):
             and all(h in text for h in report['header']))
 
 
-VERSION = 1
+VERSION = 2
 
 
 def stored_or_build(task, sb, merge=llm_merge, force=False):

@@ -93,6 +93,15 @@ def test_unrecognised_my_notes_form_aborts():
     assert nc.condense("Phone: 1\n\nMY NOTES-ish stuff\nMY NOTES here", merge=SpyMerge()) is None
 
 
+def test_tighten_one_bill_line_and_capped_still_to_collect():
+    merged = ("Bill & electricity\n- Quarterly bill $500-$1,000\n- Quarterly bill $500-$1,000\n"
+              "Property\n- Bill around $750 per quarter\n- Tiled roof\n"
+              "Still to collect\n" + "\n".join(f"- item {i}" for i in range(9)))
+    out = nc.tighten(merged)
+    assert sum(ln.startswith('-') and 'quarter' in ln.lower() for ln in out.split('\n')) == 1
+    assert out.count('- item') == nc.STILL_MAX and '- Tiled roof' in out
+
+
 def test_stored_block_reused_until_description_changes_and_description_never_written():
     db = FakeDB()
     db.tables['tasks'] = [{'id': 't1', 'description': DESC, 'metadata': {}, 'category': 'DSW Solar'}]

@@ -5204,11 +5204,11 @@ def _render_lead_detail(task_id):
     # tags before render so the notes panel shows plain text.
     notes_raw = _strip_lead_html(notes_raw)
 
-    # Opt-in condensed view (?condensed=1): system/CRM text merged into one fact list; the MY NOTES
-    # panel and every unrecognised line stay verbatim. Raw description is never modified; a build
+    # Condensed view is the DEFAULT (?raw=1 shows the original): system/CRM text merged into one fact list;
+    # the MY NOTES panel and every unrecognised line stay verbatim. Raw description is never modified; a build
     # failure silently falls back to the raw view.
     condensed_on = False
-    if request.args.get('condensed') == '1':
+    if request.args.get('raw') != '1':
         try:
             import notes_condense
             _cond = notes_condense.stored_or_build(t, supabase)
@@ -5363,7 +5363,7 @@ textarea:focus{border-color:#1e40af;box-shadow:0 0 0 3px rgba(30,64,175,.1)}
 
 <!-- Customer Requirements -->
 <div class="card" id="custReqCard" style="{% if not cust_text %}display:none;{% endif %}">
-  <div class="sec">Customer Requirements <a href="{% if condensed_on %}?{% else %}?condensed=1{% endif %}" style="font-size:11px;font-weight:400;margin-left:8px">{% if condensed_on %}show raw{% else %}condensed view{% endif %}</a></div>
+  <div class="sec">Customer Requirements <a href="{% if condensed_on %}?raw=1{% else %}?{% endif %}" style="font-size:11px;font-weight:400;margin-left:8px">{% if condensed_on %}show raw{% else %}condensed view{% endif %}</a></div>
   <div class="req-box" id="custReqBox">{{ cust_text }}</div>
 </div>
 

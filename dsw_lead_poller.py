@@ -1471,7 +1471,7 @@ def send_email(name, phone, addr, src, summary, crm_url, os_url, task_id=None, l
         '</div>'
         '<div style="background:'+header_bg+';padding:12px;border-radius:0 0 8px 8px;text-align:center">'
         + (f'<a href="https://www.jottask.app/task/{task_id}" style="color:white;font-weight:bold;text-decoration:none">Open Jottask</a>'
-           f' &nbsp;·&nbsp; <a href="https://www.jottask.app/task/{task_id}?condensed=1" style="color:white;text-decoration:none">Condensed CRM view</a>'
+           f' &nbsp;·&nbsp; <a href="https://www.jottask.app/task/{task_id}?raw=1" style="color:white;text-decoration:none">Raw CRM view</a>'
            if task_id else
            '<a href="https://www.jottask.app/" style="color:white;font-weight:bold;text-decoration:none">Open Jottask</a>')
         +'</div></div>'
@@ -2269,6 +2269,16 @@ def send_dsw_reminder_for_task(task, reminder_tag):
         if '--- PREVIOUS NOTES ---' in body:
             body = body.split('--- PREVIOUS NOTES ---', 1)[0]
         summary = body.strip() or '(summary unavailable)'
+
+    # Condense the email's own summary (default). Only recognised system text goes to the LLM; mirrored
+    # MY NOTES / unrecognised lines stay verbatim; any failure or failed verify -> the raw summary is sent.
+    try:
+        import notes_condense
+        _res = notes_condense.condense(summary)
+        if _res and notes_condense.verify(_res[1], _res[0]):
+            summary = _res[1]['cust_display']
+    except Exception as _ce:
+        print(f"[condensed] email summary left raw for {task_id}: {_ce}")
 
     src_label = source_badge_text.split('·')[0].strip() if source_badge_text else ''
 
