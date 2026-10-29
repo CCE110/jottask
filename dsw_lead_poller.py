@@ -1471,6 +1471,7 @@ def send_email(name, phone, addr, src, summary, crm_url, os_url, task_id=None, l
         '</div>'
         '<div style="background:'+header_bg+';padding:12px;border-radius:0 0 8px 8px;text-align:center">'
         + (f'<a href="https://www.jottask.app/task/{task_id}" style="color:white;font-weight:bold;text-decoration:none">Open Jottask</a>'
+           f' &nbsp;·&nbsp; <a href="https://www.jottask.app/task/{task_id}?condensed=1" style="color:white;text-decoration:none">Condensed CRM view</a>'
            if task_id else
            '<a href="https://www.jottask.app/" style="color:white;font-weight:bold;text-decoration:none">Open Jottask</a>')
         +'</div></div>'
@@ -2186,6 +2187,18 @@ def send_dsw_reminder_for_task(task, reminder_tag):
 
     Returns (ok, err).
     """
+    # Re-condense the CRM side on every reminder (rebuilds only if the description changed). Non-destructive:
+    # writes tasks.metadata.condensed only; the raw description and MY NOTES are never touched.
+    try:
+        import notes_condense
+        from task_manager import TaskManager as _TM
+        _sb = _TM().supabase
+        _row = _sb.table('tasks').select('*').eq('id', task.get('id')).single().execute().data
+        if _row:
+            notes_condense.stored_or_build(_row, _sb)
+    except Exception as _ce:
+        print(f"[condensed] refresh skipped for {task.get('id')}: {_ce}")
+
     desc = task.get('description') or ''
     name = task.get('client_name') or (task.get('title') or '').replace('Call ', '').replace(' - New DSW Lead', '').strip() or 'Unknown'
     task_id = task.get('id')

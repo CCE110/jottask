@@ -5204,6 +5204,19 @@ def _render_lead_detail(task_id):
     # tags before render so the notes panel shows plain text.
     notes_raw = _strip_lead_html(notes_raw)
 
+    # Opt-in condensed view (?condensed=1): system/CRM text merged into one fact list; the MY NOTES
+    # panel and every unrecognised line stay verbatim. Raw description is never modified; a build
+    # failure silently falls back to the raw view.
+    condensed_on = False
+    if request.args.get('condensed') == '1':
+        try:
+            import notes_condense
+            _cond = notes_condense.stored_or_build(t, supabase)
+            if _cond:
+                cust_text, condensed_on = _cond['cust_display'], True
+        except Exception as _ce:
+            print(f"[condensed] fallback to raw for {task_id}: {_ce}")
+
     sub_note = _field('Sub-note:', desc)
 
     # Extract Pipereply contact ID from CRM URL
@@ -5350,7 +5363,7 @@ textarea:focus{border-color:#1e40af;box-shadow:0 0 0 3px rgba(30,64,175,.1)}
 
 <!-- Customer Requirements -->
 <div class="card" id="custReqCard" style="{% if not cust_text %}display:none;{% endif %}">
-  <div class="sec">Customer Requirements</div>
+  <div class="sec">Customer Requirements <a href="{% if condensed_on %}?{% else %}?condensed=1{% endif %}" style="font-size:11px;font-weight:400;margin-left:8px">{% if condensed_on %}show raw{% else %}condensed view{% endif %}</a></div>
   <div class="req-box" id="custReqBox">{{ cust_text }}</div>
 </div>
 
@@ -5678,7 +5691,7 @@ if(sp.get('reminder_set')==='1'){
         phone=phone, email=email, addr_raw=addr_raw, maps_url=maps_url,
         crm_url=crm_url, os_url=os_url, crm_cid=crm_cid,
         source_badge_text=source_badge_text,
-        cust_text=cust_text, notes_raw=notes_raw,
+        cust_text=cust_text, notes_raw=notes_raw, condensed_on=condensed_on,
         lead_status=lead_status, statuses=STATUSES,
         task_id=task_id, tomorrow=tomorrow, sub_note=sub_note,
         tag_options=tag_options,
