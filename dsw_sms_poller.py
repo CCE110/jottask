@@ -135,9 +135,13 @@ def extract_name(sms_text):
     #    by the "Appointment with <name>" anchor — NAME_FULL stops at
     #    lowercase "in" so both "…with Peter Smith in 5 minutes." and
     #    "Upcoming Appointment with Peter Smith" end cleanly.
-    m = re.search(rf'Appointment with\s+({NAME_FULL})', sms_text)
+    # Case-insensitive on "Appointment" (DSW also sends "Reminder: Upcoming appointment with X at <date>")
+    # and tolerant of a 1-letter surname ("Sam D"). Before 2026-10-29 the lowercase form fell through to the
+    # new_lead fallback and superseded the worked task (Tracie Burton, 1pm appointment).
+    APPT_NAME = r"[A-Z][A-Za-z']*(?:-[A-Z][A-Za-z']+)?(?:\s+[A-Z][A-Za-z']*(?:-[A-Z][A-Za-z']+)?)+"
+    m = re.search(rf'[Aa]ppointment with\s+({APPT_NAME})', sms_text)
     if m:
-        return ('appt_reminder', m.group(1))
+        return ('appt_reminder', m.group(1).strip())
 
     # ── signal: a named message ABOUT an existing lead ("New YES reply from X",
     #    "Follow Up With X", "Cancelled Meeting Follow Up with X"). Updates that
@@ -356,6 +360,18 @@ def main():
             continue
 
         # ── new_lead (or fallback-shape): full lead-processing path ──────
+        # One task per lead: if this person already has a task (pending, or completed in the last 30 days)
+        # this is a re-notification - note + re-fire the reminder, NEVER process() (which would supersede the
+        # worked task and mint a second one). Fail closed on lookup errors: leave the SMS for the next cron run.
+        try:
+            _res = _handle_signal(name, text or '', allow_create=False)
+        except dd.DedupLookupError as e:
+            print(f"[SMS] existing-lead lookup failed for {name!r} - NOT processing, will retry next run: {e}")
+            continue
+        if _res['action'] != 'no_match':
+            new_count += 1
+            done.add(key)
+            continue
         contact = find_pipereply_contact(name)
         if contact:
             print(f"[SMS] Processing new_lead: {name}")
@@ -374,7 +390,7 @@ def main():
           f"skipped {appt_skipped} appt_reminder(s) (no supersede).")
 
 
-def _handle_signal(name, raw):
+def _handle_signal(name, raw, allow_create=True):
     """Wire dsw_sms_signal.apply_signal to the real Supabase / reminder / review-email helpers."""
     import dsw_sms_signal
     from task_manager import TaskManager
@@ -388,7 +404,7 @@ def _handle_signal(name, raw):
     res = dsw_sms_signal.apply_signal(
         name, raw, sb=tm.supabase, tm=tm, user_id=u.data[0]['id'],
         create_stub=lambda r, display, contact: _raw_fallback_task(r, extracted_name=display, contact=contact, stub=True),
-        send_reminder=poller.send_dsw_reminder_for_task)
+        send_reminder=poller.send_dsw_reminder_for_task, allow_create=allow_create)
     print(f"[SMS signal] {name!r}: {res['action']} {str(res.get('task_id'))[:8]}")
     return res
 

@@ -36,12 +36,14 @@ def classify_signal(text):
 
 
 def apply_signal(name, raw, *, sb, tm, user_id, create_stub, send_reminder=None, pr_get=None,
-                 dry_run=False, now=None):
+                 dry_run=False, now=None, allow_create=True):
     """Update the lead's task for this signal, or create a stub when no lead matches.
 
     create_stub(raw, display_name, contact) -> task_id   (injected; sends the "review" email)
     send_reminder(task, tag) -> (ok, err)                 (injected dsw_lead_poller.send_dsw_reminder_for_task)
-    Returns {'action': 'update'|'reopen'|'create_stub', 'task_id': ...}. Raises dd.DedupLookupError.
+    allow_create=False -> never makes a stub; returns {'action': 'no_match'} so the caller can run the full
+    new-lead path for a genuinely new person.
+    Returns {'action': 'update'|'reopen'|'create_stub'|'no_match', 'task_id': ...}. Raises dd.DedupLookupError.
     """
     now = now or datetime.now(timezone.utc)
     task, contact = dd.find_existing_for_contact(sb, user_id, name=name, pr_get=pr_get)
@@ -53,6 +55,8 @@ def apply_signal(name, raw, *, sb, tm, user_id, create_stub, send_reminder=None,
             completed_since=(now - timedelta(days=REOPEN_DAYS)).isoformat())
         reopen = bool(task)
 
+    if not task and not allow_create:
+        return {'action': 'no_match', 'task_id': None}
     if not task:
         display = (contact or {}).get('contactName') or name
         if dry_run:

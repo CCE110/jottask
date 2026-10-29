@@ -163,3 +163,27 @@ def test_fake_rejects_nonexistent_columns():
         db.table('task_notes').insert({'task_id': 'x', 'content': 'c', 'author': 'DSW email'}).execute()
     with pytest.raises(UndefinedColumn):
         db.table('tasks').select('id, nope').execute()
+
+
+# ── 29 Oct 2026: lowercase "appointment" SMS superseded Tracie Burton's worked task ──────────────
+@pytest.mark.parametrize('text,name', [
+    ('Reminder: Upcoming appointment with Tracie Burton at Thursday, 29 October 2026 1:00 PM (AEST).', 'Tracie Burton'),
+    ('Reminder: Upcoming Appointment with Tracie Burton in 10 minutes.', 'Tracie Burton'),
+    ('Reminder: Upcoming appointment with Sam D at Monday, 26 October 2026 1:30 PM (AEST).', 'Sam D'),
+])
+def test_appointment_reminders_are_never_new_leads(text, name):
+    import dsw_sms_poller as p
+    assert p.extract_name(text) == ('appt_reminder', name)
+
+
+def test_new_lead_sms_for_existing_lead_updates_never_supersedes():
+    h = Harness()
+    h.db.tables['tasks'] = [lead()]
+    r = h.run('Kyung Lee', 'Hi Rob, Kyung Lee has just been assigned to you.', allow_create=False)
+    assert r['action'] == 'update' and len(h.db.tasks()) == 1 and h.stubs == []
+
+
+def test_new_lead_sms_for_unknown_person_returns_no_match_and_creates_nothing():
+    h = Harness(contacts=())
+    r = h.run('Priya Nair', 'Hi Rob, Priya Nair has just been assigned to you.', allow_create=False)
+    assert r['action'] == 'no_match' and h.db.tasks() == [] and h.stubs == []
