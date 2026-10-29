@@ -45,6 +45,44 @@ def _maybe_run_dsw_poll():
         traceback.print_exc()
         print(f"⚠️  DSW Railway poll error (non-fatal): {e}")
 
+# OpenSolar retry/parity: every OS_HEAL_INTERVAL_SEC (default 30 min) give real pending DSW tasks that
+# still show "OpenSolar: pending" a geocoded project. Policy + safety limits live in dsw_os_healer.py
+# (recent tasks only, max 3 creates/run, 3 attempts/task). DSW_OS_HEAL_ENABLED=0 turns it off.
+OS_HEAL_INTERVAL_SEC = int(os.getenv('OS_HEAL_INTERVAL_SEC', '1800'))
+_LAST_OS_HEAL_TS = 0.0
+
+
+def _maybe_run_os_heal():
+    """Never raises — the scheduler loop must stay alive."""
+    global _LAST_OS_HEAL_TS
+    if os.getenv('DSW_OS_HEAL_ENABLED', '1') == '0':
+        return
+    now_ts = time.time()
+    if now_ts - _LAST_OS_HEAL_TS < OS_HEAL_INTERVAL_SEC:
+        return
+    _LAST_OS_HEAL_TS = now_ts
+    try:
+        import dsw_lead_poller as dsw
+        import dsw_os_healer
+        sb = _get_supabase()
+        u = sb.table('users').select('id').eq('email', 'rob@cloudcleanenergy.com.au').execute()
+        if not u.data:
+            return
+        results = dsw_os_healer.heal(sb, u.data[0]['id'], dsw, dry_run=False)
+        acted = [r for r in results if r['action'] in ('created', 'failed')]
+        for r in results:
+            print(f"[os_heal] {r['task_id'][:8]} {r.get('name')}: {r['action']} {r.get('reason') or r.get('os_url') or ''}")
+        if acted:
+            from monitoring import log_event
+            log_event('os_heal', f"OpenSolar heal: {[(r['name'], r['action']) for r in acted]}",
+                      status='success' if all(r['action'] == 'created' for r in acted) else 'warning',
+                      category='os_heal')
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        print(f"⚠️  OpenSolar heal error (non-fatal): {e}")
+
+
 # Lazy Supabase init — avoids crash if env vars aren't loaded at import time
 _supabase = None
 
@@ -1101,6 +1139,7 @@ def run_scheduler():
             # the Mac-cron dsw_sms_poller path (which depended on Rob's mini
             # being awake + SMS notifications arriving).
             _maybe_run_dsw_poll()
+            _maybe_run_os_heal()
 
             # Check daily summaries
             users = get_users_needing_summary()
