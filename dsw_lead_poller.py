@@ -946,6 +946,9 @@ def make_opensolar(name, phone, email, address, city, state, postcode,
             "contacts_new": [
                 {
                     "first_name": first,
+                    # OpenSolar's contact field is family_name; last_name is silently ignored
+                    # (Tracie Burton -> contact "Tracie", 2026-10-29; 9 other recent leads the same).
+                    "family_name": last,
                     "last_name":  last,
                     "phone":      phone or "",
                     "email":      email or "",
