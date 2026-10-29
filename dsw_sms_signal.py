@@ -15,7 +15,8 @@ JUNK_TOKENS = {'new', 'yes', 'urgent', 'reminder', 'customer', 'cancelled', 'upc
                'unstructured', 'dsw', 'review', 'appointment', 'meeting', 'confidence', 'issue', 'no', 'ok'}
 
 _NAME_PART = r"[A-Z][A-Za-z']+(?:-[A-Z][A-Za-z']+)?(?:[A-Z][A-Za-z']+)?"
-NAME_FULL = rf'{_NAME_PART}(?:\s+{_NAME_PART})+'
+_NICK = r"(?:\s+\([A-Za-z'\-]+\))?"          # optional bracketed nickname: Sivhoung (Siv) Lim
+NAME_FULL = rf'{_NAME_PART}{_NICK}(?:\s+{_NAME_PART})+'
 
 
 def is_junk_name(name):

@@ -176,6 +176,31 @@ def test_appointment_reminders_are_never_new_leads(text, name):
     assert p.extract_name(text) == ('appt_reminder', name)
 
 
+# ── 29 Oct 2026: bracketed nickname "Sivhoung (Siv) Lim" broke extraction -> unstructured stub dupe ──
+@pytest.mark.parametrize('text,kind', [
+    ('Hi Rob, Sivhoung (Siv) Lim has just been assigned to you. Please call ASAP.\n\n- D', 'new_lead'),
+    ('Reminder: Upcoming appointment with Sivhoung (Siv) Lim at Friday, 30 October 2026 1:00 PM (AEST).', 'appt_reminder'),
+    ('Reminder: Upcoming Appointment with Sivhoung (Siv) Lim in 10 minutes.', 'appt_reminder'),
+    ('New YES reply from Sivhoung (Siv) Lim. You will be connected shortly.', 'signal'),
+])
+def test_bracketed_nickname_shapes_extract(text, kind):
+    import dsw_sms_poller as p
+    assert p.extract_name(text) == (kind, 'Sivhoung (Siv) Lim')
+
+
+def test_bracketed_nickname_matches_task_and_creates_no_second_task():
+    h = Harness(contacts=({'id': 'SIV', 'contactName': 'Sivhoung Lim', 'phone': '+61421595186', 'email': 'x@y.com'},))
+    h.db.tables['tasks'] = [lead(client_name='Sivhoung (siv) Lim', client_phone='+61421595186',
+                                 description=f'Phone: +61421595186\nCRM: {dd.CRM_CONTACT_URL}SIV')]
+    for nm in ('Sivhoung (Siv) Lim', 'Sivhoung Lim'):
+        r = h.run(nm, 'Hi Rob, Sivhoung (Siv) Lim has just been assigned to you.', allow_create=False)
+        assert r['action'] == 'update'
+    assert len(h.db.tasks()) == 1 and h.stubs == []
+    # name-only (no phone/cid on the task): bracket must not defeat the fuzzy match
+    h.db.tables['tasks'] = [lead(client_name='Sivhoung (siv) Lim', client_phone=None, description='no ids')]
+    assert h.run('Sivhoung Lim', 'x', allow_create=False)['action'] == 'update'
+
+
 def test_new_lead_sms_for_existing_lead_updates_never_supersedes():
     h = Harness()
     h.db.tables['tasks'] = [lead()]

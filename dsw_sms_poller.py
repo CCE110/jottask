@@ -83,6 +83,8 @@ def get_new_sms():
         return []
 
 def find_pipereply_contact(name):
+    import dsw_contact_dedup
+    name = dsw_contact_dedup.strip_nick(name)
     TOKEN = os.getenv('PIPEREPLY_TOKEN')
     LOC = os.getenv('PIPEREPLY_LOCATION_ID')
     H = {'Authorization': f'Bearer {TOKEN}', 'Content-Type': 'application/json', 'Version': '2021-07-28'}
@@ -128,7 +130,8 @@ def extract_name(sms_text):
     # Accepts mixed case AND ALL-CAPS ("JOHNSON") — DSW Energy sometimes
     # sends names shouting.
     NAME_PART = r"[A-Z][A-Za-z']+(?:-[A-Z][A-Za-z']+)?(?:[A-Z][A-Za-z']+)?"
-    NAME_FULL = rf'{NAME_PART}(?:\s+{NAME_PART})+'
+    NICK = r"(?:\s+\([A-Za-z'\-]+\))?"      # optional bracketed nickname: Sivhoung (Siv) Lim
+    NAME_FULL = rf'{NAME_PART}{NICK}(?:\s+{NAME_PART})+'
 
     # ── appt_reminder: MUST come BEFORE the fallback loop so an appointment
     #    SMS is never mis-classified as a new lead. Both DSW shapes covered
@@ -138,7 +141,7 @@ def extract_name(sms_text):
     # Case-insensitive on "Appointment" (DSW also sends "Reminder: Upcoming appointment with X at <date>")
     # and tolerant of a 1-letter surname ("Sam D"). Before 2026-10-29 the lowercase form fell through to the
     # new_lead fallback and superseded the worked task (Tracie Burton, 1pm appointment).
-    APPT_NAME = r"[A-Z][A-Za-z']*(?:-[A-Z][A-Za-z']+)?(?:\s+[A-Z][A-Za-z']*(?:-[A-Z][A-Za-z']+)?)+"
+    APPT_NAME = r"[A-Z][A-Za-z']*(?:-[A-Z][A-Za-z']+)?" + NICK + r"(?:\s+[A-Z][A-Za-z']*(?:-[A-Z][A-Za-z']+)?)+"
     m = re.search(rf'[Aa]ppointment with\s+({APPT_NAME})', sms_text)
     if m:
         return ('appt_reminder', m.group(1).strip())
@@ -429,6 +432,11 @@ def _refresh_reminder_for_existing_task(name):
         matches = sb.table('tasks').select('id, client_name, reminder_sent_at')\
                     .eq('category', 'DSW Solar').eq('status', 'pending')\
                     .ilike('client_name', name).limit(1).execute().data
+        if not matches:
+            import dsw_contact_dedup as _dd
+            matches = [t for t in sb.table('tasks').select('id, client_name, reminder_sent_at')
+                       .eq('category', 'DSW Solar').eq('status', 'pending').execute().data
+                       if _dd._names_match(name, t.get('client_name'))][:1]
         if not matches:
             print(f"[SMS appt-refresh] no pending task for {name!r} — no-op")
             return

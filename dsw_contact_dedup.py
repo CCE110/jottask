@@ -60,8 +60,13 @@ def cid_from_text(text):
     return m.group(1) if m else ''
 
 
+def strip_nick(name):
+    """'Sivhoung (Siv) Lim' -> 'Sivhoung Lim' (bracketed nicknames never take part in matching)."""
+    return re.sub(r'\s+', ' ', re.sub(r'\([^)]*\)', ' ', name or '')).strip()
+
+
 def _names_match(a, b):
-    a, b = (a or '').strip().lower(), (b or '').strip().lower()
+    a, b = strip_nick(a).lower(), strip_nick(b).lower()
     return bool(a and b and (a == b or SequenceMatcher(None, a, b).ratio() >= NAME_FUZZY))
 
 
@@ -84,6 +89,7 @@ def resolve_pr_contact(name='', phone='', email='', pr_get=None):
     PipeReply could not be queried, because "unknown" must not be treated as "no contact".
     """
     pr_get = pr_get or _pr_get
+    name = strip_nick(name)
     try:
         def search(q):
             return (pr_get('/contacts/', {'locationId': PR_LOCATION, 'query': q, 'limit': 10}) or {}).get('contacts') or []
