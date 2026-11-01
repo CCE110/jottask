@@ -61,6 +61,7 @@ STATUS_LABELS = {
     'won':                '🎉 WON',
     'lost':               '❌ LOST',
     'no_reply':           '📵 NO REPLY',
+    'post_sale':          '🧾 POST-SALE',
 }
 claude = Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
 resend.api_key = os.getenv("RESEND_API_KEY")

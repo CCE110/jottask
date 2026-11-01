@@ -8,6 +8,15 @@ from datetime import datetime, date, timedelta
 from supabase import create_client, Client
 import pytz
 
+
+def _first_lead(rows):
+    """First row that is not a post-sale handover TODO (those share the customer's name but are not the lead)."""
+    for r in rows or []:
+        if (r.get('category') or '') != 'DSW Post-Sale':
+            return r
+    return None
+
+
 class TaskManager:
     def __init__(self):
         # Lazy: defer create_client() until the first .supabase access so a
@@ -225,7 +234,8 @@ class TaskManager:
         """
         Find existing task by client identifiers.
         Priority: email > project_name > client_name
-        Returns most recent non-closed task for this client.
+        Returns most recent non-closed task for this client. Post-sale handover TODOs (category "DSW Post-Sale")
+        are never returned - they are not the lead and must not hide it or be superseded/noted as it.
         user_id is required for multi-tenant safety.
         """
         try:
@@ -237,14 +247,14 @@ class TaskManager:
                     .neq('status', 'completed')\
                     .neq('status', 'cancelled')\
                     .order('created_at', desc=True)\
-                    .limit(1)
+                    .limit(5)
                 if user_id:
                     query = query.eq('user_id', user_id)
                 result = query.execute()
 
-                if result.data:
+                if _first_lead(result.data):
                     print(f"🔗 Found existing task by email: {client_email}")
-                    return result.data[0]
+                    return _first_lead(result.data)
 
             # Try project name match
             if project_name:
@@ -254,14 +264,14 @@ class TaskManager:
                     .neq('status', 'completed')\
                     .neq('status', 'cancelled')\
                     .order('created_at', desc=True)\
-                    .limit(1)
+                    .limit(5)
                 if user_id:
                     query = query.eq('user_id', user_id)
                 result = query.execute()
 
-                if result.data:
+                if _first_lead(result.data):
                     print(f"🔗 Found existing task by project: {project_name}")
-                    return result.data[0]
+                    return _first_lead(result.data)
 
             # Try client name match (fuzzy)
             if client_name and len(client_name) > 2:
@@ -271,14 +281,14 @@ class TaskManager:
                     .neq('status', 'completed')\
                     .neq('status', 'cancelled')\
                     .order('created_at', desc=True)\
-                    .limit(1)
+                    .limit(5)
                 if user_id:
                     query = query.eq('user_id', user_id)
                 result = query.execute()
 
-                if result.data:
+                if _first_lead(result.data):
                     print(f"🔗 Found existing task by name: {client_name}")
-                    return result.data[0]
+                    return _first_lead(result.data)
 
             return None
 

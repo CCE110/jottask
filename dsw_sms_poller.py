@@ -133,6 +133,14 @@ def extract_name(sms_text):
     NICK = r"(?:\s+\([A-Za-z'\-]+\))?"      # optional bracketed nickname: Sivhoung (Siv) Lim
     NAME_FULL = rf'{NAME_PART}{NICK}(?:\s+{NAME_PART})+'
 
+    # ── handover: DSW's post-sale "congrats on your sale to X ... complete the Sales Handover Form" text.
+    #    A to-do for Rob, NEVER a lead - checked first so no later pattern (or the capitalised-words fallback)
+    #    can turn it into a new lead / PipeReply contact / supersede (Ajay, Adam Glyde, Damian, 28-30 Oct 2026).
+    import dsw_handover
+    _ho = dsw_handover.classify_handover(sms_text)
+    if _ho:
+        return ('handover', _ho['name'] or 'customer')
+
     # ── appt_reminder: MUST come BEFORE the fallback loop so an appointment
     #    SMS is never mis-classified as a new lead. Both DSW shapes covered
     #    by the "Appointment with <name>" anchor — NAME_FULL stops at
@@ -321,6 +329,18 @@ def main():
         print(f"[SMS] New message: {text[:80]}")
         sms_type, name = extract_name(text or '')
 
+        # ── handover: post-sale paperwork -> one non-lead TODO (+ note on the sold lead). Fail closed: a lookup
+        # error leaves the SMS un-done so the next cron run retries it. NEVER reaches poller.process.
+        if sms_type == 'handover':
+            try:
+                _handle_handover(text or '')
+            except dd.DedupLookupError as e:
+                print(f"[SMS] handover lookup failed - NOT creating, will retry next run: {e}")
+                continue
+            new_count += 1
+            done.add(key)
+            continue
+
         if not name:
             print(f"[SMS] Could not extract name — raw-text fallback")
             _raw_fallback_task(text or '')
@@ -391,6 +411,19 @@ def main():
     save_done(done)
     print(f"[SMS] Done. Processed {new_count} new_lead(s); "
           f"skipped {appt_skipped} appt_reminder(s) (no supersede).")
+
+
+def _handle_handover(raw):
+    """Wire dsw_handover.apply_handover to the real Supabase / TaskManager."""
+    import dsw_handover
+    from task_manager import TaskManager
+    tm = TaskManager()
+    u = tm.supabase.table('users').select('id').eq('email', 'rob@cloudcleanenergy.com.au').execute()
+    if not u.data:
+        raise dd.DedupLookupError('Rob user not found')
+    res = dsw_handover.apply_handover(raw, sb=tm.supabase, tm=tm, user_id=u.data[0]['id'])
+    print(f"[SMS handover] {res['action']} task={str(res.get('task_id'))[:8]} linked={str(res.get('linked_task_id'))[:8]} ambiguous={res.get('ambiguous')}")
+    return res
 
 
 def _handle_signal(name, raw, allow_create=True):

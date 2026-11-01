@@ -5068,6 +5068,7 @@ def _render_lead_detail(task_id):
         'won':               '🎉 WON',
         'lost':              '❌ LOST',
         'no_reply':          '📵 NO REPLY',
+        'post_sale':         '🧾 POST-SALE',
     }
     STATUS_COLORS = {
         'new_lead': '#1e40af', 'intro_call': '#1e40af',
@@ -5075,7 +5076,7 @@ def _render_lead_detail(task_id):
         'build_quote': '#0369a1', 'quote_submitted': '#0891b2',
         'quote_followup': '#0e7490', 'revise_quote': '#7c3aed',
         'customer_deciding': '#b45309', 'nurture': '#6b7280',
-        'won': '#10b981', 'lost': '#ef4444', 'no_reply': '#6b7280',
+        'won': '#10b981', 'lost': '#ef4444', 'no_reply': '#6b7280', 'post_sale': '#0f766e',
     }
 
     # ── Fetch task ────────────────────────────────────────────────────────
