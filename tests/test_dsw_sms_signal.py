@@ -201,6 +201,51 @@ def test_bracketed_nickname_matches_task_and_creates_no_second_task():
     assert h.run('Sivhoung Lim', 'x', allow_create=False)['action'] == 'update'
 
 
+# ── 2 Nov 2026: single-name contact ("Tiana", no surname) reminders fell to the unstructured alert ──
+@pytest.mark.parametrize('text,kind,name', [
+    ('Reminder: Upcoming appointment with Tiana  at Monday, 2 November 2026 5:00 PM (AEST).', 'appt_reminder', 'Tiana'),
+    ('Reminder: Upcoming Appointment with Tiana in 10 minutes.', 'appt_reminder', 'Tiana'),
+    ('+cReminder: Upcoming Appointment with Greg & Kathy Cunningham in 10 minutes.', 'appt_reminder', 'Greg & Kathy Cunningham'),
+    ('Reminder: Upcoming Appointment with ANTHONY BONE in 10 minutes.', 'appt_reminder', 'ANTHONY BONE'),
+    ('Reminder: Upcoming appointment with ANTHONY BONE  at Thursday, 1 October 2026 3:00 PM (AEST).', 'appt_reminder', 'ANTHONY BONE'),
+    ('Reminder: Upcoming Appointment with Ewen J Smith in 10 minutes.', 'appt_reminder', 'Ewen J Smith'),
+    ('Upcoming Appointment with Peter Smith', 'appt_reminder', 'Peter Smith'),
+    ('Cancelled: Appointment with Elaine Egan on Tuesday, 27 October 2026 1:00 PM (AEST).', 'appt_cancelled', 'Elaine Egan'),
+    ('Hi Rob, Mel has just been assigned to you. Please call ASAP.\n\n- DSW ENERGY', 'new_lead', 'Mel'),
+])
+def test_appointment_reminder_family_extracts(text, kind, name):
+    import dsw_sms_poller as p
+    assert p.extract_name(text) == (kind, name)
+
+
+def test_first_name_only_matching_is_exact_never_fuzzy():
+    assert dd._names_match('Mel', 'mel') and not dd._names_match('Mel', 'Melanie') and not dd._names_match('Helen', 'Helena')
+    h = Harness(contacts=({'id': 'M1', 'contactName': 'Melanie Ross', 'phone': '+61411000000', 'email': 'm@x.com'},))
+    h.db.tables['tasks'] = [lead(client_name='Melanie Ross', client_phone='+61411000000')]
+    # "Hi Rob, Mel has just been assigned" must not attach to Melanie, and must not create anything itself
+    r = h.run('Mel', 'Hi Rob, Mel has just been assigned to you.', allow_create=False)
+    assert r['action'] == 'no_match' and len(h.db.tasks()) == 1 and h.stubs == []
+    h.db.tables['tasks'] = [lead(client_name='Mel', client_phone=None, description='x')]
+    assert h.run('Mel', 'Hi Rob, Mel has just been assigned to you.', allow_create=False)['action'] == 'update'
+
+
+def test_appt_refresh_matches_first_name_only_to_the_one_pending_task(monkeypatch):
+    import dsw_sms_poller as p
+    h = Harness()
+    h.db.tables['tasks'] = [lead(id='t1', client_name='Tiana Lee', reminder_sent_at='2026-11-02T00:00:00+00:00')]
+    import supabase
+    monkeypatch.setattr(supabase, 'create_client', lambda *a, **k: h.db)
+    p._refresh_reminder_for_existing_task('Tiana')
+    assert h.db.tasks()[0]['reminder_sent_at'] is None and len(h.db.tasks()) == 1
+    # two different Tianas -> ambiguous -> no-op, nothing created
+    h.db.tables['tasks'] = [lead(id='a', client_name='Tiana Lee', reminder_sent_at='x'), lead(id='b', client_name='Tiana Ng', reminder_sent_at='x')]
+    p._refresh_reminder_for_existing_task('Tiana')
+    assert [t['reminder_sent_at'] for t in h.db.tasks()] == ['x', 'x']
+    h.db.tables['tasks'] = []                                           # no lead at all -> silent no-op
+    p._refresh_reminder_for_existing_task('Tiana')
+    assert h.db.tasks() == []
+
+
 def test_new_lead_sms_for_existing_lead_updates_never_supersedes():
     h = Harness()
     h.db.tables['tasks'] = [lead()]

@@ -67,6 +67,8 @@ def strip_nick(name):
 
 def _names_match(a, b):
     a, b = strip_nick(a).lower(), strip_nick(b).lower()
+    if len(a.split()) == 1 or len(b.split()) == 1:          # first-name-only ("Mel"): exact only, never fuzzy (Mel != Melanie)
+        return bool(a and b and a == b)
     return bool(a and b and (a == b or SequenceMatcher(None, a, b).ratio() >= NAME_FUZZY))
 
 
@@ -112,6 +114,8 @@ def resolve_pr_contact(name='', phone='', email='', pr_get=None):
             best, best_score = None, 0.0
             for c in search(name.strip()):
                 s = SequenceMatcher(None, name.strip().lower(), (c.get('contactName') or '').strip().lower()).ratio()
+                if len(name.split()) == 1 and s < 1.0:       # first-name-only: exact match only
+                    continue
                 if s >= NAME_FUZZY and s > best_score:
                     best, best_score = c, s
             return best

@@ -149,10 +149,16 @@ def extract_name(sms_text):
     # Case-insensitive on "Appointment" (DSW also sends "Reminder: Upcoming appointment with X at <date>")
     # and tolerant of a 1-letter surname ("Sam D"). Before 2026-10-29 the lowercase form fell through to the
     # new_lead fallback and superseded the worked task (Tracie Burton, 1pm appointment).
-    APPT_NAME = r"[A-Z][A-Za-z']*(?:-[A-Z][A-Za-z']+)?" + NICK + r"(?:\s+[A-Z][A-Za-z']*(?:-[A-Z][A-Za-z']+)?)+"
-    m = re.search(rf'[Aa]ppointment with\s+({APPT_NAME})', sms_text)
+    # Name = everything between "Appointment with" and the DSW tail ("in N minutes", "at <date>", "on <date>", full
+    # stop, end). Deliberately NOT a capitalised-words grammar: that rejected single names ("Tiana" - a contact with
+    # no surname), "&" couples ("Greg & Kathy Cunningham"), ALL-CAPS, nicknames and double spaces, each of which fell to
+    # the unstructured-review alert (2 Nov 2026 Tiana; 29 Oct Sam D / Tracie / Siv).
+    m = re.search(r'(Cancelled:\s*)?[Aa]ppointment with\s+(.+?)\s*(?:\s(?:in\s+\d+\s+minutes?|at\s+\S|on\s+\S)|\.(?:\s|$)|\n|$)',
+                  sms_text or '', re.S)
     if m:
-        return ('appt_reminder', m.group(1).strip())
+        nm = re.sub(r'\s+', ' ', m.group(2)).strip(' .,:;')
+        if nm and len(nm) <= 60 and re.match(r"[A-Za-z]", nm):
+            return ('appt_cancelled' if m.group(1) else 'appt_reminder', nm)
 
     # ── signal: a named message ABOUT an existing lead ("New YES reply from X",
     #    "Follow Up With X", "Cancelled Meeting Follow Up with X"). Updates that
@@ -166,7 +172,8 @@ def extract_name(sms_text):
     # ── new_lead paths ────────────────────────────────────────────────────
     # DSW Energy format: "Hi Rob, Peter Smith has just been assigned to you."
     # Optional job reference (e.g. "Q2021980") may appear between name and "has just been".
-    m = re.search(rf'Hi Rob,\s+({NAME_FULL})(?:\s+[A-Z]\d{{5,}})?\s+has just been assigned', sms_text)
+    # (a single first name is allowed: PipeReply contacts with no surname - "Hi Rob, Tiana has just been assigned")
+    m = re.search(rf'Hi Rob,\s+({NAME_FULL}|{NAME_PART})(?:\s+[A-Z]\d{{5,}})?\s+has just been assigned', sms_text)
     if m:
         return ('new_lead', m.group(1))
     # NEW (2026-07 rollout on +61483988945): "🔥 Hot lead alert! Karina
@@ -360,6 +367,14 @@ def main():
             done.add(key)
             continue
 
+        # ── appt_cancelled: "Cancelled: Appointment with X on <date>" - informational. Never re-fire a reminder for a
+        # cancelled appointment, never create anything.
+        if sms_type == 'appt_cancelled':
+            print(f"[SMS] Appt-cancelled notice for {name!r} - no action")
+            appt_skipped += 1
+            done.add(key)
+            continue
+
         # ── appt_reminder: informational — NEVER call poller.process ─────
         # These are DSW reminders that an already-booked appointment is
         # starting. The lead has already been worked (task exists with
@@ -392,6 +407,14 @@ def main():
             print(f"[SMS] existing-lead lookup failed for {name!r} - NOT processing, will retry next run: {e}")
             continue
         if _res['action'] != 'no_match':
+            new_count += 1
+            done.add(key)
+            continue
+        if len(dd.strip_nick(name).split()) == 1:
+            # First name only ("Hi Rob, Mel has just been assigned"): no existing task matched. Do NOT guess a PipeReply
+            # contact by substring (Mel -> Melissa) - keep the pre-existing review alert for Rob.
+            print(f"[SMS] first-name-only lead {name!r} matches no existing task - review alert (no PipeReply guess)")
+            _raw_fallback_task(text or '')
             new_count += 1
             done.add(key)
             continue
@@ -466,10 +489,14 @@ def _refresh_reminder_for_existing_task(name):
                     .eq('category', 'DSW Solar').eq('status', 'pending')\
                     .ilike('client_name', name).limit(1).execute().data
         if not matches:
-            import dsw_contact_dedup as _dd
-            matches = [t for t in sb.table('tasks').select('id, client_name, reminder_sent_at')
-                       .eq('category', 'DSW Solar').eq('status', 'pending').execute().data
-                       if _dd._names_match(name, t.get('client_name'))][:1]
+            # spelling variants / bracketed nicknames / first-name-only reminders ("Tiana" -> task "Tiana Lee"):
+            # accept only when it resolves to ONE person among pending DSW tasks, otherwise no-op.
+            import dsw_contact_dedup as _dd, dsw_handover as _ho
+            cands = [t for t in sb.table('tasks').select('id, client_name, reminder_sent_at')
+                     .eq('category', 'DSW Solar').eq('status', 'pending').execute().data
+                     if _ho._same_person(name, t.get('client_name'))]
+            if len({_dd.strip_nick(t.get('client_name')).lower() for t in cands}) == 1:
+                matches = cands[:1]
         if not matches:
             print(f"[SMS appt-refresh] no pending task for {name!r} — no-op")
             return
