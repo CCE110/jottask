@@ -2034,6 +2034,17 @@ def signup(referral_code=None):
         timezone = request.form.get('timezone', 'Australia/Brisbane')
         ref_code = request.form.get('referral_code', '').strip().upper()
 
+        # Abuse guard: reject URL/spam names, disposable emails, honeypot hits.
+        # Rejected BEFORE any auth user, profile row, session, or admin email
+        # is created. Generic error on purpose; real reason goes to the log only.
+        from signup_guard import check_signup
+        _ok, _reason = check_signup(full_name, email, request.form.get('website', ''))
+        if not _ok:
+            print(f"Signup blocked ({_reason}) from {request.headers.get('X-Forwarded-For', request.remote_addr)}")
+            return render_template('signup.html',
+                                   error='We could not create that account. Please check your details and try again.',
+                                   referral_code=ref_code), 400
+
         # Look up referrer if referral code provided
         referrer_id = None
         if ref_code:
@@ -2097,14 +2108,15 @@ def signup(referral_code=None):
                 session['timezone'] = timezone
 
                 # Notify admin of new signup
-                referral_info = f"<p><strong>Referred by:</strong> {ref_code}</p>" if ref_code else ""
+                import html as _html
+                referral_info = f"<p><strong>Referred by:</strong> {_html.escape(ref_code)}</p>" if ref_code else ""
                 send_admin_notification(
-                    f"New Signup: {full_name}",
+                    f"New Signup: {full_name[:80].replace(chr(10), ' ')}",
                     f"""
                     <h2>New User Signup</h2>
-                    <p><strong>Name:</strong> {full_name}</p>
-                    <p><strong>Email:</strong> {email}</p>
-                    <p><strong>Timezone:</strong> {timezone}</p>
+                    <p><strong>Name:</strong> {_html.escape(full_name)}</p>
+                    <p><strong>Email:</strong> {_html.escape(email)}</p>
+                    <p><strong>Timezone:</strong> {_html.escape(timezone)}</p>
                     {referral_info}
                     <p><strong>Time:</strong> {datetime.now(pytz.timezone('Australia/Brisbane')).strftime('%Y-%m-%d %H:%M')} AEST</p>
                     <hr>
