@@ -6673,23 +6673,28 @@ def chat_message():
         messages = supabase.table('support_messages').select('*').eq('conversation_id', conversation_id).order('created_at').execute()
 
         # Build conversation history for email
+        # Every user-supplied value is HTML-escaped (same fix as /signup): chat
+        # text and profile names are attacker-controlled and this goes to admin.
+        import html as _html
         history = ""
         for msg in messages.data:
-            sender = msg['sender_type'].upper()
-            history += f"<p><strong>{sender}:</strong> {msg['message']}</p>"
+            sender = _html.escape(str(msg['sender_type']).upper())
+            history += f"<p><strong>{sender}:</strong> {_html.escape(str(msg['message'] or '')).replace(chr(10), '<br>')}</p>"
 
-        # Send admin notification
+        _esc_name = _html.escape(user.data['full_name'] or '')
+        _esc_email = _html.escape(user.data['email'] or '')
+        # Send admin notification (subject is plain text; strip newlines, cap length)
         send_admin_notification(
-            f"Chat Escalation: {user.data['full_name'] or user.data['email']}",
+            f"Chat Escalation: {(user.data['full_name'] or user.data['email'] or '')[:80].replace(chr(10), ' ').replace(chr(13), ' ')}",
             f"""
             <h2>Support Chat Escalated</h2>
-            <p><strong>User:</strong> {user.data['full_name']} ({user.data['email']})</p>
+            <p><strong>User:</strong> {_esc_name} ({_esc_email})</p>
             <p><strong>Time:</strong> {datetime.now(pytz.timezone('Australia/Brisbane')).strftime('%Y-%m-%d %H:%M')} AEST</p>
             <hr>
             <h3>Conversation History:</h3>
             {history}
             <hr>
-            <p><a href="https://www.jottask.app/admin/chats/{conversation_id}">View in Admin</a></p>
+            <p><a href="https://www.jottask.app/admin/chats/{_html.escape(str(conversation_id))}">View in Admin</a></p>
             """
         )
 
