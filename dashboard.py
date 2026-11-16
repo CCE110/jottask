@@ -21,6 +21,7 @@ app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
 # Register blueprints
 from auth import login_required, admin_required
 from email_utils import send_email
+from html_safe import esc, esc_br, plain_subject
 from billing import billing_bp
 from onboarding import onboarding_bp
 from email_setup import email_setup_bp
@@ -6884,7 +6885,7 @@ def admin_dashboard():
                 <div class="card-header">Escalated Support Chats</div>
                 <table>
                     <tr><th>User</th><th>Email</th><th>Escalated</th><th>Action</th></tr>
-                    {''.join(f"<tr><td>{c.get('users', {}).get('full_name', 'N/A')}</td><td>{c.get('users', {}).get('email', 'N/A')}</td><td>{c.get('escalated_at', '')[:16] if c.get('escalated_at') else 'N/A'}</td><td><a href='/admin/chats/{c['id']}'>View</a></td></tr>" for c in (escalated.data or [])) or '<tr><td colspan="4" style="text-align: center; color: #9CA3AF;">No escalated chats</td></tr>'}
+                    {''.join(f"<tr><td>{esc((c.get('users') or {}).get('full_name') or 'N/A')}</td><td>{esc((c.get('users') or {}).get('email') or 'N/A')}</td><td>{esc(c.get('escalated_at', '')[:16]) if c.get('escalated_at') else 'N/A'}</td><td><a href='/admin/chats/{esc(c['id'])}'>View</a></td></tr>" for c in (escalated.data or [])) or '<tr><td colspan="4" style="text-align: center; color: #9CA3AF;">No escalated chats</td></tr>'}
                 </table>
             </div>
 
@@ -6892,7 +6893,7 @@ def admin_dashboard():
                 <div class="card-header">Recent Signups</div>
                 <table>
                     <tr><th>Name</th><th>Email</th><th>Status</th><th>Joined</th></tr>
-                    {''.join(f"<tr><td>{u.get('full_name', 'N/A')}</td><td>{u.get('email')}</td><td><span class='badge badge-{u.get('subscription_status', 'trial')}'>{u.get('subscription_status', 'trial')}</span></td><td>{u.get('created_at', '')[:10] if u.get('created_at') else 'N/A'}</td></tr>" for u in (users.data or []))}
+                    {''.join(f"<tr><td>{esc(u.get('full_name') or 'N/A')}</td><td>{esc(u.get('email'))}</td><td><span class='badge badge-{esc(u.get('subscription_status') or 'trial')}'>{esc(u.get('subscription_status') or 'trial')}</span></td><td>{esc(u.get('created_at', '')[:10]) if u.get('created_at') else 'N/A'}</td></tr>" for u in (users.data or []))}
                 </table>
             </div>
         </main>
@@ -7007,12 +7008,15 @@ def admin_chat_view(conversation_id):
         .order('created_at')\
         .execute()
 
-    user_info = conv.data.get('users', {})
+    user_info = conv.data.get('users') or {}
 
+    # Stored-XSS guard: every field below is user-controlled (chat text, profile
+    # name/email, ids) and this page renders in the admin's authenticated browser.
     messages_html = ""
     for msg in (messages.data or []):
-        sender_class = msg['sender_type']
-        messages_html += f"<div class='message {sender_class}'><strong>{msg['sender_type'].upper()}</strong><p>{msg['message']}</p><small>{msg['created_at'][:16]}</small></div>"
+        sender_class = esc(msg['sender_type'])
+        messages_html += (f"<div class='message {sender_class}'><strong>{esc(str(msg['sender_type']).upper())}</strong>"
+                          f"<p>{esc_br(msg['message'])}</p><small>{esc(str(msg['created_at'])[:16])}</small></div>")
 
     admin_html = f"""
     <!DOCTYPE html>
@@ -7042,8 +7046,8 @@ def admin_chat_view(conversation_id):
         </nav>
         <main class="main">
             <div class="card">
-                <h2>Chat with {user_info.get('full_name', 'User')}</h2>
-                <p style="color: #6B7280;">Email: {user_info.get('email', 'N/A')} | Status: {conv.data.get('status', 'open')}</p>
+                <h2>Chat with {esc(user_info.get('full_name') or 'User')}</h2>
+                <p style="color: #6B7280;">Email: {esc(user_info.get('email') or 'N/A')} | Status: {esc(conv.data.get('status') or 'open')}</p>
             </div>
 
             <div class="card">
@@ -7052,7 +7056,7 @@ def admin_chat_view(conversation_id):
             </div>
 
             <div class="card">
-                <form method="POST" action="/admin/chats/{conversation_id}/reply" class="reply-form">
+                <form method="POST" action="/admin/chats/{esc(conversation_id)}/reply" class="reply-form">
                     <input type="text" name="message" placeholder="Type your reply..." required>
                     <button type="submit">Send Reply</button>
                 </form>
