@@ -1334,6 +1334,7 @@ def send_email(name, phone, addr, src, summary, crm_url, os_url, task_id=None, l
         header_title = 'New DSW Lead'
         header_bg = '#1e40af'
     import urllib.parse
+    from html_safe import esc as _esc  # lead fields come from forms/SMS/CRM: attacker-influenceable
     maps_url = "https://maps.google.com/?q=" + urllib.parse.quote(addr)
     AU = "https://www.jottask.app/action"
     # Initialize ALL action-button vars up front. Each is reassigned inside
@@ -1382,7 +1383,7 @@ def send_email(name, phone, addr, src, summary, crm_url, os_url, task_id=None, l
         ]
         sh = "".join(f'<a href="{AU}?action=set_status&status={s}&task_id={task_id}" style="display:inline-block;padding:8px 12px;background:{col};color:white;text-decoration:none;border-radius:8px;font-weight:600;font-size:12px">{l}</a>' for l,s,col in statuses)
         sbtns = f'<div style="margin:8px 0;display:flex;flex-wrap:wrap;gap:6px">{sh}</div>'
-    os_btn = '<a href="'+os_url+'" style="display:inline-block;background:#f59e0b;color:white;padding:10px 16px;border-radius:8px;text-decoration:none;font-weight:600;font-size:13px">&#9728;&#65039; OpenSolar</a>' if os_url else ""
+    os_btn = '<a href="'+_esc(os_url)+'" style="display:inline-block;background:#f59e0b;color:white;padding:10px 16px;border-radius:8px;text-decoration:none;font-weight:600;font-size:13px">&#9728;&#65039; OpenSolar</a>' if os_url else ""
     badge_text = STATUS_LABELS.get(lead_status, '🔵 NEW LEAD') if lead_status else '🔵 NEW LEAD'
 
     # ── Lead tag pills ──────────────────────────────────────────────────────
@@ -1424,15 +1425,15 @@ def send_email(name, phone, addr, src, summary, crm_url, os_url, task_id=None, l
         _type = appointment.get('type') or 'Appointment'
         _aphone = appointment.get('phone') or phone or ''
         _call_btn = (
-            f'<a href="tel:{_aphone}" style="display:inline-block;background:rgba(255,255,255,0.25);'
+            f'<a href="tel:{_esc(_aphone)}" style="display:inline-block;background:rgba(255,255,255,0.25);'
             f'color:white;padding:10px 18px;border-radius:8px;text-decoration:none;font-weight:700;'
-            f'font-size:14px;margin-top:10px">📞 Call {_aphone}</a>'
+            f'font-size:14px;margin-top:10px">📞 Call {_esc(_aphone)}</a>'
         ) if _aphone else ''
         appt_banner = (
             '<div style="background:#047857;color:white;padding:16px 20px;border-bottom:2px solid #065f46">'
             '<div style="font-size:11px;font-weight:700;letter-spacing:1px;opacity:0.9">📅 APPOINTMENT BOOKED</div>'
-            f'<div style="font-size:18px;font-weight:700;margin-top:4px">{_when}</div>'
-            f'<div style="font-size:14px;opacity:0.95;margin-top:2px">{_type}</div>'
+            f'<div style="font-size:18px;font-weight:700;margin-top:4px">{_esc(_when)}</div>'
+            f'<div style="font-size:14px;opacity:0.95;margin-top:2px">{_esc(_type)}</div>'
             f'{_call_btn}'
             '</div>'
         )
@@ -1443,18 +1444,18 @@ def send_email(name, phone, addr, src, summary, crm_url, os_url, task_id=None, l
         '<h2 style="margin:0">'+header_title+'</h2>'
         '<span style="background:rgba(255,255,255,0.25);padding:4px 14px;border-radius:20px;font-size:12px;font-weight:700;letter-spacing:0.5px">'+badge_text+'</span>'
         '</div>'
-        '<p style="opacity:.8;margin:4px 0 0">'+now+' &middot; '+src+'</p>'
-        +('<p style="margin:6px 0 0"><span style="display:inline-block;background:rgba(255,255,255,0.18);padding:4px 12px;border-radius:16px;font-size:12px;font-weight:600">Lead Source: '+source_badge_text+'</span></p>' if source_badge_text else '')
+        '<p style="opacity:.8;margin:4px 0 0">'+now+' &middot; '+_esc(src)+'</p>'
+        +('<p style="margin:6px 0 0"><span style="display:inline-block;background:rgba(255,255,255,0.18);padding:4px 12px;border-radius:16px;font-size:12px;font-weight:600">Lead Source: '+_esc(source_badge_text)+'</span></p>' if source_badge_text else '')
         +tag_pills_html
         +'</div>'
         +appt_banner
         +'<div style="padding:20px;border:1px solid #e2e8f0">'
-        '<h3 style="color:#1e40af;margin-top:0">'+name+'</h3>'
-        +('<p><a href="mailto:'+email+'" style="color:#1e40af;text-decoration:none">✉️ '+email+'</a></p>' if email else '')
-        +'<p><a href="'+maps_url+'" style="color:#1e40af;text-decoration:none">'+addr+'</a></p>'
+        '<h3 style="color:#1e40af;margin-top:0">'+_esc(name)+'</h3>'
+        +('<p><a href="mailto:'+_esc(email)+'" style="color:#1e40af;text-decoration:none">✉️ '+_esc(email)+'</a></p>' if email else '')
+        +'<p><a href="'+_esc(maps_url)+'" style="color:#1e40af;text-decoration:none">'+_esc(addr)+'</a></p>'
         '<div style="margin:12px 0;display:flex;flex-direction:row;gap:8px;flex-wrap:nowrap">'
-        '<a href="tel:'+phone+'" style="display:inline-block;background:#10B981;color:white;padding:10px 16px;border-radius:8px;text-decoration:none;font-weight:600;font-size:13px">Call '+phone+'</a>'
-        '<a href="'+crm_url+'" style="display:inline-block;background:#1e40af;color:white;padding:10px 16px;border-radius:8px;text-decoration:none;font-weight:600;font-size:13px">Pipereply</a>'
+        '<a href="tel:'+_esc(phone)+'" style="display:inline-block;background:#10B981;color:white;padding:10px 16px;border-radius:8px;text-decoration:none;font-weight:600;font-size:13px">Call '+_esc(phone)+'</a>'
+        '<a href="'+_esc(crm_url)+'" style="display:inline-block;background:#1e40af;color:white;padding:10px 16px;border-radius:8px;text-decoration:none;font-weight:600;font-size:13px">Pipereply</a>'
         +os_btn+'</div>'
         # ── Action buttons FIRST (2026-09-15) — reminder emails are worked
         # by clicking a button, not by reading the summary. Buttons up top
@@ -1468,7 +1469,7 @@ def send_email(name, phone, addr, src, summary, crm_url, os_url, task_id=None, l
         f'{sbtns}'
         f'{no_reply_btn}'
         '<hr style="border:1px solid #e2e8f0"><h4>Lead Summary</h4>'
-        '<div style="background:#f8fafc;padding:15px;border-radius:6px;white-space:pre-line;font-size:14px;line-height:1.6">'+summary+'</div>'
+        '<div style="background:#f8fafc;padding:15px;border-radius:6px;white-space:pre-line;font-size:14px;line-height:1.6">'+_esc(summary)+'</div>'
         '</div>'
         '<div style="background:'+header_bg+';padding:12px;border-radius:0 0 8px 8px;text-align:center">'
         + (f'<a href="https://www.jottask.app/task/{task_id}" style="color:white;font-weight:bold;text-decoration:none">Open Jottask</a>'
@@ -1503,7 +1504,8 @@ def send_email(name, phone, addr, src, summary, crm_url, os_url, task_id=None, l
             email_subject = (f"{lead_prefix}: {name} - {badge_text} | {brief_note}{short}"
                              if brief_note else f"{lead_prefix}: {name} - {badge_text}{short}")
         from email_utils import send_email as _send_email
-        ok, err = _send_email(NOTIFY, email_subject, html, category='dsw_lead', task_id=task_id)
+        from html_safe import plain_subject as _plain_subject
+        ok, err = _send_email(NOTIFY, _plain_subject(email_subject, limit=200), html, category='dsw_lead', task_id=task_id)
         if ok:
             print("Email sent:", name)
         else:

@@ -10,6 +10,7 @@ from datetime import datetime, timedelta
 import pytz
 from supabase import create_client, Client
 from email_utils import send_email
+from html_safe import esc, plain_subject
 
 # Used by send_daily_summary to extract the TRUE appointment time from an
 # appointment-aware task title like '📞 Call Andrew Tan — appt 2:30pm Mon 8 Jun'.
@@ -280,7 +281,7 @@ def generate_summary_email_html(user_name, user_timezone, tasks_summary, project
     now = datetime.now(tz)
     date_str = now.strftime('%A, %B %d, %Y')
 
-    greeting = f"Good morning, {user_name}!" if user_name else "Good morning!"
+    greeting = f"Good morning, {esc(user_name)}!" if user_name else "Good morning!"
 
     def _render_section(heading, heading_color, bg_color, title_color, meta_color, tasks):
         if not tasks:
@@ -293,7 +294,7 @@ def generate_summary_email_html(user_name, user_timezone, tasks_summary, project
         for cat, items in _group_tasks_by_category(tasks).items():
             html += (
                 f'<div style="font-size:11px;font-weight:700;letter-spacing:0.5px;'
-                f'color:#6B7280;margin:10px 0 6px;">{cat.upper()} — {len(items)}</div>'
+                f'color:#6B7280;margin:10px 0 6px;">{esc(str(cat).upper())} — {len(items)}</div>'
             )
             for task in items:
                 due_time = (task.get('due_time') or '')[:5]
@@ -310,9 +311,9 @@ def generate_summary_email_html(user_name, user_timezone, tasks_summary, project
                 html += (
                     f'<div style="padding:10px 12px;background:{bg_color};'
                     f'border-radius:8px;margin-bottom:6px;">'
-                    f'<strong style="color:{title_color};">{task["title"]}</strong>'
+                    f'<strong style="color:{title_color};">{esc(task.get("title"))}</strong>'
                     f'<div style="font-size:12px;color:{meta_color};">'
-                    f'{" · ".join(meta_bits)}</div></div>'
+                    f'{" · ".join(esc(b) for b in meta_bits)}</div></div>'
                 )
         html += '</div>'
         return html
@@ -344,8 +345,8 @@ def generate_summary_email_html(user_name, user_timezone, tasks_summary, project
             <div style="margin-bottom: 16px;">
                 <div style="display: flex; justify-content: space-between; margin-bottom: 4px;">
                     <span style="font-weight: 500; color: #374151;">
-                        <span style="display: inline-block; width: 12px; height: 12px; border-radius: 3px; background: {project['color']}; margin-right: 8px;"></span>
-                        {project['name']}
+                        <span style="display: inline-block; width: 12px; height: 12px; border-radius: 3px; background: {esc(project['color'])}; margin-right: 8px;"></span>
+                        {esc(project['name'])}
                     </span>
                     <span style="color: #6B7280; font-size: 14px;">{project['completed']}/{project['total']} ({project['progress']}%)</span>
                 </div>
@@ -488,7 +489,9 @@ def generate_reminder_email_html(task, due_time_str, user_name, is_overdue=False
     if is_overdue:
         color = '#DC2626'  # Red for overdue
 
-    client_line = f'<div style="font-size: 14px; color: #6B7280;">Client: {client_name}</div>' if client_name else ''
+    # title / client_name derive from inbound email, SMS and AI parsing, so they
+    # are attacker-influenceable: escape before they go into HTML.
+    client_line = f'<div style="font-size: 14px; color: #6B7280;">Client: {esc(client_name)}</div>' if client_name else ''
 
     if is_overdue:
         heading = 'Overdue Task'
@@ -513,7 +516,7 @@ def generate_reminder_email_html(task, due_time_str, user_name, is_overdue=False
         </div>
 
         <div style="background: white; padding: 32px; border-radius: 0 0 16px 16px; box-shadow: 0 4px 6px rgba(0,0,0,0.05);">
-            <a href="https://www.jottask.app/tasks/{task_id}/edit" style="color: #111827; text-decoration: none;"><h2 style="color: #111827; margin: 0 0 8px 0; font-size: 20px;">{title}</h2></a>
+            <a href="https://www.jottask.app/tasks/{esc(task_id)}/edit" style="color: #111827; text-decoration: none;"><h2 style="color: #111827; margin: 0 0 8px 0; font-size: 20px;">{esc(title)}</h2></a>
             {client_line}
 
             <div style="margin-top: 24px; display: flex; gap: 10px; flex-wrap: wrap;">
@@ -756,10 +759,10 @@ def check_and_send_reminders():
                 # ── Build and send the email ──
                 recipient = _resolve_recipient(user)
                 if is_overdue:
-                    subject = f"Overdue: {task['title'][:50]} - was due {display_time}"
+                    subject = plain_subject(f"Overdue: {task['title'][:50]} - was due {display_time}")
                     print(f"   📨 OVERDUE: '{task['title'][:45]}' -> {recipient}")
                 else:
-                    subject = f"Reminder: {task['title'][:50]} - due {display_time}"
+                    subject = plain_subject(f"Reminder: {task['title'][:50]} - due {display_time}")
                     print(f"   📨 Reminder: '{task['title'][:45]}' -> {recipient}")
 
                 # ── SEND FIRST, then mark ──
