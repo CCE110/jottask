@@ -1515,8 +1515,12 @@ Rules:
             delay_1hour_url = f"{action_base}?action=delay_1hour&task_id={task_id}"
             delay_1day_url = f"{action_base}?action=delay_1day&task_id={task_id}"
 
-            greeting = f"Hi {user_name}," if user_name else "Hi,"
-            due_display = f"{due_date} at {due_time[:5]}" if due_time else due_date
+            from html_safe import esc, plain_subject
+            greeting = f"Hi {esc(user_name)}," if user_name else "Hi,"
+            due_display = esc(f"{due_date} at {due_time[:5]}" if due_time else due_date)
+            # task title comes from an inbound email via AI parsing: escape for HTML
+            subject_title = task_title
+            task_title = esc(task_title)
 
             html = f"""
             <html>
@@ -1549,7 +1553,7 @@ Rules:
 
             success, error = send_email(
                 user_email,
-                f"Task Created: {task_title}",
+                plain_subject(f"Task Created: {subject_title}"),
                 html,
                 category='confirmation',
                 task_id=task_id,
@@ -1569,6 +1573,10 @@ Rules:
 
     def send_approval_email(self, email_subject, email_sender, actions, context, user_context=None):
         """Send approval email with action buttons for Tier 2 actions"""
+
+        # Everything below that originates in the inbound email (sender, subject,
+        # AI summary, action fields) is attacker-controlled: escape before HTML.
+        from html_safe import esc, plain_subject
 
         # Determine recipient and company name
         if user_context:
@@ -1599,11 +1607,11 @@ Rules:
             action_items_html += f"""
             <div style="border: 1px solid #ddd; border-radius: 8px; padding: 16px; margin: 12px 0; background: #fafafa;">
                 <div style="font-size: 14px; color: #666; margin-bottom: 4px;">
-                    {action.get('action_type', '').replace('_', ' ').upper()}
-                    {' — ' + action.get('customer_name', '') if action.get('customer_name') else ''}
+                    {esc(str(action.get('action_type', '')).replace('_', ' ').upper())}
+                    {' — ' + esc(action.get('customer_name', '')) if action.get('customer_name') else ''}
                 </div>
                 <div style="font-size: 16px; font-weight: bold; margin-bottom: 8px;">
-                    {action['title']}
+                    {esc(action['title'])}
                 </div>
                 <div style="font-size: 14px; color: #444; margin-bottom: 12px;">
                     {action_desc}
@@ -1625,9 +1633,9 @@ Rules:
 
             <div style="padding: 20px; border: 1px solid #ddd; border-top: none; border-radius: 0 0 8px 8px;">
                 <div style="font-size: 14px; color: #666; margin-bottom: 16px;">
-                    <strong>From:</strong> {email_sender}<br>
-                    <strong>Subject:</strong> {email_subject}<br>
-                    <strong>Summary:</strong> {context}
+                    <strong>From:</strong> {esc(email_sender)}<br>
+                    <strong>Subject:</strong> {esc(email_subject)}<br>
+                    <strong>Summary:</strong> {esc(context)}
                 </div>
 
                 <h3 style="font-size: 16px; color: #333; margin-bottom: 8px;">
@@ -1637,7 +1645,7 @@ Rules:
                 {action_items_html}
 
                 <div style="font-size: 12px; color: #999; margin-top: 20px; text-align: center;">
-                    {user_name}'s AI Task Manager &bull; {company_name}
+                    {esc(user_name)}'s AI Task Manager &bull; {esc(company_name)}
                 </div>
             </div>
         </div>
@@ -1645,7 +1653,7 @@ Rules:
 
         # Send via email_utils (retries + monitoring)
         from email_utils import send_email
-        subject = f"Jottask Approval: {' '.join(email_subject.split())}"
+        subject = plain_subject(f"Jottask Approval: {email_subject}", limit=200)
         success, error = send_email(
             recipient_email, subject, email_html,
             category='approval',
@@ -1658,28 +1666,31 @@ Rules:
 
     def _format_action_description(self, action):
         """Format a human-readable description for the approval email"""
+        # Returns HTML for the approval email. The only markup is our own <em>;
+        # every value (all from the inbound email / AI output) is escaped.
+        from html_safe import esc
         action_type = action.get('action_type', '')
 
         if action_type == 'update_crm':
             crm_notes = action.get('crm_notes', 'No notes specified')
-            return f"Add to CRM notes: <em>\"{crm_notes}\"</em>"
+            return f"Add to CRM notes: <em>\"{esc(crm_notes)}\"</em>"
 
         elif action_type == 'send_email':
-            return f"Draft and send email to {action.get('customer_name', 'customer')}: {action.get('description', '')}"
+            return f"Draft and send email to {esc(action.get('customer_name', 'customer'))}: {esc(action.get('description', ''))}"
 
         elif action_type == 'create_calendar_event':
             details = action.get('calendar_details', '')
             due = action.get('due_date', 'TBD')
             time = action.get('due_time', '')
-            return f"Create calendar event on {due}{' at ' + time if time else ''}: {details}"
+            return f"Create calendar event on {esc(due)}{' at ' + esc(time) if time else ''}: {esc(details)}"
 
         elif action_type == 'change_deal_status':
-            return f"Change deal status for {action.get('customer_name', 'customer')}: {action.get('description', '')}"
+            return f"Change deal status for {esc(action.get('customer_name', 'customer'))}: {esc(action.get('description', ''))}"
 
         elif action_type == 'delete_task':
-            return f"Delete task: {action.get('description', '')}"
+            return f"Delete task: {esc(action.get('description', ''))}"
 
-        return action.get('description', '')
+        return esc(action.get('description', ''))
 
     def _generate_action_token(self, action):
         """Generate a unique token for an action approval"""
@@ -2280,16 +2291,17 @@ def handle_dsw_forward(subject, body_text, sender_email):
     def notify_failure(reason):
         try:
             from email_utils import send_email
+            from html_safe import esc, plain_subject
             html = f"""
 <div style="font-family:sans-serif;max-width:600px;margin:0 auto">
   <p style="color:#b91c1c;font-weight:bold;">&#9888; Jottask could not process your lead email</p>
-  <p><strong>Subject:</strong> {subject}</p>
-  <p><strong>Reason:</strong> {reason}</p>
+  <p><strong>Subject:</strong> {esc(subject)}</p>
+  <p><strong>Reason:</strong> {esc(reason)}</p>
   <p>Please forward the email again or create the lead manually in Jottask.</p>
   <p style="color:#6b7280;font-size:12px;">— Jottask Automation</p>
 </div>"""
             send_email('rob.l@directsolarwholesaler.com.au',
-                       f'⚠️ Lead not processed: {(subject or "")[:60]}',
+                       plain_subject(f'⚠️ Lead not processed: {(subject or "")[:60]}'),
                        html, category='dsw_forward_failure')
             print(f"[DSW FORWARD] Failure alert sent to Rob: {reason}")
         except Exception as e:
@@ -3169,6 +3181,7 @@ def handle_dsw_reply(subject, body_text, sender_email):
     # ── Send confirmation email ───────────────────────────────────────────
     try:
         from email_utils import send_email
+        from html_safe import esc, plain_subject
         # Extract the full MY NOTES block from the saved description
         NOTES_SEP = 'MY NOTES:'
         if NOTES_SEP in new_desc:
@@ -3178,16 +3191,16 @@ def handle_dsw_reply(subject, body_text, sender_email):
         html = f"""
 <div style="font-family:sans-serif;max-width:560px;margin:0 auto">
   <div style="background:#1e40af;color:white;padding:16px 20px;border-radius:8px 8px 0 0">
-    <strong>✅ Notes updated for {name}</strong>
+    <strong>✅ Notes updated for {esc(name)}</strong>
   </div>
   <div style="padding:16px 20px;border:1px solid #e2e8f0;border-radius:0 0 8px 8px">
-    <p style="margin:0 0 12px;color:#6b7280;font-size:13px">Saved to Jottask + Pipereply · {ts}</p>
+    <p style="margin:0 0 12px;color:#6b7280;font-size:13px">Saved to Jottask + Pipereply · {esc(ts)}</p>
     <p style="margin:0 0 6px;font-weight:600;font-size:13px;color:#374151">YOUR CURRENT NOTES:</p>
     <div style="background:#f8fafc;padding:12px;border-radius:6px;
        font-size:13px;white-space:pre-wrap;color:#374151;line-height:1.6;
-       border-left:3px solid #1e40af">{full_saved_notes}</div>
+       border-left:3px solid #1e40af">{esc(full_saved_notes)}</div>
     <p style="margin-top:16px">
-      <a href="https://www.jottask.app/task/{tid}"
+      <a href="https://www.jottask.app/task/{esc(tid)}"
          style="background:#1e40af;color:white;padding:9px 16px;border-radius:7px;
                 text-decoration:none;font-weight:600;font-size:13px">Open Lead Page</a>
     </p>
@@ -3197,7 +3210,7 @@ def handle_dsw_reply(subject, body_text, sender_email):
   </div>
 </div>"""
         send_email('rob.l@directsolarwholesaler.com.au',
-                   f'✅ Notes updated for {name}', html,
+                   plain_subject(f'✅ Notes updated for {name}'), html,
                    category='dsw_reply_confirm')
         print(f'[DSW REPLY] Confirmation email sent for {name}')
     except Exception as e:

@@ -274,8 +274,10 @@ def send_task_confirmation_email(user_email, task_title, due_date, due_time, tas
     delay_next_monday_9am_url = f"{action_base}?action=delay_next_monday_9am&task_id={task_id}"
     reschedule_url = f"{action_base}?action=delay_custom&task_id={task_id}"
 
-    greeting = f"Hi {user_name}," if user_name else "Hi,"
-    due_display = f"{due_date} at {due_time[:5]}" if due_time else due_date
+    greeting = f"Hi {esc(user_name)}," if user_name else "Hi,"
+    due_display = esc(f"{due_date} at {due_time[:5]}" if due_time else due_date)
+    subject_title = task_title      # plain text for the Subject header
+    task_title = esc(task_title)    # HTML-escaped for the body
 
     html_content = f"""
     <html>
@@ -308,7 +310,7 @@ def send_task_confirmation_email(user_email, task_title, due_date, due_time, tas
     </html>
     """
 
-    success, error = send_email(user_email, f"Task Created: {task_title}", html_content,
+    success, error = send_email(user_email, plain_subject(f"Task Created: {subject_title}"), html_content,
                                category='confirmation', task_id=task_id)
 
     if success:
@@ -7124,10 +7126,10 @@ def admin_chat_reply(conversation_id):
 
         # Send email to user about admin reply
         html = f"""
-        <h2>Hi {user_name},</h2>
+        <h2>Hi {esc(user_name)},</h2>
         <p>We've replied to your support request:</p>
         <blockquote style="background: #F3F4F6; padding: 16px; border-radius: 8px; margin: 16px 0;">
-            {message}
+            {esc_br(message)}
         </blockquote>
         <p>You can continue the conversation in the chat widget on your <a href="https://www.jottask.app/dashboard">Jottask dashboard</a>.</p>
         <p>Best,<br>Jottask Support</p>
@@ -7190,7 +7192,7 @@ def admin_resend_reminders():
             continue
 
         display_time = task.get('due_time', 'today')
-        subject = f"Overdue: {task['title'][:50]} - due {task.get('due_date')} {display_time or ''}"
+        subject = plain_subject(f"Overdue: {task['title'][:50]} - due {task.get('due_date')} {display_time or ''}")
         html_content = generate_reminder_email_html(task, display_time or 'today', user.get('full_name', ''), is_overdue=True)
 
         # Send to primary email only

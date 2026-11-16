@@ -1073,6 +1073,12 @@ def send_parent_link(parent_id):
     magic_url   = f"{app_url}/p/{token}"
     webcal_url  = magic_url.replace('https://', 'webcal://').replace('http://', 'webcal://')
 
+    # Names/links are user-entered (and sent to a third-party parent): escape for HTML.
+    from html_safe import esc, plain_subject
+    raw_squad_name, raw_player_name = squad_name, player_name
+    squad_name, parent_name, player_name = esc(squad_name), esc(parent_name), esc(player_name)
+    magic_url, webcal_url = esc(magic_url), esc(webcal_url)
+
     html = f"""
     <html><body style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
                         max-width:560px;margin:0 auto;padding:20px;background:#f0fdf4;">
@@ -1107,7 +1113,7 @@ def send_parent_link(parent_id):
 
     success, error = send_email(
         email,
-        f"{squad_name} — {player_name}'s schedule link",
+        plain_subject(f"{raw_squad_name} — {raw_player_name}'s schedule link"),
         html,
         category='squad_parent_link'
     )

@@ -308,6 +308,7 @@ def build_install_order_email(
     Returns:
         HTML email string
     """
+    from html_safe import esc  # address / customer / project fields come from OpenSolar + CRM text
     customer_display = crm_context.customer_name or 'Unknown Customer'
     has_placeholders = '[CUSTOMER NAME]' in whatsapp_draft or '[EQUIPMENT' in whatsapp_draft
 
@@ -328,13 +329,13 @@ def build_install_order_email(
     return f"""
     <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; max-width: 600px; margin: 0 auto;">
         <div style="background: #1e3a5f; color: white; padding: 16px 20px; border-radius: 8px 8px 0 0;">
-            <h2 style="margin: 0; font-size: 18px;">Install Order — {notification.address}</h2>
+            <h2 style="margin: 0; font-size: 18px;">Install Order — {esc(notification.address)}</h2>
         </div>
 
         <div style="padding: 20px; border: 1px solid #ddd; border-top: none; border-radius: 0 0 8px 8px;">
             <div style="font-size: 14px; color: #666; margin-bottom: 16px;">
-                <strong>Customer:</strong> {customer_display}<br>
-                <strong>Project ID:</strong> {notification.project_id}<br>
+                <strong>Customer:</strong> {esc(customer_display)}<br>
+                <strong>Project ID:</strong> {esc(notification.project_id)}<br>
                 <strong>Source:</strong> OpenSolar — Customer Accepted Online Proposal
             </div>
 
@@ -350,14 +351,14 @@ def build_install_order_email(
             </div>
 
             <div style="text-align: center; margin: 20px 0;">
-                <a href="{notification.project_link}"
+                <a href="{esc(notification.project_link)}"
                    style="display: inline-block; padding: 12px 28px; background: #f97316; color: white; text-decoration: none; border-radius: 8px; font-weight: bold; font-size: 15px;">
                     Open in OpenSolar
                 </a>
             </div>
 
             <div style="font-size: 12px; color: #999; margin-top: 20px; text-align: center;">
-                {user_name}'s AI Task Manager &bull; jottask.app
+                {esc(user_name)}'s AI Task Manager &bull; jottask.app
             </div>
         </div>
     </div>
@@ -381,11 +382,12 @@ def send_install_order_email(
         user_name: User's display name
     """
     from email_utils import send_email
+    from html_safe import plain_subject
 
     html = build_install_order_email(notification, whatsapp_draft, crm_context, user_name)
 
     customer_display = crm_context.customer_name or notification.address
-    subject = f"Install Order: {customer_display} — {notification.address}"
+    subject = plain_subject(f"Install Order: {customer_display} — {notification.address}", limit=200)
 
     success, error = send_email(
         recipient_email, subject, html,

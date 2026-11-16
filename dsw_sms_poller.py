@@ -280,6 +280,8 @@ def _raw_fallback_task(raw_text, extracted_name=None, contact=None, stub=False):
         print(f'[SMS raw-fallback] task created: {tid}')
 
         # Fire the amber "review this" email so the SMS is surfaced.
+        # `clean` is raw inbound SMS text: attacker-controlled, so escape it.
+        from html_safe import esc as _esc, plain_subject as _plain_subject
         html = (
             '<div style="font-family:-apple-system,BlinkMacSystemFont,sans-serif;max-width:620px">'
             '<div style="background:#b45309;color:white;padding:20px;border-radius:8px 8px 0 0">'
@@ -293,14 +295,14 @@ def _raw_fallback_task(raw_text, extracted_name=None, contact=None, stub=False):
             'proper task, or ignore.</p>'
             '<div style="font-size:12px;font-weight:700;color:#6b7280;letter-spacing:.3px;margin:16px 0 6px">RAW SMS</div>'
             f'<pre style="background:#f8fafc;padding:12px;border-radius:6px;'
-            f'white-space:pre-wrap;font-size:14px;color:#111;margin:0">{clean}</pre>'
-            f'<div style="margin-top:16px"><a href="https://www.jottask.app/task/{tid}" '
+            f'white-space:pre-wrap;font-size:14px;color:#111;margin:0">{_esc(clean)}</pre>'
+            f'<div style="margin-top:16px"><a href="https://www.jottask.app/task/{_esc(tid)}" '
             'style="background:#1e40af;color:white;padding:10px 18px;border-radius:6px;'
             'text-decoration:none;font-weight:600;font-size:14px;display:inline-block">Open task in Jottask</a></div>'
             '</div></div>'
         )
         ok, err = send_email('rob.l@directsolarwholesaler.com.au',
-                             f'⚠ Unstructured DSW SMS — {summary[:40]}',
+                             _plain_subject(f'⚠ Unstructured DSW SMS — {summary[:40]}'),
                              html, category='reminder', task_id=tid)
         if not ok:
             print(f'[SMS raw-fallback] email failed: {err}')
