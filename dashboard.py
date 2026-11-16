@@ -2937,6 +2937,16 @@ def update_profile():
         alternate_emails_str = request.form.get('alternate_emails', '')
         alternate_emails = [e.strip().lower() for e in alternate_emails_str.split(',') if e.strip()]
 
+    # Same name rules as signup: otherwise a clean signup can be renamed to scam
+    # text afterwards and that name is shown in admin pages and outbound emails.
+    _new_name = request.form.get('full_name')
+    if _new_name:
+        from signup_guard import check_name
+        _name_ok, _name_why = check_name(_new_name)
+        if not _name_ok:
+            print(f"Profile name rejected ({_name_why}) for user {user_id}")
+            return redirect(url_for('settings', message='That name is not allowed. Please use your real name.'))
+
     update_data = {
         'full_name': request.form.get('full_name'),
         'company_name': request.form.get('company_name'),
@@ -2974,7 +2984,8 @@ def send_referral_invite():
     user_id = session['user_id']
     invited_email = request.form.get('invited_email', '').strip().lower()
 
-    if not invited_email or '@' not in invited_email:
+    from signup_guard import is_valid_email, is_disposable_email, check_name
+    if not is_valid_email(invited_email) or is_disposable_email(invited_email):
         return redirect(url_for('settings', message='Please enter a valid email'))
 
     # Get referrer info
@@ -2982,7 +2993,23 @@ def send_referral_invite():
     if not user.data or not user.data.get('referral_code'):
         return redirect(url_for('settings', message='Referral code not found'))
 
-    referrer_name = user.data.get('full_name', 'A Jottask user')
+    # Anti-relay: this emails an address the user typed, from our domain. Cap it
+    # per user per 24h. Fails CLOSED: if we can't count, we don't send.
+    try:
+        _cutoff = (datetime.now(pytz.UTC) - timedelta(hours=24)).isoformat()
+        _recent = supabase.table('referral_invites').select('id', count='exact') \
+            .eq('referrer_id', user_id).gte('sent_at', _cutoff).execute()
+        if (_recent.count or 0) >= 10:
+            return redirect(url_for('settings', message='Daily invite limit reached. Try again tomorrow.'))
+    except Exception as e:
+        print(f"Invite cap check failed, refusing to send: {e}")
+        return redirect(url_for('settings', message='Could not send invite right now. Please try again later.'))
+
+    # The name is shown in the email body AND subject. Only a name that passes the
+    # signup rules may be sent to a third party; otherwise use a neutral label.
+    referrer_name = user.data.get('full_name') or 'A Jottask user'
+    if not check_name(referrer_name)[0]:
+        referrer_name = 'A Jottask user'
     referral_code = user.data['referral_code']
     referral_link = f"https://www.jottask.app/r/{referral_code}"
 
@@ -3012,13 +3039,13 @@ def send_referral_invite():
         </div>
         <div style="background: white; padding: 32px; border: 1px solid #E5E7EB; border-top: none; border-radius: 0 0 12px 12px;">
             <p style="font-size: 16px; color: #374151; margin-bottom: 16px;">
-                <strong>{referrer_name}</strong> thinks you'd love Jottask — an AI-powered task management platform built for solar sales teams.
+                <strong>{esc(referrer_name)}</strong> thinks you'd love Jottask — an AI-powered task management platform built for solar sales teams.
             </p>
             <p style="font-size: 15px; color: #6B7280; margin-bottom: 24px;">
                 Forward your emails to Jottask and it does the rest — creates tasks, tracks follow-ups, sends reminders, and syncs your CRM.
             </p>
             <div style="text-align: center; margin-bottom: 24px;">
-                <a href="{referral_link}" style="display: inline-block; background: #6366F1; color: white; padding: 14px 32px; border-radius: 8px; text-decoration: none; font-weight: 600; font-size: 16px;">
+                <a href="{esc(referral_link)}" style="display: inline-block; background: #6366F1; color: white; padding: 14px 32px; border-radius: 8px; text-decoration: none; font-weight: 600; font-size: 16px;">
                     Start Free Trial
                 </a>
             </div>
@@ -3029,7 +3056,7 @@ def send_referral_invite():
     </div>
     """
 
-    success, error = send_email(invited_email, f'{referrer_name} invited you to Jottask', html_content)
+    success, error = send_email(invited_email, plain_subject(f'{referrer_name} invited you to Jottask'), html_content)
     if success:
         return redirect(url_for('settings', message=f'Invite sent to {invited_email}!'))
     else:

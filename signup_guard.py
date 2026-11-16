@@ -44,14 +44,10 @@ def is_disposable_email(email):
     return any(domain == d or domain.endswith('.' + d) for d in DISPOSABLE_DOMAINS)
 
 
-def check_signup(full_name, email, honeypot=''):
-    """Return (ok, reason). `reason` is for server logs only, never shown to the
-    submitter (don't teach bots which rule they tripped)."""
+def check_name(full_name):
+    """Return (ok, reason) for a display name (signup AND profile edits, and
+    before a name is put into any outbound email)."""
     name = (full_name or '').strip()
-    email = (email or '').strip().lower()
-
-    if honeypot and honeypot.strip():
-        return False, 'honeypot-filled'
     if not name or len(name) > MAX_NAME_LEN:
         return False, 'bad-name-length'
     if _URL_RE.search(name):
@@ -60,7 +56,25 @@ def check_signup(full_name, email, honeypot=''):
         return False, 'spam-marker-in-name'
     if any(ord(c) < 32 for c in name):
         return False, 'control-chars-in-name'
-    if len(email) > MAX_EMAIL_LEN or not _EMAIL_RE.match(email):
+    return True, None
+
+
+def is_valid_email(email):
+    email = (email or '').strip().lower()
+    return len(email) <= MAX_EMAIL_LEN and bool(_EMAIL_RE.match(email))
+
+
+def check_signup(full_name, email, honeypot=''):
+    """Return (ok, reason). `reason` is for server logs only, never shown to the
+    submitter (don't teach bots which rule they tripped)."""
+    email = (email or '').strip().lower()
+
+    if honeypot and honeypot.strip():
+        return False, 'honeypot-filled'
+    ok, reason = check_name(full_name)
+    if not ok:
+        return False, reason
+    if not is_valid_email(email):
         return False, 'bad-email-format'
     if is_disposable_email(email):
         return False, 'disposable-email-domain'
